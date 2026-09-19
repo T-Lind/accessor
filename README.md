@@ -77,17 +77,17 @@ Model discovery reads the selected Codex installation's account catalog without 
 
 Once activated, say "switch to Codex" or "switch agent to Codex". Say "switch model to Astra" using a name from your available list. A running harness can emit `ACCESSOR_SWITCH harness=codex` (or JSON `accessor_switch`) to pin this conversation to another CLI without rewriting the plugin/coding/everyday slots. These local controls obey the same wake-code and barge-in settings as ordinary speech.
 
-Direct equivalents: `/settings barge-in true`, `/settings addressed true` (require the wake code on **every** request, including barge-ins), `/settings addressed false` (continuous conversation after one wake), `/settings idle-seconds 120`, `/settings speak-progress false`, `/settings chat activity`, `/settings tts.speed 1.1`, `/settings model MODEL_ID`. The numbered model picker and spoken commands use the discovered list; an exact ID can also be set manually for a newly available model. The backend makes the final availability check.
+Direct equivalents: `/settings barge-in true`, `/settings idle-seconds 120`, `/settings speak-progress false`, `/settings chat activity`, `/settings tts.speed 1.1`, `/settings model MODEL_ID`. The numbered model picker and spoken commands use the discovered list; an exact ID can also be set manually for a newly available model. The backend makes the final availability check.
 
 ## Conversation behavior
 
-Say “twenty-nine” or “hey twenty-nine”, pause for the chime, then speak, or say “twenty-nine, do this” in one utterance. Follow-up speech does not need the code unless **Wake mode** is set to require it every time (`/settings addressed true`). The default idle timeout is 120 seconds and starts after the agent finishes working and speaking. Detected speech also refreshes it. Use `--idle-seconds 0` to disable automatic sleep. When the conversation sleeps, a descending chime plays so you can hear that the wake code is required again.
+Say “twenty-nine” or “hey twenty-nine”, pause for the chime, then speak, or say “twenty-nine, do this” in one utterance. Every new voice request requires the wake code. A bare “twenty-nine” opens exactly one follow-up utterance; after that request Accessor waits for the code again. This mandatory addressed mode prevents residual TTS or room conversation from becoming an agent turn. The default idle timeout is 120 seconds and applies while Accessor is waiting after a bare wake. Use `--idle-seconds 0` to disable that timeout. When the listening window expires, a descending chime plays.
 
 | Control | Result |
 | --- | --- |
 | “29 stop”, “stop” while awake, or `/stop` | Cancel the task, stop playback, return to sleep |
 | “go to sleep”, “go back to sleep”, “disconnect”, `/sleep`, `/disconnect` | Close voice access locally (the agent cannot sleep the microphone by talking) |
-| “cancel the task”, `/cancel`, Escape | Cancel work/playback; keep the conversation open |
+| “cancel the task”, `/cancel`, Escape | Cancel work/playback; wait for the next wake code |
 | “29 mute”, “29 unmute”, `/mute`, `/unmute` | Privacy-mute/unmute; while muted only the local unmute detector remains active |
 | `/approve N`, `/deny N` | Answer one pending permission request by typing |
 | `/status`, `/help` | Inspect state or controls |
@@ -170,6 +170,8 @@ The voice metaprompt tells every supported harness about Accessor's structured l
 Notes are private Markdown files under `notes/` in the directory shown by `acc config locations`. Alarms and scheduled tasks persist in `schedules.json`. An alarm repeats a two-beep cue until you say “29 stop” or type `/stop`. Alarms and tasks are checked once per second only while an `acc` process is running; this release does not install a background service or wake a powered-off/suspended computer.
 
 Scheduled tasks contain a prompt, a first run time, an optional repeat interval, and optional harness/model overrides. When no harness is specified, the task goes through normal Jev/keyword routing. A model override requires an explicit harness. Repeating tasks must be at least 60 seconds apart. If Accessor was not running at the scheduled time, a one-shot task runs once when Accessor next starts; a recurring task runs once and advances to its next future interval.
+
+This is Accessor's common scheduler, not the harness vendor's scheduler. Schedule-creation language normally routes to the plugin harness, which emits the validated local directive. When the task becomes due, Accessor invokes Codex, Claude Code, or Antigravity itself. This keeps behavior and storage uniform even though their native scheduling products differ.
 
 The same store has a direct CLI for inspection and scripting:
 

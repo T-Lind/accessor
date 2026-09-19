@@ -16,16 +16,14 @@ pub enum Action {
 pub struct Session {
     wake: WakeCode,
     active: bool,
-    addressed: bool,
     last: Instant,
     timeout: Duration,
 }
 impl Session {
-    pub fn new(wake: WakeCode, addressed: bool, timeout: Duration) -> Self {
+    pub fn new(wake: WakeCode, timeout: Duration) -> Self {
         Self {
             wake,
             active: false,
-            addressed,
             last: Instant::now(),
             timeout,
         }
@@ -68,7 +66,7 @@ impl Session {
             return Action::Disconnect;
         }
         if let Some(replacement) = stop_replacement(text) {
-            self.active = !self.addressed;
+            self.active = false;
             return Action::Prompt(replacement.into());
         }
         match control.as_str() {
@@ -91,7 +89,7 @@ impl Session {
             self.active = true;
             Action::Open
         } else {
-            self.active = !self.addressed;
+            self.active = false;
             Action::Prompt(text.into())
         }
     }
@@ -136,7 +134,7 @@ mod tests {
     #[test]
     fn stop_sleep_and_disabled_timeout() {
         let now = Instant::now();
-        let mut s = Session::new(WakeCode::new("29", &[]).unwrap(), false, Duration::ZERO);
+        let mut s = Session::new(WakeCode::new("29", &[]).unwrap(), Duration::ZERO);
         assert_eq!(s.hear("29", now), Action::Open);
         assert!(!s.expire(now + Duration::from_secs(7200)));
         assert_eq!(
@@ -156,11 +154,7 @@ mod tests {
     #[test]
     fn activity_postpones_sleep_without_reopening_it() {
         let now = Instant::now();
-        let mut s = Session::new(
-            WakeCode::new("29", &[]).unwrap(),
-            false,
-            Duration::from_secs(2),
-        );
+        let mut s = Session::new(WakeCode::new("29", &[]).unwrap(), Duration::from_secs(2));
         s.touch(now);
         assert!(!s.active());
         s.hear("29", now);
@@ -169,29 +163,19 @@ mod tests {
         assert!(s.expire(now + Duration::from_secs(12)));
     }
     #[test]
-    fn timeout_and_followups() {
+    fn bare_wake_opens_exactly_one_followup() {
         let now = Instant::now();
-        let mut s = Session::new(
-            WakeCode::new("29", &[]).unwrap(),
-            false,
-            Duration::from_secs(30),
-        );
+        let mut s = Session::new(WakeCode::new("29", &[]).unwrap(), Duration::from_secs(30));
         assert_eq!(s.hear("hello", now), Action::Ignore);
         assert_eq!(s.hear("29", now), Action::Open);
         assert_eq!(s.hear("hello", now), Action::Prompt("hello".into()));
-        assert_eq!(
-            s.hear("hello", now + Duration::from_secs(31)),
-            Action::Ignore
-        );
+        assert!(!s.active());
+        assert_eq!(s.hear("hello", now), Action::Ignore);
     }
     #[test]
     fn addressed_and_disconnect() {
         let now = Instant::now();
-        let mut s = Session::new(
-            WakeCode::new("29", &[]).unwrap(),
-            true,
-            Duration::from_secs(30),
-        );
+        let mut s = Session::new(WakeCode::new("29", &[]).unwrap(), Duration::from_secs(30));
         assert_eq!(s.hear("29 hello", now), Action::Prompt("hello".into()));
         assert!(!s.active());
         assert_eq!(s.hear("hello", now), Action::Ignore);
@@ -207,14 +191,11 @@ mod tests {
     #[test]
     fn go_back_to_sleep_and_hey_wake() {
         let now = Instant::now();
-        let mut s = Session::new(
-            WakeCode::new("29", &[]).unwrap(),
-            false,
-            Duration::from_secs(30),
-        );
+        let mut s = Session::new(WakeCode::new("29", &[]).unwrap(), Duration::from_secs(30));
         assert_eq!(s.hear("Hey 29, hello", now), Action::Prompt("hello".into()));
-        assert!(s.active());
-        assert_eq!(s.hear("please go back to sleep", now), Action::Disconnect);
+        assert!(!s.active());
+        assert_eq!(s.hear("please go back to sleep", now), Action::Ignore);
+        assert_eq!(s.hear("29 go back to sleep", now), Action::Disconnect);
         assert!(!s.active());
         assert_eq!(s.hear("still talking", now), Action::Ignore);
         assert_eq!(s.hear("hey 29", now), Action::Open);
@@ -223,11 +204,7 @@ mod tests {
     #[test]
     fn mute_controls_are_exact_and_local() {
         let now = Instant::now();
-        let mut s = Session::new(
-            WakeCode::new("29", &[]).unwrap(),
-            false,
-            Duration::from_secs(30),
-        );
+        let mut s = Session::new(WakeCode::new("29", &[]).unwrap(), Duration::from_secs(30));
         assert_eq!(s.hear("29 mute", now), Action::Mute);
         assert!(!s.active());
         assert_eq!(s.hear("unmute", now), Action::Ignore);

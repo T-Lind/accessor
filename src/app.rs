@@ -88,7 +88,6 @@ pub async fn run(mut args: Run) -> Result<()> {
         settings.routing.coding = name.into();
         settings.routing.routine = name.into();
     }
-    settings.addressed |= args.addressed;
     let mut models = crate::connectors::cached_models();
     let mut model_lookup: Option<tokio::task::JoinHandle<Result<Vec<crate::connectors::Model>>>> =
         None;
@@ -171,7 +170,7 @@ pub async fn run(mut args: Run) -> Result<()> {
         .workspace
         .canonicalize()
         .context("Workspace must exist")?;
-    let mut session = Session::new(wake, settings.addressed, Duration::from_secs(idle));
+    let mut session = Session::new(wake, Duration::from_secs(idle));
     let epoch = Arc::new(AtomicU64::new(0));
     let muted = Arc::new(AtomicBool::new(false));
     let awake = Arc::new(AtomicBool::new(false));
@@ -432,7 +431,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                         match w.answer(&text) {
                             Ok(Some(next))=>{
                                 match next.save() {
-                                    Ok(())=>{settings=next;speak=settings.speak;session=Session::new(wake::WakeCode::new(&settings.wake_code,&args.wake_alias)?,settings.addressed,Duration::from_secs(settings.idle_seconds));ui.message("Setup saved. Use /tts test to hear the selected voice; /tts key adds a Cartesia key.");},
+                                    Ok(())=>{settings=next;speak=settings.speak;session=Session::new(wake::WakeCode::new(&settings.wake_code,&args.wake_alias)?,Duration::from_secs(settings.idle_seconds));ui.message("Setup saved. Use /tts test to hear the selected voice; /tts key adds a Cartesia key.");},
                                     Err(e)=>ui.message(format!("Could not save settings: {e:#}")),
                                 }
                                 wizard=None;muted.store(panel.is_some() || (speaker.is_some() && !settings.barge_in),Ordering::SeqCst);epoch.fetch_add(1,Ordering::SeqCst);
@@ -527,7 +526,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                         lazy_stt.store(settings.stt.lazy, Ordering::SeqCst);
                                         if key=="speak" {speak=settings.speak;}
                                         if key=="chat" {ui.set_chat(&settings.chat);}
-                                        if key=="wake-code" || key=="idle-seconds" || key=="addressed" {session=Session::new(wake::WakeCode::new(&settings.wake_code,&args.wake_alias)?,settings.addressed,Duration::from_secs(settings.idle_seconds));epoch.fetch_add(1,Ordering::SeqCst);}
+                                        if key=="wake-code" || key=="idle-seconds" {session=Session::new(wake::WakeCode::new(&settings.wake_code,&args.wake_alias)?,Duration::from_secs(settings.idle_seconds));epoch.fetch_add(1,Ordering::SeqCst);}
                                         if key=="model" {
                                             active_model=settings.model.clone();
                                             if let Some(live)=agents.get_mut(&active_harness) {
@@ -759,10 +758,8 @@ pub async fn run(mut args: Run) -> Result<()> {
                             }
                             epoch.fetch_add(1, Ordering::SeqCst);
                             ui.message("Stopped. Listening for your next request.");
-                        } else if settings.addressed {
-                            ui.message("Listening. Say your request. Later turns will need the wake code again.");
                         } else {
-                            ui.message("Listening.");
+                            ui.message("Listening. Say your request. Later turns will need the wake code again.");
                         }
                     }
                     Action::Mute => {

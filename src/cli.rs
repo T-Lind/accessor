@@ -101,9 +101,7 @@ pub struct Run {
     /// Type simulated transcripts; never opens the microphone.
     #[arg(long)]
     pub text: bool,
-    #[arg(long)]
-    pub addressed: bool,
-    /// Idle seconds after work/playback; 0 keeps the conversation open.
+    /// Seconds to wait for speech after a bare wake code; 0 waits indefinitely.
     #[arg(long,value_parser=clap::value_parser!(u64).range(0..=3600))]
     pub idle_seconds: Option<u64>,
     #[arg(long)]

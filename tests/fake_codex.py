@@ -35,7 +35,7 @@ for line in sys.stdin:
             send({"method": "item/started", "params": {"item": {"type": "mcpToolCall", "server": "gmail", "tool": "search"}}})
             send({"method": "item/completed", "params": {"item": {"type": "mcpToolCall", "server": "gmail", "tool": "search"}}})
             reply("tool done")
-        elif text == "which model":
+        elif "which" in text.lower() and "model" in text.lower():
             reply("model=" + str(msg["params"].get("model")))
         else:
             reply("fixture: " + text)

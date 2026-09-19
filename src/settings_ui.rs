@@ -82,15 +82,6 @@ fn rows(page: Page, s: &Settings, connected: bool) -> Vec<Row> {
         Page::Voice => vec![
             row("Wake code", &s.wake_code, Action::Edit("wake-code")),
             row(
-                "Wake mode",
-                if s.addressed {
-                    "code every request"
-                } else {
-                    "stay awake until idle"
-                },
-                Action::Toggle("addressed"),
-            ),
-            row(
                 "Idle timeout",
                 &format!("{} s", s.idle_seconds),
                 Action::Edit("idle-seconds"),
@@ -302,7 +293,7 @@ fn rows(page: Page, s: &Settings, connected: bool) -> Vec<Row> {
 fn hint(action: &Action) -> &'static str {
     match action {
         Action::Open(Page::Voice) => {
-            "Wake code, whether to repeat it every turn, idle sleep, and barge-in."
+            "Wake code (required for every voice request), idle sleep, and barge-in."
         }
         Action::Open(Page::Speech) => {
             "TTS voice, speed, and which transcriber runs after you are already awake."
@@ -317,9 +308,6 @@ fn hint(action: &Action) -> &'static str {
             "Live mic transcription test, a sample of the current voice, and usage analytics."
         }
         Action::Open(Page::Home) => "Return to the category list.",
-        Action::Toggle("addressed") => {
-            "Off: one wake opens GREEN until idle. On: 29 opens listening, then the next request; later turns need 29 again."
-        }
         Action::Toggle("barge-in") => {
             "When on, new speech can interrupt the agent. When off, wait or /cancel."
         }
@@ -353,7 +341,7 @@ fn hint(action: &Action) -> &'static str {
         }
         Action::Edit("wake-code") => "Digits you say to wake Accessor, e.g. 29 or hey 29.",
         Action::Edit("idle-seconds") => {
-            "Seconds after work/speech before Accessor sleeps. 0 means stay awake."
+            "Seconds to wait for speech after a bare wake code. 0 waits indefinitely."
         }
         Action::Edit("agent") => {
             "Plugin CLI: email, calendar, Google Docs, and other connected apps. Used when the turn needs those connectors."
@@ -582,13 +570,6 @@ fn chat_mode(s: &Settings) -> &'static str {
 }
 fn current_value<'a>(key: &str, s: &'a Settings) -> &'a str {
     match key {
-        "addressed" => {
-            if s.addressed {
-                "true"
-            } else {
-                "false"
-            }
-        }
         "barge-in" => {
             if s.barge_in {
                 "true"
@@ -700,7 +681,7 @@ impl Panel {
                     "Voice metaprompt sent to real harnesses. Type default to restore.\n\n{}\n\nEsc returns.",
                     s.prompt
                 ),
-                "idle-seconds" => "Idle seconds (0–3600; 0 = stay awake). Esc returns.".into(),
+                "idle-seconds" => "Wake-listening seconds (0–3600; 0 = no timeout). Esc returns.".into(),
                 "wake-code" => "Wake code (digits). Esc returns.".into(),
                 "tts.provider" => "system, kokoro, cartesia, or off. Esc returns.".into(),
                 "tts.local-voice" | "tts.voice" => "Voice ID. Esc returns.".into(),
@@ -1153,20 +1134,21 @@ mod tests {
         assert_eq!(resolve_model("Sol", &mixed).as_deref(), Some("fixture-sol"));
     }
     #[test]
-    fn arrows_open_voice_and_toggle_wake() {
+    fn arrows_open_voice_with_mandatory_wake() {
         let s = Settings::default();
         let mut p = Panel::default();
         assert!(p.display(&s, false, &[]).contains("Voice"));
         let Answer::Show = p.answer("enter", &s, &[]).unwrap() else {
             panic!("open voice");
         };
-        assert!(p.display(&s, false, &[]).contains("Wake code"));
+        let voice = p.display(&s, false, &[]);
+        assert!(voice.contains("Wake code"));
+        assert!(!voice.contains("Wake mode"));
         p.nav(1, &s, false);
-        let Answer::Command(cmd) = p.activate(&s, &[], false).unwrap() else {
-            panic!("toggle");
+        let Answer::Show = p.activate(&s, &[], false).unwrap() else {
+            panic!("edit idle timeout");
         };
-        assert_eq!(cmd, "/config set addressed true");
-        assert!(p.display(&s, false, &[]).contains("hint:"));
+        assert!(p.display(&s, false, &[]).contains("Wake-listening seconds"));
         let mut home = Panel::default();
         home.answer("3", &s, &[]).unwrap();
         let harnesses = home.display(&s, false, &[]);

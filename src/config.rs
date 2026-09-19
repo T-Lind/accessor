@@ -9,7 +9,9 @@ pub struct Settings {
     pub idle_seconds: u64,
     pub speak: bool,
     pub barge_in: bool,
-    pub addressed: bool,
+    /// Deprecated compatibility field. Voice turns are always wake-addressed.
+    #[serde(default, rename = "addressed", skip_serializing)]
+    pub _addressed: bool,
     pub speak_progress: bool,
     pub agent: String,
     pub model: Option<String>,
@@ -133,7 +135,7 @@ impl Default for Settings {
             idle_seconds: 120,
             speak: true,
             barge_in: true,
-            addressed: false,
+            _addressed: false,
             speak_progress: true,
             agent: "codex".into(),
             model: None,
@@ -340,7 +342,6 @@ impl Settings {
             "idle-seconds" => self.idle_seconds = value.parse()?,
             "speak" => self.speak = value.parse()?,
             "barge-in" => self.barge_in = value.parse()?,
-            "addressed" => self.addressed = value.parse()?,
             "speak-progress" => self.speak_progress = value.parse()?,
             "agent" => self.agent = value.to_lowercase(),
             "model" => {
@@ -552,6 +553,9 @@ fn antigravity_bin() -> Option<PathBuf> {
 
 fn find_on_path(names: &[&str]) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
+    #[cfg(not(windows))]
+    let exts = vec![String::new()];
+    #[cfg(windows)]
     let mut exts = vec![String::new()];
     #[cfg(windows)]
     {
@@ -639,6 +643,21 @@ mod tests {
             harness_default_model("antigravity"),
             Some("gemini-3.8-flash")
         );
+    }
+
+    #[test]
+    fn legacy_addressed_setting_is_accepted_but_not_saved() {
+        let mut value = serde_json::to_value(Settings::default()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert("addressed".into(), serde_json::json!(false));
+        let settings: Settings = serde_json::from_value(value).unwrap();
+        assert!(!settings._addressed);
+        assert!(serde_json::to_value(settings)
+            .unwrap()
+            .get("addressed")
+            .is_none());
     }
     #[test]
     fn locations_point_at_the_home_folder() {

@@ -50,7 +50,7 @@ pub fn matching(input: &str) -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 pub fn summary(s: &Settings) -> String {
-    format!("Wake code: {}\nWake mode: {}\nSleep after: {} idle seconds (0 = never)\nSpoken replies: {}\nVoice provider: {}\nSpeaking speed: {:.2}×\nKokoro voice: {}\nChat view: {}\nPlugin harness: {} · model: {}\nCoding / everyday: {} / {}\nRouter: {}\nApprovals: {}\nLocal STT: {}\nConversation STT: {}\nCompaction: {} · {} @ ~{} tokens\nSettings: {}\nHome folder: {}\nCopy this setup: acc config locations (or /config locations)\nChange any setting: /config set KEY VALUE\nSee docs/PLATFORM.md",s.wake_code,if s.addressed {"code on every request"}else{"stay awake until idle"},s.idle_seconds,s.speak,s.tts.provider,s.tts.speed,s.tts.local_voice,s.chat,s.agent,s.model.as_deref().unwrap_or("default"),s.routing.coding,s.routing.routine,s.routing.router,s.approvals.reviewer,s.stt.engine,s.stt.conversation,s.routing.compaction_harness,s.routing.compaction_model,s.routing.compact_tokens,crate::config::path().map(|p|p.display().to_string()).unwrap_or_default(),crate::config::home().map(|p|p.display().to_string()).unwrap_or_default())
+    format!("Wake code: {}\nWake mode: code required for every voice request\nSleep after: {} idle seconds (0 = never)\nSpoken replies: {}\nVoice provider: {}\nSpeaking speed: {:.2}×\nKokoro voice: {}\nChat view: {}\nPlugin harness: {} · model: {}\nCoding / everyday: {} / {}\nRouter: {}\nApprovals: {}\nLocal STT: {}\nConversation STT: {}\nCompaction: {} · {} @ ~{} tokens\nSettings: {}\nHome folder: {}\nCopy this setup: acc config locations (or /config locations)\nChange any setting: /config set KEY VALUE\nSee docs/PLATFORM.md",s.wake_code,s.idle_seconds,s.speak,s.tts.provider,s.tts.speed,s.tts.local_voice,s.chat,s.agent,s.model.as_deref().unwrap_or("default"),s.routing.coding,s.routing.routine,s.routing.router,s.approvals.reviewer,s.stt.engine,s.stt.conversation,s.routing.compaction_harness,s.routing.compaction_model,s.routing.compact_tokens,crate::config::path().map(|p|p.display().to_string()).unwrap_or_default(),crate::config::home().map(|p|p.display().to_string()).unwrap_or_default())
 }
 pub fn tts_help(s: &Settings) -> String {
     format!("Voice provider: {}\nSpeed: {:.2}× (0.6–1.5)\n/tts provider system|kokoro|cartesia|off\n/tts voice VOICE_ID        Set the selected provider's voice\n/tts speed 1.1            Speaking speed for local and Cartesia voices\n/tts test [sample text]    Hear a sample\n/tts voices               List neural voices\n/tts key                  Enter Cartesia key in a hidden field\nKokoro installation: python scripts/setup_tts.py",s.tts.provider,s.tts.speed)
@@ -174,7 +174,7 @@ impl Wizard {
                 self.draft.wake_code
             ),
             1 => format!(
-                "Setup 2/4 · Idle seconds [{}], 0 to stay awake.",
+                "Setup 2/4 · Wake-listening seconds [{}], 0 for no timeout.",
                 self.draft.idle_seconds
             ),
             2 => format!(
