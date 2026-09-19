@@ -29,10 +29,12 @@ pub enum Input {
     Voice {
         text: String,
         epoch: u64,
+        captured_at: std::time::Instant,
     },
     Pcm {
         samples: Vec<f32>,
         epoch: u64,
+        captured_at: std::time::Instant,
     },
     Activity {
         epoch: u64,

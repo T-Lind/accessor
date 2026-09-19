@@ -270,7 +270,17 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut pending_secret: Option<&'static str> = None;
     let mut utility: Option<tokio::task::JoinHandle<Result<String>>> = None;
     let mut speech_queue = VecDeque::<String>::new();
+    let mut speaker_was_active = false;
+    let mut output_guard_until: Option<Instant> = None;
+    let mut wake_listening = false;
     loop {
+        let speaking_now = speaker.is_some();
+        if speaker_was_active && !speaking_now {
+            // A completed utterance may still be waiting in the STT queue. Keep
+            // judging it by when it was captured, not when inference finishes.
+            output_guard_until = Some(Instant::now() + Duration::from_millis(600));
+        }
+        speaker_was_active = speaking_now;
         awake.store(session.active(), Ordering::SeqCst);
         ui.status(&banner(
             BannerState {
@@ -295,12 +305,12 @@ pub async fn run(mut args: Run) -> Result<()> {
                 let Some(input) = input else { break; };
                 let is_event=matches!(&input,Input::Trigger(_));
                 let spoken_setting=matches!(&input,Input::Configure{spoken:true,..});
-                let (mut text, typed, spoken_addressed) = match input {
-                    Input::Configure{key,value,..}=>(format!("/config set {key} {value}"),true,false),
+                let (mut text, typed, spoken_addressed, captured_during_output) = match input {
+                    Input::Configure{key,value,..}=>(format!("/config set {key} {value}"),true,false,false),
                     Input::Trigger(event)=>{
                         if busy {waiting_event=Some(event);continue;}
                         let prompt=event.prompt(settings.event_owner.as_deref().unwrap_or(""));
-                        event_cancelled=false;current_event=Some(event);(prompt,false,false)
+                        event_cancelled=false;current_event=Some(event);(prompt,false,false,false)
                     }
                     Input::Eof => { if args.text { eof=true; } continue; }
                     Input::Activity { epoch: e } => {
@@ -322,18 +332,22 @@ pub async fn run(mut args: Run) -> Result<()> {
                         }
                         bail!("Audio/input stopped: {text}");
                     }
-                    Input::Voice { text, epoch: captured_epoch } => {
+                    Input::Voice { text, epoch: captured_epoch, captured_at } => {
                         if muted.load(Ordering::SeqCst) || captured_epoch != epoch.load(Ordering::SeqCst) { continue; }
+                        let captured_during_output = busy || speaker.is_some()
+                            || output_guard_until.is_some_and(|until| captured_at <= until);
                         let addressed=session.addressed(&text);
                         if !addressed && echo_guard.matches(&text,speaker.is_some()) {
                             continue;
                         }
                         crate::usage::record_stt("canary", 0.0);
-                        (text, false, addressed)
+                        (text, false, addressed, captured_during_output)
                     }
-                    Input::Pcm { samples, epoch: captured_epoch } => {
+                    Input::Pcm { samples, epoch: captured_epoch, captured_at } => {
                         if muted.load(Ordering::SeqCst) || captured_epoch != epoch.load(Ordering::SeqCst) { continue; }
                         if user_muted { continue; }
+                        let captured_during_output = busy || speaker.is_some()
+                            || output_guard_until.is_some_and(|until| captured_at <= until);
                         match speech::cartesia_stt(&samples).await {
                             Ok(text) if !text.trim().is_empty() => {
                                 crate::usage::record_stt("cartesia", samples.len() as f64 / 16_000.0);
@@ -341,13 +355,13 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 if !addressed && echo_guard.matches(&text,speaker.is_some()) {
                                     continue;
                                 }
-                                (text, false, addressed)
+                                (text, false, addressed, captured_during_output)
                             }
                             Ok(_) => continue,
                             Err(e) => { ui.message(format!("Ink-2 STT unavailable: {e:#}. Say that again, or set Speech → local STT.")); continue; }
                         }
                     }
-                    Input::Text(text) => (text, true, false),
+                    Input::Text(text) => (text, true, false, false),
                 };
                 if pending_stt.is_some() && text.trim()=="/cancel" {
                     pending_stt=None;
@@ -679,7 +693,15 @@ pub async fn run(mut args: Run) -> Result<()> {
                 // Speaker echo cannot issue a wake-addressed command. Requiring
                 // the code while output or reasoning is active makes barge-in
                 // deterministic even when acoustic cancellation is imperfect.
-                if !spoken_input_allowed(typed, is_event, busy, speaker.is_some(), spoken_addressed) {
+                if !spoken_input_allowed(
+                    typed,
+                    is_event,
+                    busy,
+                    speaker.is_some(),
+                    captured_during_output,
+                    spoken_addressed,
+                    wake_listening,
+                ) {
                     continue;
                 }
                 if busy || speaker.is_some() {session.touch(Instant::now());}
@@ -698,27 +720,52 @@ pub async fn run(mut args: Run) -> Result<()> {
                 match action {
                     Action::Ignore => continue,
                     Action::Open => {
-                        if settings.addressed {
+                        if !typed && !is_event && spoken_addressed
+                            && (busy || speaker.is_some() || captured_during_output)
+                        {
+                            wake_listening = true;
+                            think = None;
+                            event_cancelled = true;
+                            silence_reply = true;
+                            speech_queue.clear();
+                            speaker = None;
+                            echo_guard.finish();
+                            pending_prompt = None;
+                            pending_setting = None;
+                            pending_stt = None;
+                            if let Some(tx) = &agent_tx {
+                                let _ = tx.send(agent::CommandMessage::Cancel).await;
+                            }
+                            if let Some(live) = agents.get_mut(&active_harness) {
+                                live.first = None;
+                            }
+                            epoch.fetch_add(1, Ordering::SeqCst);
+                            ui.message("Stopped. Listening for your next request.");
+                        } else if settings.addressed {
                             ui.message("Listening. Say your request. Later turns will need the wake code again.");
                         } else {
                             ui.message("Listening.");
                         }
                     }
                     Action::Mute => {
+                        wake_listening=false;
                         user_muted=true;session.close();epoch.fetch_add(1,Ordering::SeqCst);
                         ui.message("[MUTED: only the local wake detector is active; say 29 unmute or type /unmute]");
                     }
                     Action::Unmute => {
+                        wake_listening=false;
                         if !microphone_available {ui.message("Microphone is unavailable. Check /devices and restart after setup.");continue;}
                         user_muted=false;session.close();epoch.fetch_add(1,Ordering::SeqCst);
                         ui.message("[UNMUTED: waiting for wake code]");
                     }
                     Action::Disconnect => {
+                        wake_listening=false;
                         think=None;silence_reply=true;speech_queue.clear();speaker=None;echo_guard.finish();muted.store(false,Ordering::SeqCst);epoch.fetch_add(1,Ordering::SeqCst);
                         ui.message("Asleep. Waiting for wake code.");
                         if cues { muted.store(true,Ordering::SeqCst); if let Err(e)=audio::sleep_chime(settings.sounds.sleep) { ui.message(format!("Sleep chime unavailable: {}",safe(&e.to_string()))); } muted.store(false,Ordering::SeqCst); epoch.fetch_add(1,Ordering::SeqCst); }
                     }
                     Action::Cancel | Action::Stop => {
+                        wake_listening=false;
                         think=None;
                         if matches!(action,Action::Stop) {
                             session.close();ui.message("Stopped. Waiting for wake code.");
@@ -729,7 +776,9 @@ pub async fn run(mut args: Run) -> Result<()> {
                         if let Some(live)=agents.get_mut(&active_harness) { live.first=None; }
                         pending_prompt=None;pending_setting=None;pending_stt=None; }
                     Action::Prompt(text) => {
-                        if !typed && !is_event && !spoken_addressed && spoken_word_count(&text) < 2 {
+                        let wake_followup = wake_listening;
+                        wake_listening = false;
+                        if !typed && !is_event && !spoken_addressed && !wake_followup && spoken_word_count(&text) < 2 {
                             ui.message("Ignored a one-word transcript; say “29” first or use a longer phrase.");
                             continue;
                         }
@@ -1070,9 +1119,11 @@ fn spoken_input_allowed(
     event: bool,
     busy: bool,
     speaking: bool,
+    captured_during_output: bool,
     addressed: bool,
+    wake_listening: bool,
 ) -> bool {
-    typed || event || (!busy && !speaking) || addressed
+    typed || event || wake_listening || (!busy && !speaking && !captured_during_output) || addressed
 }
 
 fn stt_confirm(text: &str) -> Option<bool> {
@@ -1121,10 +1172,24 @@ mod tests {
 
     #[test]
     fn active_output_requires_a_wake_addressed_barge_in() {
-        assert!(!spoken_input_allowed(false, false, false, true, false));
-        assert!(!spoken_input_allowed(false, false, true, false, false));
-        assert!(spoken_input_allowed(false, false, true, true, true));
-        assert!(spoken_input_allowed(true, false, true, true, false));
+        assert!(!spoken_input_allowed(
+            false, false, false, true, true, false, false
+        ));
+        assert!(!spoken_input_allowed(
+            false, false, true, false, true, false, false
+        ));
+        assert!(!spoken_input_allowed(
+            false, false, false, false, true, false, false
+        ));
+        assert!(spoken_input_allowed(
+            false, false, true, true, true, true, false
+        ));
+        assert!(spoken_input_allowed(
+            false, false, true, false, true, false, true
+        ));
+        assert!(spoken_input_allowed(
+            true, false, true, true, true, false, false
+        ));
     }
 
     #[test]

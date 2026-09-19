@@ -591,6 +591,7 @@ pub fn listen(
                         let _ = output.try_send(crate::Input::Pcm {
                             samples: u.samples,
                             epoch: u.epoch,
+                            captured_at: u.at,
                         });
                     }
                     Ok(_) => {}
@@ -615,6 +616,7 @@ pub fn listen(
                     let _ = output.try_send(crate::Input::Voice {
                         text,
                         epoch: u.epoch,
+                        captured_at: u.at,
                     });
                 }
                 Ok(_) => {}

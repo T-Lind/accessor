@@ -67,6 +67,10 @@ impl Session {
             self.close();
             return Action::Disconnect;
         }
+        if let Some(replacement) = stop_replacement(text) {
+            self.active = !self.addressed;
+            return Action::Prompt(replacement.into());
+        }
         match control.as_str() {
             "mute" => {
                 self.close();
@@ -106,6 +110,18 @@ impl Session {
     }
 }
 
+fn stop_replacement(text: &str) -> Option<&str> {
+    let text = text.trim_start();
+    let rest = text.get(4..)?;
+    if !text.get(..4)?.eq_ignore_ascii_case("stop")
+        || rest.chars().next().is_some_and(char::is_alphanumeric)
+    {
+        return None;
+    }
+    let rest = rest.trim_start_matches(|c: char| !c.is_alphanumeric());
+    (!rest.is_empty()).then_some(rest)
+}
+
 fn is_sleep(text: &str) -> bool {
     matches!(
         text,
@@ -131,6 +147,10 @@ mod tests {
         assert_eq!(
             s.hear("private", now + Duration::from_secs(7202)),
             Action::Ignore
+        );
+        assert_eq!(
+            s.hear("29 stop. Please tell me about Mars", now),
+            Action::Prompt("Please tell me about Mars".into())
         );
     }
     #[test]
