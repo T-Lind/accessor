@@ -17,6 +17,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/analytics", "Lifetime and past-week cost/call breakdown"),
     ("/context", "Show approximate conversation tokens"),
     ("/compact", "Summarize Accessor-owned history now"),
+    ("/update", "Check harness CLIs and apply updates"),
     ("/agent", "Open Codex; exit to return"),
     ("/events", "Show the event queue"),
     ("/status", "Show current state"),
@@ -48,7 +49,7 @@ pub fn matching(input: &str) -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 pub fn summary(s: &Settings) -> String {
-    format!("Wake code: {}\nWake mode: {}\nSleep after: {} idle seconds (0 = never)\nSpoken replies: {}\nVoice provider: {}\nSpeaking speed: {:.2}×\nKokoro voice: {}\nChat view: {}\nPlugin harness: {} · model: {}\nCoding / everyday: {} / {}\nRouter: {}\nApprovals: {}\nLocal STT: {}\nConversation STT: {}\nCompaction: {} · {} @ ~{} tokens\nSettings: {}\nChange any setting: /config set KEY VALUE\nSee docs/PLATFORM.md",s.wake_code,if s.addressed {"code on every request"}else{"stay awake until idle"},s.idle_seconds,s.speak,s.tts.provider,s.tts.speed,s.tts.local_voice,s.chat,s.agent,s.model.as_deref().unwrap_or("default"),s.routing.coding,s.routing.routine,s.routing.router,s.approvals.reviewer,s.stt.engine,s.stt.conversation,s.routing.compaction_harness,s.routing.compaction_model,s.routing.compact_tokens,crate::config::path().map(|p|p.display().to_string()).unwrap_or_default())
+    format!("Wake code: {}\nWake mode: {}\nSleep after: {} idle seconds (0 = never)\nSpoken replies: {}\nVoice provider: {}\nSpeaking speed: {:.2}×\nKokoro voice: {}\nChat view: {}\nPlugin harness: {} · model: {}\nCoding / everyday: {} / {}\nRouter: {}\nApprovals: {}\nLocal STT: {}\nConversation STT: {}\nCompaction: {} · {} @ ~{} tokens\nSettings: {}\nHome folder: {}\nCopy this setup: acc config locations (or /config locations)\nChange any setting: /config set KEY VALUE\nSee docs/PLATFORM.md",s.wake_code,if s.addressed {"code on every request"}else{"stay awake until idle"},s.idle_seconds,s.speak,s.tts.provider,s.tts.speed,s.tts.local_voice,s.chat,s.agent,s.model.as_deref().unwrap_or("default"),s.routing.coding,s.routing.routine,s.routing.router,s.approvals.reviewer,s.stt.engine,s.stt.conversation,s.routing.compaction_harness,s.routing.compaction_model,s.routing.compact_tokens,crate::config::path().map(|p|p.display().to_string()).unwrap_or_default(),crate::config::home().map(|p|p.display().to_string()).unwrap_or_default())
 }
 pub fn tts_help(s: &Settings) -> String {
     format!("Voice provider: {}\nSpeed: {:.2}× (0.6–1.5)\n/tts provider system|kokoro|cartesia|off\n/tts voice VOICE_ID        Set the selected provider's voice\n/tts speed 1.1            Speaking speed for local and Cartesia voices\n/tts test [sample text]    Hear a sample\n/tts voices               List neural voices\n/tts key                  Enter Cartesia key in a hidden field\nKokoro installation: python scripts/setup_tts.py",s.tts.provider,s.tts.speed)
@@ -59,6 +60,7 @@ pub enum LocalCommand {
     Help,
     Setup,
     Config,
+    Locations,
     Tts,
     Set(String, String),
     Speak(String),
@@ -69,6 +71,7 @@ pub enum LocalCommand {
     Analytics,
     Context,
     Compact,
+    Update { check: bool },
 }
 pub fn parse(text: &str, s: &Settings) -> Result<Option<LocalCommand>> {
     let text = text.trim();
@@ -82,6 +85,7 @@ pub fn parse(text: &str, s: &Settings) -> Result<Option<LocalCommand>> {
         ["/"] | ["/help"] => LocalCommand::Help,
         ["/setup"] => LocalCommand::Setup,
         ["/config"] | ["/config", "show"] => LocalCommand::Config,
+        ["/config", "locations"] | ["/config", "path"] => LocalCommand::Locations,
         ["/config", "set", key, ..] => {
             let value = text
                 .strip_prefix("/config")
@@ -130,6 +134,8 @@ pub fn parse(text: &str, s: &Settings) -> Result<Option<LocalCommand>> {
         ["/analytics"] => LocalCommand::Analytics,
         ["/context"] => LocalCommand::Context,
         ["/compact"] => LocalCommand::Compact,
+        ["/update"] => LocalCommand::Update { check: false },
+        ["/update", "check"] | ["/update", "--check"] => LocalCommand::Update { check: true },
         ["/connectors", "setup"] | ["/agent"] => LocalCommand::Native,
         ["/events"] => LocalCommand::Utility(vec!["events".into(), "status".into()]),
         ["/stt", "provider", provider] => {
@@ -263,6 +269,14 @@ mod tests {
         assert!(matches!(
             parse("/jev key", &Settings::default()).unwrap(),
             Some(LocalCommand::Secret("typesafe"))
+        ));
+        assert!(matches!(
+            parse("/update", &Settings::default()).unwrap(),
+            Some(LocalCommand::Update { check: false })
+        ));
+        assert!(matches!(
+            parse("/update check", &Settings::default()).unwrap(),
+            Some(LocalCommand::Update { check: true })
         ));
     }
     #[test]

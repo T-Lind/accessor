@@ -32,6 +32,8 @@ pub struct Routing {
     pub coding: String,
     pub routine: String,
     pub routine_model: Option<String>,
+    #[serde(default)]
+    pub plugin_model: Option<String>,
     pub router: String,
     pub announce: bool,
     pub auto_model: bool,
@@ -48,6 +50,7 @@ impl Default for Routing {
             coding: "codex".into(),
             routine: "codex".into(),
             routine_model: None,
+            plugin_model: None,
             router: "keywords".into(),
             announce: true,
             auto_model: false,
@@ -182,6 +185,28 @@ pub fn home() -> Result<PathBuf> {
 }
 pub fn path() -> Result<PathBuf> {
     Ok(home()?.join("config.json"))
+}
+fn display_path(p: PathBuf) -> String {
+    p.display()
+        .to_string()
+        .trim_start_matches(r"\\?\")
+        .to_string()
+}
+
+pub fn locations(settings: &Settings) -> String {
+    let home = home()
+        .map(display_path)
+        .unwrap_or_else(|_| "(unavailable)".into());
+    let config = path()
+        .map(display_path)
+        .unwrap_or_else(|_| "(unavailable)".into());
+    let assets = settings
+        .assets()
+        .map(display_path)
+        .unwrap_or_else(|_| "(unavailable)".into());
+    format!(
+        "Accessor home (copy this folder to replicate settings):\n  {home}\n  config.json          wake, harnesses, TTS, routing (no secrets)\n  analytics.json       optional usage totals\n  models.json          cached Codex model list\n  tts-cache/           optional spoken-clip cache\n  events/              local Gmail notification queue\nSettings file:\n  {config}\nSpeech models / ONNX runtime (large; copy or re-download):\n  {assets}\n  Override with ACC_HOME (settings) or ACC_ASSETS (models).\nSecrets are NOT in that folder. Re-enter them on the new machine:\n  acc tts key     Cartesia (TTS + Ink-2)\n  acc jev key     TypeSafe / Jev\n  AI_GATEWAY_API_KEY or OS credential 'ai-gateway'\nWindows: Credential Manager, service name Accessor.\nHarness CLIs (Codex / Claude Code / agy) and their plugin logins live in those apps, not here.\nassets-dir in config.json is often an absolute path — set it again on the other machine if the checkout moved."
+    )
 }
 impl Settings {
     pub fn load() -> Result<Self> {
@@ -352,6 +377,13 @@ impl Settings {
             }
             "routing.routine-model" => {
                 self.routing.routine_model = if value == "default" {
+                    None
+                } else {
+                    Some(value.into())
+                }
+            }
+            "routing.plugin-model" => {
+                self.routing.plugin_model = if value == "default" {
                     None
                 } else {
                     Some(value.into())
@@ -607,6 +639,16 @@ mod tests {
             harness_default_model("antigravity"),
             Some("gemini-3.8-flash")
         );
+    }
+    #[test]
+    fn locations_point_at_the_home_folder() {
+        let text = locations(&Settings::default());
+        assert!(text.contains("config.json"));
+        assert!(text.contains("ACC_HOME"));
+        assert!(text.contains("Credential Manager") || text.contains("credential"));
+    }
+    #[test]
+    fn volume_percents_map_to_unit_range() {
         assert_eq!(parse_level("80").unwrap(), 0.8);
         assert_eq!(parse_level("1.2").unwrap(), 1.2);
     }

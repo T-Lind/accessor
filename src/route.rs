@@ -16,7 +16,11 @@ pub fn jev_available() -> bool {
 pub async fn choose(text: &str, settings: &Settings) -> Target {
     let plugin = Target {
         harness: settings.agent.clone(),
-        model: settings.model.clone(),
+        model: slot_model(
+            settings,
+            &settings.agent,
+            settings.routing.plugin_model.clone(),
+        ),
         kind: "plugin",
     };
     let coding = Target {
@@ -26,11 +30,11 @@ pub async fn choose(text: &str, settings: &Settings) -> Target {
     };
     let everyday = Target {
         harness: settings.routing.routine.clone(),
-        model: settings
-            .routing
-            .routine_model
-            .clone()
-            .or_else(|| settings.model.clone()),
+        model: slot_model(
+            settings,
+            &settings.routing.routine,
+            settings.routing.routine_model.clone(),
+        ),
         kind: "everyday",
     };
     let jev = jev_available();
@@ -46,6 +50,17 @@ pub async fn choose(text: &str, settings: &Settings) -> Target {
         "plugin" => plugin,
         "coding" => coding,
         _ => everyday,
+    }
+}
+
+fn slot_model(settings: &Settings, harness: &str, own: Option<String>) -> Option<String> {
+    if own.is_some() {
+        return own;
+    }
+    if harness == settings.routing.coding {
+        settings.model.clone()
+    } else {
+        None
     }
 }
 

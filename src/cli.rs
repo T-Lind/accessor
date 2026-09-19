@@ -5,7 +5,7 @@ use crate::{
 };
 use anyhow::{ensure, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use dialoguer::{Input, Password, Select};
+use dialoguer::{Input, Select};
 use std::{ffi::OsString, path::PathBuf, time::Instant};
 
 #[derive(Parser)]
@@ -37,6 +37,12 @@ enum Commands {
     },
     /// Check local dependencies without opening the microphone.
     Doctor,
+    /// Check Codex / Claude Code / Antigravity CLI versions and apply updates.
+    Update {
+        /// Print versions only; do not install.
+        #[arg(long)]
+        check: bool,
+    },
     /// List available microphones.
     Devices,
     /// Test local speech recognition without contacting an agent.
@@ -123,7 +129,12 @@ pub struct Run {
 enum ConfigCommand {
     Show,
     Path,
-    Set { key: String, value: String },
+    /// Print the settings folder and what to copy to another machine.
+    Locations,
+    Set {
+        key: String,
+        value: String,
+    },
 }
 #[derive(Subcommand)]
 enum SttCommand {
@@ -268,9 +279,21 @@ pub async fn entry() -> Result<()> {
                 println!("{}", config::path()?.display());
                 Ok(())
             }
+            ConfigCommand::Locations => {
+                println!("{}", config::locations(&Settings::load()?));
+                Ok(())
+            }
             ConfigCommand::Set { key, value } => Settings::load()?.set(&key, &value),
         },
         Commands::Doctor => doctor(),
+        Commands::Update { check } => {
+            let text = crate::updates::report(&Settings::load()?, !check).await?;
+            print!("{text}");
+            if !text.ends_with('\n') {
+                println!();
+            }
+            Ok(())
+        }
         Commands::Transcribe { file, model_dir } => transcribe(file, model_dir),
         Commands::Stt {
             action:
@@ -359,11 +382,9 @@ pub async fn entry() -> Result<()> {
         Commands::Agent { args } => connectors::delegate(&args).await,
         Commands::Jev { action } => match action {
             JevCommand::Key => {
-                let key = Password::new()
-                    .with_prompt(
-                        "TypeSafe API key (saved in OS credential store, not settings.json)",
-                    )
-                    .interact()?;
+                let key = read_secret_line(
+                    "TypeSafe API key (saved in the OS credential store, not settings.json)",
+                )?;
                 config::save_secret("typesafe", &key)?;
                 println!("Saved. In Accessor: Harnesses → Jev auto-select on, or Router → jev.");
                 Ok(())
@@ -431,9 +452,7 @@ fn tts_setup() -> Result<()> {
             .interact_text()?;
         println!("One-time local install: python scripts/setup_tts.py\nVoice list: acc tts voices --provider kokoro");
     } else if n == 2 {
-        let key = Password::new()
-            .with_prompt("Cartesia API key (saved in OS credential store)")
-            .interact()?;
+        let key = read_secret_line("Cartesia API key (saved in the OS credential store)")?;
         config::save_secret("cartesia", &key)?;
         s.tts.voice = Input::new()
             .with_prompt("Cartesia voice ID")
@@ -448,6 +467,29 @@ fn tts_setup() -> Result<()> {
     s.save()?;
     println!("Saved. Try acc tts test.");
     Ok(())
+}
+fn read_secret_line(prompt: &str) -> Result<String> {
+    use std::io::{self, IsTerminal, Read, Write};
+    if !io::stdin().is_terminal() {
+        let mut buf = String::new();
+        io::stdin().read_to_string(&mut buf)?;
+        let key = buf
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or("");
+        ensure!(!key.is_empty(), "No key on stdin");
+        return Ok(key.into());
+    }
+    println!("{prompt}");
+    println!("Paste the key, then Enter. Ctrl+Shift+V / Shift+Insert work in most terminals.");
+    print!("key: ");
+    io::stdout().flush()?;
+    let mut line = String::new();
+    io::stdin().read_line(&mut line)?;
+    let key = line.trim();
+    ensure!(!key.is_empty(), "Empty key");
+    Ok(key.into())
 }
 fn doctor() -> Result<()> {
     let s = Settings::load()?;
@@ -516,7 +558,8 @@ fn doctor() -> Result<()> {
             "missing — acc jev key, or set TYPESAFE_API_KEY"
         }
     );
-    println!("Agent integrations: acc connectors status\nMicrophones: acc devices\nNo microphone was opened and no provider request was sent.");
+    println!("Agent integrations: acc connectors status\nMicrophones: acc devices\nHarness updates: acc update   (acc update --check for versions only)\nNo microphone was opened and no provider request was sent.");
+    println!("\n{}", config::locations(&s));
     Ok(())
 }
 #[cfg(test)]

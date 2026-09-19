@@ -1,8 +1,8 @@
 use anyhow::Result;
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
-        MouseEventKind,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind,
     },
     execute,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
@@ -58,7 +58,12 @@ impl Ui {
     pub fn new(plain: bool) -> Result<Self> {
         let terminal = if !plain && io::stdout().is_terminal() && io::stdin().is_terminal() {
             terminal::enable_raw_mode()?;
-            if let Err(e) = execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture) {
+            if let Err(e) = execute!(
+                io::stdout(),
+                EnterAlternateScreen,
+                EnableMouseCapture,
+                EnableBracketedPaste
+            ) {
                 let _ = terminal::disable_raw_mode();
                 return Err(e.into());
             }
@@ -97,19 +102,36 @@ impl Ui {
     pub fn secret(&mut self, enabled: bool) {
         self.secret = enabled;
         self.input.clear();
+        if self.interactive() {
+            if enabled {
+                let _ = execute!(io::stdout(), DisableMouseCapture);
+            } else {
+                let _ = execute!(io::stdout(), EnableMouseCapture);
+            }
+        }
         self.dirty = true;
     }
     pub fn suspend(&mut self) -> Result<()> {
         if self.interactive() {
             terminal::disable_raw_mode()?;
-            execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen)?;
+            execute!(
+                io::stdout(),
+                DisableBracketedPaste,
+                DisableMouseCapture,
+                LeaveAlternateScreen
+            )?;
         }
         Ok(())
     }
     pub fn resume(&mut self) -> Result<()> {
         if let Some(t) = &mut self.terminal {
             terminal::enable_raw_mode()?;
-            execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+            execute!(
+                io::stdout(),
+                EnterAlternateScreen,
+                EnableMouseCapture,
+                EnableBracketedPaste
+            )?;
             t.clear()?;
         }
         self.dirty = true;
@@ -171,17 +193,38 @@ impl Ui {
         if !self.interactive() {
             return Ok(None);
         }
-        for _ in 0..32 {
+        for _ in 0..1024 {
             if !event::poll(Duration::ZERO)? {
                 break;
             }
             match event::read()? {
+                Event::Paste(text) => {
+                    apply_paste(&mut self.input, &text);
+                    self.menu_index = 0;
+                    self.dirty = true;
+                }
                 Event::Key(k) if k.kind != KeyEventKind::Release => {
                     self.dirty = true;
                     match k.code {
                         KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
                             return Ok(Some("/quit".into()))
                         }
+                        KeyCode::Char('v')
+                            if k.modifiers
+                                .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER) =>
+                        {
+                            if let Some(text) = clipboard_text() {
+                                apply_paste(&mut self.input, &text);
+                                self.menu_index = 0;
+                            }
+                        }
+                        KeyCode::Insert if k.modifiers.contains(KeyModifiers::SHIFT) => {
+                            if let Some(text) = clipboard_text() {
+                                apply_paste(&mut self.input, &text);
+                                self.menu_index = 0;
+                            }
+                        }
+                        KeyCode::Char(_) if k.modifiers.contains(KeyModifiers::CONTROL) => {}
                         KeyCode::Enter => {
                             if self.settings.is_some() && self.input.is_empty() && !self.secret {
                                 return Ok(Some("/settings-nav enter".into()));
@@ -297,13 +340,14 @@ impl Ui {
             ])
             .split(f.area());
             let color = status_color(&self.status);
+            let border = Style::default().fg(color);
             f.render_widget(
                 Paragraph::new(self.status.clone())
                     .style(Style::default().fg(color))
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
-                            .border_style(Style::default().fg(color))
+                            .border_style(border)
                             .title(" ACCESSOR · voice & agents "),
                     ),
                 layout[0],
@@ -353,8 +397,12 @@ impl Ui {
                 " Activity · mouse wheel or PgUp/PgDn "
             };
             f.render_widget(
-                Paragraph::new(visual[start..end].to_vec())
-                    .block(Block::default().borders(Borders::ALL).title(title)),
+                Paragraph::new(visual[start..end].to_vec()).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(border)
+                        .title(title),
+                ),
                 layout[1],
             );
             f.render_widget(
@@ -367,8 +415,9 @@ impl Ui {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
+                        .border_style(border)
                         .title(if self.secret {
-                            " Cartesia API key · hidden · Esc cancels "
+                            " Secret · paste (Ctrl+Shift+V / Shift+Insert) · Enter saves · Esc cancels "
                         } else {
                             " Message or / command · Tab completes · Enter sends "
                         }),
@@ -377,7 +426,7 @@ impl Ui {
             );
             f.render_widget(
                 Paragraph::new(" Esc cancel  ·  /sleep  ·  /mute  ·  /approve N  ·  Ctrl+C quit ")
-                    .style(Style::default().fg(Color::DarkGray)),
+                    .style(Style::default().fg(color)),
                 layout[3],
             );
             if !self.secret {
@@ -408,6 +457,7 @@ impl Ui {
                             .block(
                                 Block::default()
                                     .borders(Borders::ALL)
+                                    .border_style(border)
                                     .title(" Commands · ↑/↓ choose · Enter opens · Tab completes "),
                             ),
                         popup,
@@ -474,18 +524,63 @@ fn styled_entry(entry: &Entry, width: usize) -> Vec<Line<'static>> {
 impl Drop for Ui {
     fn drop(&mut self) {
         if self.terminal.is_some() {
+            let _ = execute!(
+                io::stdout(),
+                DisableBracketedPaste,
+                DisableMouseCapture,
+                LeaveAlternateScreen
+            );
             let _ = terminal::disable_raw_mode();
-            let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
         }
     }
+}
+fn apply_paste(input: &mut String, pasted: &str) {
+    let chunk = pasted.lines().next().unwrap_or(pasted).trim();
+    for c in chunk.chars() {
+        if !c.is_control() && input.len() < 4096 {
+            input.push(c);
+        }
+    }
+}
+fn clipboard_text() -> Option<String> {
+    let candidates: &[&[&str]] = if cfg!(windows) {
+        &[&[
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Get-Clipboard",
+        ]]
+    } else if cfg!(target_os = "macos") {
+        &[&["pbpaste"]]
+    } else {
+        &[
+            &["wl-paste", "-n"],
+            &["xclip", "-selection", "clipboard", "-o"],
+            &["xsel", "-ob"],
+        ]
+    };
+    for args in candidates {
+        let (bin, rest) = args.split_first()?;
+        let output = std::process::Command::new(bin).args(rest).output().ok()?;
+        if !output.status.success() {
+            continue;
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        let text = text.lines().next().unwrap_or("").trim();
+        if !text.is_empty() {
+            return Some(text.to_string());
+        }
+    }
+    None
 }
 fn status_color(status: &str) -> Color {
     if status.contains("SPEAKING") {
         Color::Magenta
-    } else if status.contains("AMBER") {
+    } else if status.contains("AMBER") || status.contains("SETTINGS") {
         Color::Yellow
     } else if status.contains("BLUE") {
-        Color::Cyan
+        Color::Blue
     } else if status.contains("GREEN") {
         Color::Green
     } else {
@@ -502,6 +597,13 @@ mod tests {
             Color::Magenta
         );
         assert_eq!(status_color("GREEN: conversation open"), Color::Green);
-        assert_eq!(status_color("BLUE: agent working"), Color::Cyan);
+        assert_eq!(status_color("BLUE: agent working"), Color::Blue);
+        assert_eq!(status_color("SETTINGS: mic paused"), Color::Yellow);
+    }
+    #[test]
+    fn paste_takes_one_trimmed_line() {
+        let mut input = String::new();
+        apply_paste(&mut input, "  sk-test-key\nignored\n");
+        assert_eq!(input, "sk-test-key");
     }
 }

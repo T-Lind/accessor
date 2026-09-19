@@ -152,7 +152,7 @@ class SmokeTests(unittest.TestCase):
         app.expect("Loaded 2 available Codex models")
         app.send("3")
         app.expect("HARNESSES")
-        app.send("3")
+        app.send("4")
         app.expect("Fixture Astra")
         app.send("1")
         app.expect("Saved model: fixture-astra")

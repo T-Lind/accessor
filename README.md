@@ -40,9 +40,11 @@ acc config set microphone "Microphone device name"
 acc connectors status
 acc connectors setup
 acc agent login
+acc update
+acc config locations
 ```
 
-`acc` starts listening using saved settings. `acc -wakecode 29 speak` and `acc run --wake-code 29 --speak` are equivalent. Settings live in the OS user configuration directory shown by `acc config path`. `ACC_HOME` selects a different settings/event directory; `ACC_ASSETS` selects a model/runtime directory. Credentials are never stored in config.json.
+`acc` starts listening using saved settings. `acc -wakecode 29 speak` and `acc run --wake-code 29 --speak` are equivalent. Settings live in the OS user configuration directory shown by `acc config path` and `acc config locations`. `ACC_HOME` selects a different settings/event directory; `ACC_ASSETS` selects a model/runtime directory. Credentials are never stored in config.json.
 
 Interactive terminals use a fixed dashboard with status, a bounded conversation area, and a command field. Status changes update in place. Type `/` to open the command menu, filter by typing, use arrows to choose, and press Enter or Tab. You can type ordinary messages directly to the agent without a voice wake code (except in `--text` transcript simulation mode).
 
@@ -60,6 +62,8 @@ Everything needed day to day is available inside the screen:
 | `/devices` | List microphones in the conversation area |
 | `/connectors` | Check the agent's connected apps |
 | `/connectors setup`, `/agent` | Open Codex's native UI for account/plugin setup; exit it to return |
+| `/update` | Check Codex / Claude Code / Antigravity and apply CLI updates |
+| `/config locations` | Show the settings folder to copy to another machine |
 | `/events` | Inspect the local event queue |
 
 Wake, timeout, speech, and voice changes take effect immediately. Microphone, asset path, and Codex executable changes require restart. If speech/model initialization fails, the dashboard remains open for typed messages and setup. Page Up/Down scroll the conversation; Escape cancels a task. Use `--plain` for ordinary terminal output; pipes automatically use plain mode. Plain status lines print only when status changes. The dashboard is not saved as a transcript log.
@@ -68,7 +72,7 @@ Wake, timeout, speech, and voice changes take effect immediately. Microphone, as
 
 Open `/settings` for a category menu (Voice, Speech, Harnesses, Display, Tests). **↑/↓** moves, **Enter** opens or toggles, **Esc** goes up one level. Typed `/settings KEY VALUE` still works for scripts. Changes persist and apply immediately. The status bar always shows the live **harness · model** and a short identity code (`X S` Codex Sol, `C F` Claude Fable, `A F` Antigravity Flash).
 
-**Harnesses:** **Plugin** is the CLI with Gmail/Calendar/Docs connectors. **Coding** is repos and tests. **Everyday** is general chat. Router `keywords` or `jev` (TypeSafe; `/jev key` or `TYPESAFE_API_KEY`) picks among those three per turn. `off` always uses everyday. Enable **Jev auto-select** to use Jev whenever a TypeSafe key is present. Approvals default to Codex `auto_review`. After wake, conversation STT can stay on local Canary or switch to Cartesia Ink-2.
+**Harnesses:** **Plugin** is the CLI with Gmail/Calendar/Docs connectors. **Coding** is repos and tests. **Everyday** is general chat. Each role has its own **model list for that CLI** (Everyday = Antigravity shows Gemini, not the Codex catalog). Router `keywords` or `jev` (TypeSafe; `/jev key` or `TYPESAFE_API_KEY`) picks among those three per turn. `off` always uses everyday. Paste API keys with Ctrl+Shift+V / Shift+Insert, or `printf '%s' "$KEY" | acc jev key`. Enable **Jev auto-select** to use Jev whenever a TypeSafe key is present.
 
 Model discovery reads the selected Codex installation's account catalog without running an LLM. `/settings refresh` refreshes it; the last successful list is cached for offline display.
 

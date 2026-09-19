@@ -33,7 +33,7 @@ Settings → **Harnesses**:
 
 - **Plugin** — CLI that holds Gmail, Calendar, Docs, and other connectors. Used when the turn needs those apps.
 - **Coding** — repos, diffs, tests, refactors (typically Codex).
-- **Everyday** — general chat: time, planning, questions that are not code and not a plugin.
+- **Everyday** — general chat: time, planning, questions that are not code and not a plugin. Its model picker lists **that CLI's** models (Gemini if everyday is Antigravity).
 - **Router** — `off` (always everyday), `keywords`, or `jev`.
 
 `jev` is **TypeSafe Jev**: a System One *evaluator*, not a chat model. It returns typed choices/probabilities in ~100ms. Accessor asks plugin vs coding vs everyday. That selects the harness for that slot. It does not invent a free-form model id.
@@ -59,6 +59,12 @@ TTS sanitizes markdown/symbols (pipes become a comma, not “vertical bar”) an
 
 The **plugin harness** (`agent`) is the connector CLI. **Everyday** is general chat (router `off` uses it). **Coding** is engineering.
 
+`acc update` (or `/update` in the dashboard) runs each **found** harness's own updater: `codex update`, `claude update`, `agy update`. `/update check` and `acc update --check` only print `--version`. Accessor closes warm harness sessions first so Windows can replace the binary. Restart Accessor afterward. Mock is skipped.
+
+### Copying this machine to another
+
+`acc config locations` prints the folder to copy. On Windows that is typically `%APPDATA%\Accessor` (Roaming). It holds `config.json` plus optional `analytics.json`, `models.json`, `tts-cache/`, and `events/`. Secrets are **not** in that folder — they live in the OS credential store (Windows Credential Manager, service `Accessor`). Re-enter `acc tts key`, `acc jev key`, and any AI Gateway key on the new machine. Speech models live under the assets directory (`ACC_ASSETS` or `assets-dir` in config); copy that too or re-run `python scripts/setup_speech.py`. Codex / Claude / agy installs and their plugin logins stay with those CLIs.
+
 Handoff: say “switch to Codex” (or “switch agent to claude”) to pin **this conversation** to that CLI. A running harness can also emit `ACCESSOR_SWITCH harness=codex` (optional `model=…`) or JSON `{"accessor_switch":{"harness":"codex"}}` after seeing the available CLI list in its instructions. That pins the live session; it does **not** rewrite the plugin/coding/everyday slots. Free-form agent claims do not change settings. Say “switch to plugin” to jump to the connector CLI.
 
 Saved **voice metaprompt** (`prompt`) is sent to Codex, Claude, and Antigravity. `/config set prompt default` restores the hands-free default. It persists in `config.json`.
@@ -71,7 +77,7 @@ Saved **voice metaprompt** (`prompt`) is sent to Codex, Claude, and Antigravity.
 
 Antigravity (`agy`) is driven with `--input-format stream-json`: each turn is `{"event":"user","message":{"content":"..."}}`. Replies come from `event: result` → `result.response`. If no model is set, Accessor passes **`gemini-3.8-flash`**. Accessor pipes harness stderr into Activity (auth/login/errors) and treats a process exit while BLUE as a visible failure instead of hanging. Look for `agy.exe` under `%LOCALAPPDATA%\agy\bin` if it is not on PATH.
 
-Settings → Voice: **think warble**, **wake chime**, and **sleep chime** volumes (0 silent, 1 default). The warble plays while BLUE and stops when speech starts or you barge in. The ACCESSOR chrome turns **purple** while TTS is playing. Activity scrolls with the **mouse wheel** as well as PgUp/PgDn.
+Settings → Voice: **think warble**, **wake chime**, and **sleep chime** volumes (0 silent, 1 default). The warble plays while BLUE and stops when speech starts or you barge in. Status chrome — every box outline on the page — is **green** while the conversation is open, **blue** while the agent works, and **purple** while TTS is speaking. Activity scrolls with the **mouse wheel** as well as PgUp/PgDn.
 
 ### Caching
 

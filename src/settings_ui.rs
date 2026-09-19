@@ -185,13 +185,21 @@ fn rows(page: Page, s: &Settings, connected: bool) -> Vec<Row> {
                 Action::Edit("agent"),
             ),
             row(
+                "Plugin model",
+                s.routing
+                    .plugin_model
+                    .as_deref()
+                    .unwrap_or("harness default"),
+                Action::Edit("routing.plugin-model"),
+            ),
+            row(
                 "Coding harness",
                 &harness_label(s, &s.routing.coding),
                 Action::Edit("routing.coding"),
             ),
             row(
                 "Coding model",
-                s.model.as_deref().unwrap_or("agent default"),
+                s.model.as_deref().unwrap_or("harness default"),
                 Action::Edit("model"),
             ),
             row(
@@ -204,7 +212,7 @@ fn rows(page: Page, s: &Settings, connected: bool) -> Vec<Row> {
                 s.routing
                     .routine_model
                     .as_deref()
-                    .unwrap_or("same as coding"),
+                    .unwrap_or("harness default"),
                 Action::Edit("routing.routine-model"),
             ),
             row(
@@ -283,6 +291,11 @@ fn rows(page: Page, s: &Settings, connected: bool) -> Vec<Row> {
                 "lifetime + past week",
                 Action::Run("/analytics"),
             ),
+            row(
+                "Harness updates",
+                "check Codex / Claude / agy",
+                Action::Run("/update"),
+            ),
         ],
     }
 }
@@ -349,9 +362,14 @@ fn hint(action: &Action) -> &'static str {
         Action::Edit("routing.routine") => {
             "Everyday CLI for general chat: time, planning, questions that are not code and not a plugin."
         }
-        Action::Edit("model") => "Model id for the coding harness. 0 leaves the CLI default.",
+        Action::Edit("model") => {
+            "Models for the coding CLI. Antigravity lists Gemini; Codex uses its account catalog."
+        }
+        Action::Edit("routing.plugin-model") => {
+            "Models for the plugin CLI — the list matches that harness, not the coding one."
+        }
         Action::Edit("routing.routine-model") => {
-            "Optional different model for the everyday harness."
+            "Models for the everyday CLI. If everyday is Antigravity, this is Gemini/Claude, not Codex."
         }
         Action::Edit("routing.compaction-harness") => {
             "Pick Gateway or an installed harness, then a model from that provider. Uninstalled CLIs are omitted."
@@ -392,6 +410,9 @@ fn hint(action: &Action) -> &'static str {
         Action::Run("/analytics") => {
             "Show lifetime and past-week calls, including Jev, with estimated cost bars."
         }
+        Action::Run("/update") => {
+            "Run each found harness's own updater (codex update, claude update, agy update). /update check only prints versions."
+        }
         Action::Close => "Leave settings and unmute the microphone.",
         _ => "Enter to change this setting. Esc goes back.",
     }
@@ -415,10 +436,37 @@ fn prompt_preview(prompt: &str) -> String {
         format!("{}…", one.chars().take(41).collect::<String>())
     }
 }
-fn compaction_models(harness: &str, models: &[Model]) -> Vec<Model> {
+fn model_picker(key: &str, s: &Settings, discovered: &[Model]) -> String {
+    let (role, harness) = match key {
+        "routing.plugin-model" => ("Plugin", s.agent.as_str()),
+        "routing.routine-model" => ("Everyday", s.routing.routine.as_str()),
+        _ => ("Coding", s.routing.coding.as_str()),
+    };
+    let catalog = harness_models(harness, discovered);
+    let list = if catalog.is_empty() {
+        "(no catalog for this CLI — type an id, or 0 for default)".to_string()
+    } else {
+        catalog
+            .iter()
+            .enumerate()
+            .map(|(i, m)| format!("{}  {} ({})", i + 1, m.name, m.id))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    format!("{role} model for {harness} · 0 = harness default\n{list}\nType a number or id. Esc returns.")
+}
+fn catalog_for_key(key: &str, s: &Settings, discovered: &[Model]) -> Vec<Model> {
+    let harness = match key {
+        "routing.plugin-model" => s.agent.as_str(),
+        "routing.routine-model" => s.routing.routine.as_str(),
+        _ => s.routing.coding.as_str(),
+    };
+    harness_models(harness, discovered)
+}
+fn harness_models(harness: &str, discovered: &[Model]) -> Vec<Model> {
     match harness {
         "codex" => {
-            let mut list = models.to_vec();
+            let mut list = discovered.to_vec();
             for id in ["gpt-5.6-luna", "gpt-5.4-sol"] {
                 if !list.iter().any(|m| m.id == id) {
                     list.push(Model {
@@ -453,6 +501,7 @@ fn compaction_models(harness: &str, models: &[Model]) -> Vec<Model> {
             name: id.into(),
         })
         .collect(),
+        "mock" => Vec::new(),
         _ => [
             "google/gemini-3.5-flash",
             "google/gemini-3-flash",
@@ -468,6 +517,9 @@ fn compaction_models(harness: &str, models: &[Model]) -> Vec<Model> {
         })
         .collect(),
     }
+}
+fn compaction_models(harness: &str, models: &[Model]) -> Vec<Model> {
+    harness_models(harness, models)
 }
 fn compaction_providers(s: &Settings) -> Vec<(&'static str, &'static str)> {
     let mut list = Vec::new();
@@ -597,15 +649,9 @@ impl Panel {
     pub fn display(&self, s: &Settings, connected: bool, models: &[Model]) -> String {
         if let Some(key) = self.field {
             return match key {
-                "model" => format!(
-                    "Coding model · 0 = agent default\n{}\nType a number or id. Esc returns.",
-                    models
-                        .iter()
-                        .enumerate()
-                        .map(|(i, m)| format!("{}  {} ({})", i + 1, m.name, m.id))
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                ),
+                "model" | "routing.plugin-model" | "routing.routine-model" => {
+                    model_picker(key, s, models)
+                }
                 "agent" | "routing.coding" | "routing.routine" => {
                     let mut text = String::from(
                         "CLIs Accessor found on this machine (type a number or id):\n",
@@ -661,9 +707,6 @@ impl Panel {
                 "tts.speed" => "Speed 0.6–1.5. Esc returns.".into(),
                 "sounds.think" | "sounds.wake" | "sounds.sleep" => {
                     "Volume 0–1.5 (or 0–150%). 0 is silent, 1 is default. Esc returns.".into()
-                }
-                "routing.routine-model" => {
-                    "Model id, or default. Esc returns.".into()
                 }
                 "stt.engine" => engine_picker(s),
                 _ => format!("Enter a new value for {key}. Esc returns."),
@@ -797,9 +840,14 @@ impl Panel {
                         anyhow::bail!("Choose a listed compaction provider.");
                     }
                 }
-                "model" => resolve_model(value, models).ok_or_else(|| {
-                    anyhow::anyhow!("Choose an available model; /settings refresh reloads it.")
-                })?,
+                "model" | "routing.plugin-model" | "routing.routine-model" => {
+                    let catalog = catalog_for_key(key, s, models);
+                    resolve_model(value, &catalog).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Choose a listed model for this harness, or 0 for the harness default."
+                        )
+                    })?
+                }
                 "routing.compaction-model" => {
                     let catalog = compaction_models(&s.routing.compaction_harness, models);
                     resolve_model(value, &catalog)
@@ -855,22 +903,44 @@ pub fn resolve_model(value: &str, models: &[Model]) -> Option<String> {
         return models.get(index.checked_sub(1)?).map(|m| m.id.clone());
     }
     let needle = normalized(value);
-    let candidates: Vec<_> = models
-        .iter()
-        .filter(|m| {
-            normalized(&m.id) == needle
-                || normalized(&m.name) == needle
-                || m.id
-                    .rsplit('-')
+    let pick = |ok: Vec<&Model>| {
+        if ok.len() == 1 {
+            Some(ok[0].id.clone())
+        } else {
+            None
+        }
+    };
+    if let Some(id) = pick(
+        models
+            .iter()
+            .filter(|m| normalized(&m.id) == needle || normalized(&m.name) == needle)
+            .collect(),
+    ) {
+        return Some(id);
+    }
+    if let Some(id) = pick(
+        models
+            .iter()
+            .filter(|m| {
+                m.name
+                    .split_whitespace()
+                    .last()
+                    .is_some_and(|w| normalized(w) == needle)
+            })
+            .collect(),
+    ) {
+        return Some(id);
+    }
+    pick(
+        models
+            .iter()
+            .filter(|m| {
+                m.id.rsplit(['-', '/', '.'])
                     .next()
                     .is_some_and(|s| normalized(s) == needle)
-        })
-        .collect();
-    if candidates.len() == 1 {
-        Some(candidates[0].id.clone())
-    } else {
-        None
-    }
+            })
+            .collect(),
+    )
 }
 fn engine_label(s: &Settings) -> String {
     let Some(offer) = crate::stt_models::get(&s.stt.engine) else {
@@ -998,7 +1068,23 @@ pub fn voice_command(
         .strip_prefix("switch model to ")
         .or_else(|| text.strip_prefix("use model "))
     {
-        return Some(resolve_model(value,models).map(|v|("model".into(),v)).ok_or_else(||anyhow::anyhow!("That model is not in the available list. Open /settings to select or refresh models.")));
+        let catalog = if let Some(s) = settings {
+            let mut list = harness_models(&s.routing.coding, models);
+            for extra in [
+                harness_models(&s.agent, models),
+                harness_models(&s.routing.routine, models),
+            ] {
+                for m in extra {
+                    if !list.iter().any(|x| x.id == m.id) {
+                        list.push(m);
+                    }
+                }
+            }
+            list
+        } else {
+            models.to_vec()
+        };
+        return Some(resolve_model(value, &catalog).map(|v|("model".into(),v)).ok_or_else(||anyhow::anyhow!("That model is not in the available list. Open /settings to select or refresh models.")));
     }
     if let Some(value) = extract_harness_request(&text, settings) {
         return Some(value);
@@ -1054,6 +1140,17 @@ mod tests {
                 .unwrap(),
             ("routing.reasoning".into(), "high".into())
         );
+        let mixed = vec![
+            Model {
+                id: "fixture-sol".into(),
+                name: "Fixture Sol".into(),
+            },
+            Model {
+                id: "gpt-5.4-sol".into(),
+                name: "gpt-5.4-sol".into(),
+            },
+        ];
+        assert_eq!(resolve_model("Sol", &mixed).as_deref(), Some("fixture-sol"));
     }
     #[test]
     fn arrows_open_voice_and_toggle_wake() {
@@ -1092,5 +1189,24 @@ mod tests {
             panic!("esc list");
         };
         assert!(speech.display(&s, false, &[]).contains("Canary 180M Flash"));
+    }
+    #[test]
+    fn everyday_antigravity_lists_gemini_not_codex_catalog() {
+        let s = Settings {
+            routing: crate::config::Routing {
+                routine: "antigravity".into(),
+                ..crate::config::Routing::default()
+            },
+            ..Settings::default()
+        };
+        let text = model_picker("routing.routine-model", &s, &[]);
+        assert!(text.contains("Everyday model for antigravity"));
+        assert!(text.contains("gemini-3.8-flash"));
+        assert!(!text.contains("fixture-astra"));
+        let chosen = catalog_for_key("routing.routine-model", &s, &[]);
+        assert_eq!(
+            resolve_model("1", &chosen).as_deref(),
+            Some("gemini-3.8-flash")
+        );
     }
 }

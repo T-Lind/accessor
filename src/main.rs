@@ -15,6 +15,7 @@ mod speech;
 mod stt_models;
 mod triggers;
 mod ui;
+mod updates;
 mod usage;
 mod wake;
 pub enum Input {

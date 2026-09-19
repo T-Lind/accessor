@@ -429,6 +429,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                             }
                             LocalCommand::Help=>ui.message(crate::dashboard::help()),
                             LocalCommand::Config=>ui.message(crate::dashboard::summary(&settings)),
+                            LocalCommand::Locations=>ui.message(crate::config::locations(&settings)),
                             LocalCommand::Tts=>ui.message(crate::dashboard::tts_help(&settings)),
                             LocalCommand::Setup=>{
                                 if busy || speaker.is_some() {ui.message("Cancel or finish the current task/playback before setup.");continue;}
@@ -440,9 +441,9 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 if busy || speaker.is_some() {ui.message("Cancel or finish the current task/playback before entering a key.");continue;}
                                 pending_secret=Some(name);ui.secret(true);muted.store(true,Ordering::SeqCst);epoch.fetch_add(1,Ordering::SeqCst);
                                 ui.message(if name=="typesafe" {
-                                    "Enter the TypeSafe API key below. It is hidden; Escape cancels. It is stored in Windows Credential Manager, not settings.json."
+                                    "Paste the TypeSafe API key (Ctrl+Shift+V / Shift+Insert), then Enter. Esc cancels. Stored in the OS credential store, not settings.json. Or: printf '%s' KEY | acc jev key"
                                 } else {
-                                    "Enter the Cartesia API key below. It is hidden; Escape cancels."
+                                    "Paste the Cartesia API key (Ctrl+Shift+V / Shift+Insert), then Enter. Esc cancels. Or: printf '%s' KEY | acc tts key"
                                 });
                             }
                             LocalCommand::Set(key,value)=>{
@@ -580,6 +581,28 @@ pub async fn run(mut args: Run) -> Result<()> {
                                     }
                                     Err(e)=>ui.message(format!("Could not compact: {e:#}")),
                                 }
+                            }
+                            LocalCommand::Update { check }=>{
+                                if utility.is_some() {ui.message("A diagnostic is already running; /cancel stops it.");continue;}
+                                if !check && busy {
+                                    ui.message("Cancel the current turn first, then /update. Updating a CLI while it is working can fail.");
+                                    continue;
+                                }
+                                if !check && !agents.is_empty() {
+                                    for (_, live) in agents.drain() {
+                                        let _=live.tx.try_send(agent::CommandMessage::Shutdown);
+                                        live.task.abort();
+                                    }
+                                    agent_tx=None; connected=false;
+                                    ui.message("Closed warm harness sessions so their CLIs can be replaced.");
+                                }
+                                ui.message(if check {
+                                    "Checking harness versions..."
+                                } else {
+                                    "Checking harness updates and applying them if the CLI supports it..."
+                                });
+                                let snapshot=settings.clone();
+                                utility=Some(tokio::spawn(async move { crate::updates::report(&snapshot, !check).await }));
                             }
                         }
                         continue;
