@@ -312,7 +312,9 @@ struct Utterance {
     at: Instant,
 }
 
-/// Fixed-memory utterance segmentation: 320ms pre-roll, 384ms trailing silence.
+const END_SILENCE_SAMPLES: usize = 10_240;
+
+/// Fixed-memory utterance segmentation: 320ms pre-roll, 640ms trailing silence.
 /// Discard overlong speech rather than executing a truncated command.
 struct Segmenter {
     before: VecDeque<f32>,
@@ -354,7 +356,7 @@ impl Segmenter {
             self.current.clear();
             self.overflow = true;
         }
-        if self.silence >= 6_144 {
+        if self.silence >= END_SILENCE_SAMPLES {
             let result = if !self.overflow && self.voiced >= 1536 {
                 Some(std::mem::take(&mut self.current))
             } else {
@@ -1227,7 +1229,7 @@ mod tests {
         for _ in 0..40 {
             result = s.push(&f, false).or(result);
         }
-        assert!(result.unwrap().len() >= 5120 + 9 * 256 + 6144);
+        assert!(result.unwrap().len() >= 5120 + 9 * 256 + END_SILENCE_SAMPLES);
     }
     #[test]
     fn overlong_commands_are_discarded() {

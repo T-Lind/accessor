@@ -316,11 +316,6 @@ pub async fn run(mut args: Run) -> Result<()> {
                     Input::Activity { epoch: e } => {
                         if e==epoch.load(Ordering::SeqCst) && !muted.load(Ordering::SeqCst) && !user_muted {
                             session.touch(Instant::now());
-                            if settings.barge_in {
-                                if think.is_some() && (busy || session.active()) {
-                                    think=None;
-                                }
-                            }
                         }
                         continue;
                     }
