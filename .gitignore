@@ -1,0 +1,9 @@
+/target/
+/models/
+/runtime/
+/scratch/
+*.part
+.env*
+__pycache__/
+*.pyc
+
