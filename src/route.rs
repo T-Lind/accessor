@@ -13,14 +13,15 @@ pub fn jev_available() -> bool {
     crate::config::optional_secret("typesafe", "TYPESAFE_API_KEY").is_some()
 }
 
-pub async fn choose(text: &str, settings: &Settings) -> Target {
+pub async fn choose(
+    text: &str,
+    history: &[(String, String)],
+    previous: Option<&Target>,
+    settings: &Settings,
+) -> Target {
     let plugin = Target {
         harness: settings.agent.clone(),
-        model: slot_model(
-            settings,
-            &settings.agent,
-            settings.routing.plugin_model.clone(),
-        ),
+        model: settings.routing.plugin_model.clone(),
         kind: "plugin",
     };
     let coding = Target {
@@ -30,11 +31,7 @@ pub async fn choose(text: &str, settings: &Settings) -> Target {
     };
     let everyday = Target {
         harness: settings.routing.routine.clone(),
-        model: slot_model(
-            settings,
-            &settings.routing.routine,
-            settings.routing.routine_model.clone(),
-        ),
+        model: settings.routing.routine_model.clone(),
         kind: "everyday",
     };
     let jev = jev_available();
@@ -46,31 +43,34 @@ pub async fn choose(text: &str, settings: &Settings) -> Target {
     if router == "off" {
         return everyday;
     }
-    match classify(text, router, jev).await {
+    match classify(
+        text,
+        history,
+        previous.map(|target| target.kind),
+        router,
+        jev,
+    )
+    .await
+    {
         "plugin" => plugin,
         "coding" => coding,
         _ => everyday,
     }
 }
 
-fn slot_model(settings: &Settings, harness: &str, own: Option<String>) -> Option<String> {
-    if own.is_some() {
-        return own;
-    }
-    if harness == settings.routing.coding {
-        settings.model.clone()
-    } else {
-        None
-    }
-}
-
-async fn classify(text: &str, router: &str, jev: bool) -> &'static str {
+async fn classify(
+    text: &str,
+    history: &[(String, String)],
+    previous: Option<&'static str>,
+    router: &str,
+    jev: bool,
+) -> &'static str {
     if router == "jev" && jev {
-        if let Ok(kind) = jev_route(text).await {
+        if let Ok(kind) = jev_route(text, history, previous).await {
             return kind;
         }
     }
-    keyword_route(text)
+    keyword_route(text, previous)
 }
 
 pub fn keyword_is_plugin(text: &str) -> bool {
@@ -127,29 +127,69 @@ pub fn keyword_is_coding(text: &str) -> bool {
     .any(|k| t.contains(k))
 }
 
-fn keyword_route(text: &str) -> &'static str {
+fn keyword_route(text: &str, previous: Option<&'static str>) -> &'static str {
     if keyword_is_plugin(text) {
         "plugin"
     } else if keyword_is_coding(text) {
         "coding"
+    } else if likely_follow_up(text) {
+        previous.unwrap_or("everyday")
     } else {
         "everyday"
     }
 }
 
-async fn jev_route(text: &str) -> Result<&'static str> {
+fn likely_follow_up(text: &str) -> bool {
+    let words: Vec<_> = text
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect();
+    words.len() <= 12
+        && words.first().is_some_and(|word| {
+            [
+                "yes", "yeah", "no", "nope", "actually", "also", "and", "but", "then", "make",
+                "change", "set", "use", "do", "it", "that", "this", "those",
+            ]
+            .contains(&word.to_ascii_lowercase().as_str())
+        })
+}
+
+fn routing_context(history: &[(String, String)]) -> String {
+    let mut lines = Vec::new();
+    let mut chars = 0;
+    for (role, line) in history.iter().rev().take(20) {
+        let rendered = format!("{role}: {line}");
+        if chars + rendered.chars().count() > 5000 {
+            break;
+        }
+        chars += rendered.chars().count();
+        lines.push(rendered);
+    }
+    lines.reverse();
+    lines.join("\n")
+}
+
+async fn jev_route(
+    text: &str,
+    history: &[(String, String)],
+    previous: Option<&'static str>,
+) -> Result<&'static str> {
     let key = crate::config::secret("typesafe", "TYPESAFE_API_KEY")?;
     let body = json!({
         "model":"jev-latest",
-        "state":{"utterance":text},
+        "state":{
+            "utterance":text,
+            "conversation":routing_context(history),
+            "previous_route":previous.unwrap_or("none")
+        },
         "questions":{
             "plugin":{
                 "type":"noul",
-                "instructions":"Does the user need a connected external app or plugin (email, calendar, Google Docs/Drive, Slack, tickets) rather than local chat or coding?"
+                "instructions":"Considering the conversation and previous route, does this turn need a connected external app or continue an app task (email, calendar, Google Docs/Drive, Slack, tickets) rather than local chat or coding? Follow-ups such as changing an event duration stay plugin."
             },
             "coding":{
                 "type":"noul",
-                "instructions":"Is this a software engineering request (edit code, debug, git, tests, refactors) rather than general chat?"
+                "instructions":"Considering the conversation and previous route, is this a software engineering request or continuation (edit code, debug, git, tests, refactors) rather than general chat?"
             }
         }
     });
@@ -177,7 +217,7 @@ async fn jev_route(text: &str) -> Result<&'static str> {
     let data: Value = response.json().await?;
     let plugin = noul(&data, "plugin")?;
     let coding = noul(&data, "coding")?;
-    Ok(if plugin >= 0.5 {
+    Ok(if plugin >= 0.5 && plugin >= coding {
         "plugin"
     } else if coding >= 0.5 {
         "coding"
@@ -428,31 +468,88 @@ mod tests {
             },
             ..Settings::default()
         };
-        assert_eq!(choose("refactor the rust module", &s).await.kind, "coding");
         assert_eq!(
-            choose("refactor the rust module", &s).await.harness,
+            choose("refactor the rust module", &[], None, &s).await.kind,
+            "coding"
+        );
+        assert_eq!(
+            choose("refactor the rust module", &[], None, &s)
+                .await
+                .harness,
             "codex"
         );
         assert_eq!(
-            choose("what's on my calendar today", &s).await.kind,
+            choose("what's on my calendar today", &[], None, &s)
+                .await
+                .kind,
             "plugin"
         );
         assert_eq!(
-            choose("what's on my calendar today", &s).await.harness,
+            choose("what's on my calendar today", &[], None, &s)
+                .await
+                .harness,
             "antigravity"
         );
-        assert_eq!(choose("what time is it", &s).await.kind, "everyday");
-        assert_eq!(choose("what time is it", &s).await.harness, "claude");
+        assert_eq!(
+            choose("what time is it", &[], None, &s).await.kind,
+            "everyday"
+        );
+        assert_eq!(
+            choose("what time is it", &[], None, &s).await.harness,
+            "claude"
+        );
         let mut same = s.clone();
         same.routing.coding = "codex".into();
         same.routing.routine = "codex".into();
         same.agent = "antigravity".into();
         assert_eq!(
-            choose("write a python script", &same).await.harness,
+            choose("write a python script", &[], None, &same)
+                .await
+                .harness,
             "codex"
         );
-        assert_eq!(choose("what time is it", &same).await.harness, "codex");
-        assert_eq!(choose("check my gmail", &same).await.harness, "antigravity");
+        assert_eq!(
+            choose("what time is it", &[], None, &same).await.harness,
+            "codex"
+        );
+        assert_eq!(
+            choose("check my gmail", &[], None, &same).await.harness,
+            "antigravity"
+        );
+    }
+
+    #[tokio::test]
+    async fn role_models_do_not_leak_when_harnesses_match() {
+        let mut s = Settings::default();
+        s.agent = "codex".into();
+        s.routing.coding = "codex".into();
+        s.model = Some("gpt-5.6-sol".into());
+        s.routing.plugin_model = None;
+        s.routing.router = "keywords".into();
+        let plugin = choose("open my calendar", &[], None, &s).await;
+        assert_eq!(plugin.kind, "plugin");
+        assert_eq!(plugin.model, None);
+        let coding = choose("fix this rust code", &[], None, &s).await;
+        assert_eq!(coding.model.as_deref(), Some("gpt-5.6-sol"));
+    }
+
+    #[test]
+    fn ambiguous_followups_stay_with_the_previous_route() {
+        assert_eq!(keyword_route("make it two hours", Some("plugin")), "plugin");
+        assert_eq!(
+            keyword_route("nope, do that instead", Some("coding")),
+            "coding"
+        );
+        assert_eq!(
+            keyword_route("what is the weather", Some("plugin")),
+            "everyday"
+        );
+        let context = routing_context(&[
+            ("User".into(), "Add a calendar event".into()),
+            ("Agent".into(), "What day?".into()),
+        ]);
+        assert!(context.contains("calendar event"));
+        assert!(context.contains("What day?"));
     }
     #[test]
     fn handoff_line_is_stripped() {

@@ -2,6 +2,7 @@ use anyhow::{bail, ensure, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rubato::{FftFixedIn, Resampler};
 use std::{
+    borrow::Cow,
     collections::VecDeque,
     path::{Path, PathBuf},
     process::Stdio,
@@ -66,7 +67,7 @@ fn prepare_ort() -> Result<()> {
             let pool = ort::environment::GlobalThreadPoolOptions::default()
                 .with_intra_threads(2)?
                 .with_inter_threads(1)?
-                .with_spin_control(false)?;
+                .with_spin_control(true)?;
             environment
                 .with_name("accessor")
                 .with_telemetry(false)
@@ -80,6 +81,12 @@ fn prepare_ort() -> Result<()> {
         Ok(()) => Ok(()),
         Err(e) => bail!("{e}"),
     }
+}
+
+fn whisper_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|threads| threads.get().clamp(1, 8))
+        .unwrap_or(2)
 }
 
 enum Asr {
@@ -128,9 +135,10 @@ pub struct MicFlags {
     pub engine: Arc<Mutex<String>>,
 }
 pub fn transcribe(model: &mut CanaryModel, samples: &[f32]) -> Result<String> {
+    let samples = condition_for_asr(samples);
     Ok(model
         .transcribe_with(
-            samples,
+            &samples,
             &CanaryParams {
                 language: Some("en".into()),
                 max_sequence_length: 256,
@@ -141,14 +149,43 @@ pub fn transcribe(model: &mut CanaryModel, samples: &[f32]) -> Result<String> {
 }
 
 fn transcribe_asr(asr: &mut Asr, samples: &[f32]) -> Result<String> {
+    let samples = condition_for_asr(samples);
     match asr {
-        Asr::Canary(model) => transcribe(model, samples),
+        Asr::Canary(model) => transcribe(model, &samples),
         Asr::Parakeet(model) => Ok(model
-            .transcribe_with(samples, &ParakeetParams::default())
+            .transcribe_with(&samples, &ParakeetParams::default())
             .map_err(|e| anyhow::anyhow!("{e}"))?
             .text),
-        Asr::Whisper { cli, model } => whisper_cli_transcribe(cli, model, samples),
+        Asr::Whisper { cli, model } => whisper_cli_transcribe(cli, model, &samples),
     }
+}
+
+/// Bring quiet, valid microphone utterances into the range expected by local
+/// models. Capture that is already loud or clipped is left alone: scaling a
+/// clipped waveform cannot restore it and would hide a setup problem.
+fn condition_for_asr(samples: &[f32]) -> Cow<'_, [f32]> {
+    if samples.is_empty() {
+        return Cow::Borrowed(samples);
+    }
+    let clipped = samples.iter().filter(|sample| sample.abs() >= 0.98).count();
+    if clipped * 100 >= samples.len() {
+        return Cow::Borrowed(samples);
+    }
+    let rms =
+        (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32).sqrt();
+    if !(0.005..0.12).contains(&rms) {
+        return Cow::Borrowed(samples);
+    }
+    let gain = (0.12 / rms).clamp(1.0, 4.0);
+    if gain <= 1.01 {
+        return Cow::Borrowed(samples);
+    }
+    Cow::Owned(
+        samples
+            .iter()
+            .map(|sample| (sample * gain).clamp(-1.0, 1.0))
+            .collect(),
+    )
 }
 
 fn whisper_cli_transcribe(cli: &Path, model: &Path, samples: &[f32]) -> Result<String> {
@@ -170,7 +207,8 @@ fn whisper_cli_transcribe(cli: &Path, model: &Path, samples: &[f32]) -> Result<S
         .arg(model)
         .args(["-f"])
         .arg(&path)
-        .args(["-nt", "-np", "-l", "en", "-otxt", "-of"])
+        .args(["-t", &whisper_threads().to_string(), "-bs", "2", "-bo", "2"])
+        .args(["-nt", "-np", "-nf", "-l", "en", "-otxt", "-of"])
         .arg(&stem)
         .output()
         .context("Could not start whisper-cli")?;
@@ -274,7 +312,7 @@ struct Utterance {
     at: Instant,
 }
 
-/// Fixed-memory utterance segmentation: 320ms pre-roll, 640ms trailing silence.
+/// Fixed-memory utterance segmentation: 320ms pre-roll, 384ms trailing silence.
 /// Discard overlong speech rather than executing a truncated command.
 struct Segmenter {
     before: VecDeque<f32>,
@@ -316,7 +354,7 @@ impl Segmenter {
             self.current.clear();
             self.overflow = true;
         }
-        if self.silence >= 10_240 {
+        if self.silence >= 6_144 {
             let result = if !self.overflow && self.voiced >= 1536 {
                 Some(std::mem::take(&mut self.current))
             } else {
@@ -367,7 +405,9 @@ pub fn listen(
     let supported = device.default_input_config()?;
     let config: cpal::StreamConfig = supported.clone().into();
     let (raw_tx, raw_rx) = mpsc::sync_channel::<Chunk>(256);
-    let (speech_tx, speech_rx) = mpsc::sync_channel::<Utterance>(1);
+    // Keep only the latest completed utterance. During slow inference this lets
+    // a deliberate command replace stale room noise or residual speaker echo.
+    let speech_slot = Arc::new(Mutex::new(None::<Utterance>));
     let stop = Arc::new(AtomicBool::new(false));
     let lost = Arc::new(AtomicBool::new(false));
     let stream = match supported.sample_format() {
@@ -406,6 +446,7 @@ pub fn listen(
     let dsp_output = output.clone();
     let dsp_muted = muted.clone();
     let dsp_warm = warm.clone();
+    let dsp_speech = speech_slot.clone();
     let reference = crate::echo::connect();
     std::thread::spawn(move || {
         let result = (|| -> Result<()> {
@@ -481,15 +522,12 @@ pub fn listen(
                             last_activity = Instant::now();
                         }
                         if let Some(samples) = segments.push(&frame, speech) {
-                            if speech_tx
-                                .try_send(Utterance {
+                            if let Ok(mut slot) = dsp_speech.lock() {
+                                *slot = Some(Utterance {
                                     samples,
                                     epoch: current_epoch,
                                     at: Instant::now(),
-                                })
-                                .is_err()
-                            {
-                                let _=dsp_output.try_send(crate::Input::Error("Transcription cannot keep up; skipped a turn and kept listening".into()));
+                                });
                             }
                         }
                     }
@@ -521,22 +559,20 @@ pub fn listen(
                 model = None;
                 loaded_engine = current_engine;
             }
-            let u = match speech_rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(u) => u,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    lazy_asr_tick(
-                        &mut model,
-                        &asr_assets,
-                        &loaded_engine,
-                        &asr_lazy,
-                        &asr_warm,
-                        &asr_awake,
-                        &mut last_asr,
-                        &output,
-                    );
-                    continue;
-                }
-                Err(_) => break,
+            let u = speech_slot.lock().ok().and_then(|mut slot| slot.take());
+            let Some(u) = u else {
+                lazy_asr_tick(
+                    &mut model,
+                    &asr_assets,
+                    &loaded_engine,
+                    &asr_lazy,
+                    &asr_warm,
+                    &asr_awake,
+                    &mut last_asr,
+                    &output,
+                );
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
             };
             if muted.load(Ordering::SeqCst)
                 || u.epoch != epoch.load(Ordering::SeqCst)
@@ -572,7 +608,7 @@ pub fn listen(
             };
             match transcribe_asr(loaded, &u.samples) {
                 Ok(text)
-                    if !text.trim().is_empty()
+                    if heard_transcript(&text)
                         && u.epoch == epoch.load(Ordering::SeqCst)
                         && !muted.load(Ordering::SeqCst) =>
                 {
@@ -612,18 +648,34 @@ where
     f32: cpal::FromSample<T>,
 {
     let channels = config.channels as usize;
+    let clipping_warned = Arc::new(AtomicBool::new(false));
+    let level_output = output.clone();
+    let mut clipping_chunks = 0_u8;
     Ok(device.build_input_stream(
         config,
         move |data: &[T], _| {
             if muted.load(Ordering::SeqCst) {
                 return;
             }
-            let samples = data
+            let samples: Vec<f32> = data
                 .chunks_exact(channels)
                 .map(|frame| {
                     frame.iter().map(|s| s.to_sample::<f32>()).sum::<f32>() / channels as f32
                 })
                 .collect();
+            let clipping = !samples.is_empty()
+                && samples.iter().filter(|sample| sample.abs() >= 0.98).count() * 20
+                    >= samples.len();
+            clipping_chunks = if clipping {
+                clipping_chunks.saturating_add(1)
+            } else {
+                0
+            };
+            if clipping_chunks >= 8 && !clipping_warned.swap(true, Ordering::SeqCst) {
+                let _ = level_output.try_send(crate::Input::Error(
+                    "Microphone level is clipping; lower the input gain, then restart. On PipeWire: wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 0.40. Accessor kept listening".into(),
+                ));
+            }
             if tx
                 .try_send(Chunk {
                     samples,
@@ -800,18 +852,26 @@ where
 
 fn think_sample(phase: &mut f32, t: f32, dt: f32, volume: f32) -> f32 {
     let lfo = (std::f32::consts::TAU * 0.18 * t).sin();
-    let freq = 148.0 + 5.0 * lfo;
+    // Keep this smooth and well below speech, but high enough for small laptop speakers.
+    let freq = 330.0 + 10.0 * lfo;
     *phase += std::f32::consts::TAU * freq * dt;
     if *phase > std::f32::consts::TAU {
         *phase -= std::f32::consts::TAU;
     }
     let env = 0.62 + 0.38 * (std::f32::consts::TAU * 0.11 * t).sin();
-    0.045 * volume.clamp(0.0, 1.5) * env * phase.sin()
+    0.06 * volume.clamp(0.0, 1.5) * env * phase.sin()
 }
 
 pub fn heard_word(text: &str) -> bool {
     text.split(|c: char| !c.is_ascii_alphanumeric())
         .any(|w| w.chars().any(|c| c.is_ascii_alphabetic()) && w.len() >= 2)
+}
+
+fn heard_transcript(text: &str) -> bool {
+    text.split(|c: char| !c.is_alphanumeric()).any(|word| {
+        word.chars().any(|c| c.is_numeric())
+            || (word.chars().any(|c| c.is_alphabetic()) && word.chars().count() >= 2)
+    })
 }
 
 fn system_rate(speed: f32) -> i32 {
@@ -1165,7 +1225,7 @@ mod tests {
         for _ in 0..40 {
             result = s.push(&f, false).or(result);
         }
-        assert!(result.unwrap().len() >= 5120 + 9 * 256 + 10240);
+        assert!(result.unwrap().len() >= 5120 + 9 * 256 + 6144);
     }
     #[test]
     fn overlong_commands_are_discarded() {
@@ -1187,15 +1247,19 @@ mod tests {
         let dt = 1.0 / rate;
         let mut prev = 0.0;
         let mut max_delta = 0.0_f32;
+        let mut energy = 0.0_f32;
         for n in 0..(5 * 16_000) {
             let sample = think_sample(&mut phase, n as f32 * dt, dt, 1.0);
             max_delta = max_delta.max((sample - prev).abs());
+            energy += sample * sample;
             prev = sample;
         }
         assert!(
             max_delta < 0.03,
             "think cue developed high-frequency jumps: {max_delta}"
         );
+        let rms = (energy / (5.0 * rate)).sqrt();
+        assert!(rms > 0.02, "think cue is too quiet: {rms}");
     }
     #[test]
     fn ink2_gate_needs_a_real_word() {
@@ -1204,6 +1268,31 @@ mod tests {
         assert!(!heard_word(""));
         assert!(!heard_word("..."));
         assert!(!heard_word("a"));
+    }
+
+    #[test]
+    fn local_transcript_rejects_punctuation_only_hallucinations() {
+        assert!(heard_transcript("29"));
+        assert!(heard_transcript("twenty nine"));
+        assert!(heard_transcript("go!"));
+        assert!(!heard_transcript(""));
+        assert!(!heard_transcript("-"));
+        assert!(!heard_transcript("..."));
+        assert!(!heard_transcript("a"));
+    }
+
+    #[test]
+    fn local_asr_conditions_quiet_audio_but_not_clipped_audio() {
+        let quiet = [0.0, 0.01, -0.05];
+        let conditioned = condition_for_asr(&quiet);
+        assert!(conditioned[2] < -0.15);
+        assert!(conditioned[2] >= -0.2);
+
+        let clipped = [0.0, 1.0, -1.0];
+        assert!(matches!(condition_for_asr(&clipped), Cow::Borrowed(_)));
+
+        let silence = [0.0; 32];
+        assert!(matches!(condition_for_asr(&silence), Cow::Borrowed(_)));
     }
     fn pcm16_wav(samples: &[i16]) -> Vec<u8> {
         wrap_pcm16_mono(

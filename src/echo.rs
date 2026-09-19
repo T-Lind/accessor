@@ -102,6 +102,10 @@ fn words(text: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
+fn contains_phrase(haystack: &str, needle: &str) -> bool {
+    let haystack = format!(" {haystack} ");
+    haystack.contains(&format!(" {needle} "))
+}
 impl TextGuard {
     pub fn new() -> Self {
         Self {
@@ -121,12 +125,12 @@ impl TextGuard {
     }
     pub fn matches(&self, text: &str, playing: bool) -> bool {
         let text = words(text);
-        if text.len() < 8 {
+        if text.is_empty() {
             return false;
         }
         self.recent.iter().any(|(spoken, at)| {
             (playing || at.elapsed() < Duration::from_secs(2))
-                && (spoken.contains(&text) || {
+                && (contains_phrase(spoken, &text) || {
                     let tokens: Vec<_> = text.split_whitespace().collect();
                     tokens.len() >= 4
                         && tokens
@@ -147,6 +151,8 @@ mod tests {
         let mut guard = TextGuard::new();
         guard.add("I'll look for an AI model named Jev and check similar names.");
         assert!(guard.matches("an AI model named Jev", true));
+        assert!(guard.matches("AI", true));
+        assert!(guard.matches("similar names", true));
         assert!(!guard.matches("29 stop", true));
         assert!(!guard.matches("Actually, search for Gemma instead", true));
     }

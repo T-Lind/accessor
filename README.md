@@ -71,7 +71,7 @@ Wake, timeout, speech, and voice changes take effect immediately. Microphone, as
 
 Open `/settings` for a category menu (Voice, Speech, Harnesses, Display, Tests). **↑/↓** moves, **Enter** opens or toggles, **Esc** goes up one level. Typed `/settings KEY VALUE` still works for scripts. Changes persist and apply immediately. The status bar always shows the live **harness · model** and a short identity code (`X S` Codex Sol, `C F` Claude Fable, `A F` Antigravity Flash).
 
-**Harnesses:** **Plugin** is the CLI with Gmail/Calendar/Docs connectors. **Coding** is repos and tests. **Everyday** is general chat. Each role has its own **model list for that CLI** (Everyday = Antigravity shows Gemini, not the Codex catalog). Router `keywords` or `jev` (TypeSafe; `/jev key` or `TYPESAFE_API_KEY`) picks among those three per turn. `off` always uses everyday. Paste API keys with Ctrl+Shift+V / Shift+Insert, or `printf '%s' "$KEY" | acc jev key`. Enable **Jev auto-select** to use Jev whenever a TypeSafe key is present.
+**Harnesses:** **Plugin** is the CLI with Gmail/Calendar/Docs connectors. **Coding** is repos and tests. **Everyday** is general chat. Each role has its own independent model setting (Everyday = Antigravity shows Gemini, not the Codex catalog); sharing the same CLI does not make one role inherit another role's model. Router `keywords` or `jev` (TypeSafe; `/jev key` or `TYPESAFE_API_KEY`) picks among those three per turn, which indirectly selects that role's configured model. Jev sees recent user-and-agent conversation plus the previous route, so follow-ups remain attached to an ongoing calendar, coding, or everyday task. `off` always uses everyday. Paste API keys with Ctrl+Shift+V / Shift+Insert, or `printf '%s' "$KEY" | acc jev key`. Enable **Jev auto-select** to use Jev whenever a TypeSafe key is present.
 
 Model discovery reads the selected Codex installation's account catalog without running an LLM. `/settings refresh` refreshes it; the last successful list is cached for offline display.
 
@@ -88,16 +88,18 @@ Say “twenty-nine” or “hey twenty-nine”, pause for the chime, then speak,
 | “29 stop”, “stop” while awake, or `/stop` | Cancel the task, stop playback, return to sleep |
 | “go to sleep”, “go back to sleep”, “disconnect”, `/sleep`, `/disconnect` | Close voice access locally (the agent cannot sleep the microphone by talking) |
 | “cancel the task”, `/cancel`, Escape | Cancel work/playback; keep the conversation open |
-| `/mute`, `/unmute` | Discard/resume microphone input |
+| “29 mute”, “29 unmute”, `/mute`, `/unmute` | Privacy-mute/unmute; while muted only the local unmute detector remains active |
 | `/approve N`, `/deny N` | Answer one pending permission request by typing |
 | `/status`, `/help` | Inspect state or controls |
 | `/quit`, Ctrl+C | Stop Accessor and its agent connection |
 
-The numeric code prevents some accidental activations; it is not authentication. “Hey 29”, “hi 29”, and “ok 29” are accepted as well as “29”. Audio capture remains open during `/mute`, but samples are discarded. Quitting releases the device. Barge-ins are enabled by default: the microphone stays live during synthesis and playback. A recognized follow-up stops queued speech and interrupts the current agent turn; the replacement request starts after cancellation completes. In **code-every-request** mode (`addressed`), barge-in also needs the wake code, so ambient speech cannot pause playback. Local WebRTC AEC3 receives the actual speaker audio to reduce echo, with a residual transcript filter as a second check. In continuous-conversation mode, sustained speech pauses playback while Canary recognizes the utterance. Recognized requests then interrupt the agent; residual self-speech resumes playback, and unconfirmed pauses expire after two seconds without new speech activity. Echo performance depends on the microphone, speakers, room, and device buffering; headphones provide the clearest separation. In `/settings`, disable barge-ins to suppress the microphone during speech and reject spoken follow-ups while an agent is busy. While the agent is working and not speaking, a quiet warble plays. Sleep plays a descending chime. Settings/credential entry still suppress capture. Typed cancellation remains available.
+The numeric code prevents some accidental activations; it is not authentication. “Hey 29”, “hi 29”, and “ok 29” are accepted as well as “29”. Say “29 mute” (or say “mute” after waking) to enter privacy mute. Muted audio is handled only by the local wake model: “29 unmute” resumes normal input, and no other muted speech is sent to Cartesia or an agent. The banner always shows the mute state. Quitting releases the device. Barge-ins are enabled by default: the microphone stays live during synthesis and playback. While Accessor is speaking or working, say “29 stop” to cancel playback and reasoning, or “29” followed by a replacement request. Requiring the code during a barge-in keeps residual speaker echo from becoming a user turn. Raw voice activity alone does not pause playback. The replacement request starts after cancellation completes. Local WebRTC AEC3 receives the actual speaker audio to reduce echo, with a residual transcript filter as a second check. Echo performance depends on the microphone, speakers, room, and device buffering; headphones provide the clearest separation. In `/settings`, disable barge-ins to suppress the microphone during speech and reject spoken follow-ups while an agent is busy. While the agent is working and not speaking, a quiet warble plays. Sleep plays a descending chime. Settings/credential entry still suppress capture. Typed cancellation remains available.
 
 The activity pane shows user lines, formatted agent replies (bold, links), and live tool calls. Commentary/progress text is spoken when enabled but hidden from the pane unless `/settings chat transcript`. `/settings chat off` keeps only tools and system notices.
 
-Canary runs on completed speech segments, after about 640 ms of silence. Utterances longer than 15 seconds are discarded. Split long requests into shorter turns. The ASR model has a shared two-thread CPU pool with spinning disabled, bounded audio buffers, and stale-audio rejection.
+Each harness keeps its own native conversation alive. When routing moves to another harness and later returns, Accessor supplies the user-and-agent turns that harness missed. Together, its native history plus that synchronized delta represent the full Accessor conversation without resending every turn repeatedly.
+
+Canary runs on completed speech segments, after about 384 ms of silence. Utterances longer than 15 seconds are discarded. Split long requests into shorter turns. Canary uses a low-latency two-thread CPU pool (faster than four hyperthreads on the tested laptop); Whisper uses all available threads with a low-beam decoder. Both use a latest-utterance buffer and stale-audio rejection.
 
 ## Test transcription separately
 
@@ -108,7 +110,7 @@ acc transcribe sample.wav
 acc --text --agent mock
 ```
 
-The live STT test explicitly displays **all** recognized speech, without an agent or wake gate. File testing accepts 16 kHz mono PCM WAV and reports model load/inference timing. `--text` never opens a microphone and is silent unless `--speak` is explicitly passed.
+The live STT test explicitly displays **all** recognized speech, without an agent or wake gate. Local STT automatically raises quiet, valid utterances into the model’s useful range. Severely clipped input cannot be reconstructed, so Accessor reports a one-time microphone-level warning with a PipeWire adjustment when appropriate. File testing accepts 16 kHz mono PCM WAV and reports model load/inference timing. `--text` never opens a microphone and is silent unless `--speak` is explicitly passed.
 
 ## Choose a voice
 

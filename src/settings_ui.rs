@@ -334,7 +334,7 @@ fn hint(action: &Action) -> &'static str {
             "Spoken letters (A. D.) at most once every 5 minutes. Replies in between skip the identity prefix."
         }
         Action::Toggle("routing.auto-model") => {
-            "If a TypeSafe key exists, Jev classifies plugin vs coding vs everyday per turn, even when the router dropdown still says keywords."
+            "If a TypeSafe key exists, Jev uses recent conversation and the previous route to select plugin, coding, or everyday—and therefore that role's model."
         }
         Action::Cycle("stt.conversation", _) => {
             "Wake is always on-device with the selected local model. After GREEN, Ink-2 only runs on a finished VAD clip if that model heard a real word — never a live stream."

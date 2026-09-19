@@ -210,7 +210,35 @@ pub fn whisper_cli(assets: &Path) -> Option<PathBuf> {
     } else {
         "whisper-cli"
     });
-    exe.is_file().then_some(exe)
+    whisper_cli_ready(assets).then_some(exe)
+}
+
+fn whisper_cli_ready(assets: &Path) -> bool {
+    let runtime = assets.join("runtime");
+    let exe = runtime.join(if cfg!(windows) {
+        "whisper-cli.exe"
+    } else {
+        "whisper-cli"
+    });
+    if !exe.is_file() {
+        return false;
+    }
+    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        let cpu_backend = std::fs::read_dir(&runtime).ok().is_some_and(|entries| {
+            entries.flatten().any(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("libggml-cpu-") && name.ends_with(".so"))
+            })
+        });
+        runtime.join("libwhisper.so.1").is_file()
+            && runtime.join("libggml.so.0").is_file()
+            && runtime.join("libggml-base.so.0").is_file()
+            && cpu_backend
+    } else {
+        true
+    }
 }
 
 struct Archive {
@@ -314,7 +342,12 @@ pub fn speech_ready(assets: &Path, engine: &str) -> bool {
     let Some(offer) = get(engine) else {
         return false;
     };
-    installed(assets, offer) && (offer.kind == Kind::Whisper || runtime_present(assets))
+    installed(assets, offer)
+        && if offer.kind == Kind::Whisper {
+            whisper_cli_ready(assets)
+        } else {
+            runtime_present(assets)
+        }
 }
 
 pub(crate) fn flatten_runtime_name(path: &str) -> Option<String> {
@@ -408,8 +441,41 @@ fn extract_cli(archive: &Path, assets: &Path) -> Result<PathBuf> {
     let dest = assets.join("runtime").join(want);
     std::fs::create_dir_all(dest.parent().unwrap())?;
     std::fs::copy(&found, &dest)?;
+    let mut copied_libraries = 0;
+    let mut stack = vec![unpack.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)?.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if whisper_runtime_library(&path) {
+                let leaf = path
+                    .file_name()
+                    .context("Whisper runtime library has no name")?;
+                std::fs::copy(&path, assets.join("runtime").join(leaf))?;
+                copied_libraries += 1;
+            }
+        }
+    }
     let _ = std::fs::remove_dir_all(&unpack);
+    ensure!(
+        whisper_cli_ready(assets),
+        "whisper-cli runtime is incomplete ({copied_libraries} shared libraries copied)"
+    );
     Ok(dest)
+}
+
+fn whisper_runtime_library(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if cfg!(windows) {
+        name.to_ascii_lowercase().ends_with(".dll")
+    } else if cfg!(target_os = "macos") {
+        name.ends_with(".dylib")
+    } else {
+        name.contains(".so")
+    }
 }
 
 fn find_file(root: &Path, name: &str) -> Option<PathBuf> {
@@ -621,6 +687,32 @@ mod tests {
         assert!(!speech_ready(dir.path(), "canary"));
         assert!(!speech_ready(dir.path(), "parakeet"));
         assert!(!speech_ready(dir.path(), "whisper-tiny"));
+    }
+
+    #[test]
+    fn whisper_runtime_library_names_are_detected() {
+        assert!(whisper_runtime_library(Path::new("libwhisper.so.1")));
+        assert!(whisper_runtime_library(Path::new("libggml-cpu-x64.so")));
+        assert!(!whisper_runtime_library(Path::new("README.md")));
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn linux_whisper_cli_requires_its_shared_libraries() {
+        let assets = tempfile::tempdir().unwrap();
+        let runtime = assets.path().join("runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        std::fs::write(runtime.join("whisper-cli"), b"exe").unwrap();
+        assert!(!whisper_cli_ready(assets.path()));
+        for library in [
+            "libwhisper.so.1",
+            "libggml.so.0",
+            "libggml-base.so.0",
+            "libggml-cpu-x64.so",
+        ] {
+            std::fs::write(runtime.join(library), b"lib").unwrap();
+        }
+        assert!(whisper_cli_ready(assets.path()));
     }
 
     #[test]

@@ -188,7 +188,6 @@ pub async fn voices() -> Result<()> {
 pub struct Job {
     pub task: tokio::task::JoinHandle<Result<()>>,
     stop: Arc<AtomicBool>,
-    pub paused: Arc<AtomicBool>,
 }
 impl Job {
     pub fn cancel(&self) {
@@ -233,7 +232,7 @@ pub fn start(text: String, settings: Tts) -> Job {
         }
         Ok(())
     });
-    Job { task, stop, paused }
+    Job { task, stop }
 }
 pub fn local_python(s: &config::Settings) -> Result<std::path::PathBuf> {
     Ok(s.assets()?.join("runtime/kokoro").join(if cfg!(windows) {
