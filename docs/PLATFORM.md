@@ -63,7 +63,7 @@ The **plugin harness** (`agent`) is the connector CLI. **Everyday** is general c
 
 ### Copying this machine to another
 
-`acc config locations` prints the folder to copy. On Windows that is typically `%APPDATA%\Accessor` (Roaming). It holds `config.json` plus optional `analytics.json`, `models.json`, `tts-cache/`, and `events/`. Secrets are **not** in that folder — they live in the OS credential store (Windows Credential Manager, service `Accessor`). Re-enter `acc tts key`, `acc jev key`, and any AI Gateway key on the new machine. Speech models live under the assets directory (`ACC_ASSETS` or `assets-dir` in config); copy that too or re-run `python scripts/setup_speech.py`. Codex / Claude / agy installs and their plugin logins stay with those CLIs.
+`acc config locations` prints the folder to copy. On Windows that is typically `%APPDATA%\Accessor` (Roaming). It holds `config.json` plus optional `analytics.json`, `models.json`, `tts-cache/`, and `events/`. Secrets are **not** in that folder — they live in the OS credential store (Windows Credential Manager, service `Accessor`). Re-enter `acc tts key`, `acc jev key`, and any AI Gateway key on the new machine. Speech models live under the assets directory (`ACC_ASSETS` or `assets-dir` in config); copy that too, or just start `acc` on the new machine — it downloads ONNX Runtime and the selected local STT model automatically. Codex / Claude / agy installs and their plugin logins stay with those CLIs.
 
 Handoff: say “switch to Codex” (or “switch agent to claude”) to pin **this conversation** to that CLI. A running harness can also emit `ACCESSOR_SWITCH harness=codex` (optional `model=…`) or JSON `{"accessor_switch":{"harness":"codex"}}` after seeing the available CLI list in its instructions. That pins the live session; it does **not** rewrite the plugin/coding/everyday slots. Free-form agent claims do not change settings. Say “switch to plugin” to jump to the connector CLI.
 
@@ -96,7 +96,7 @@ Interactive dashboard: **↑/↓** move, **Enter** opens a category or toggles, 
 ## What you need installed
 
 1. Rebuild: `.\install-accessor.ps1` or `cargo build --release --bin acc`
-2. `acc doctor` — local STT files + ONNX
+2. `acc` or `acc doctor` — downloads ONNX Runtime + the selected local STT model if missing
 3. `acc tts setup` — system / Kokoro / Cartesia
 4. At least one harness login: Codex (`acc agent`), optional `claude`, optional `agy`
 5. Optional: Cartesia key (TTS and Ink-2), TypeSafe or AI Gateway key (Jev / compaction)

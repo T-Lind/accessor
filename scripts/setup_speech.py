@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Download pinned Canary INT8 files and the official CPU ONNX Runtime.
 
-Python is used only for setup. Accessor itself is a native Rust program.
-No remote code is executed. Every download is SHA-256 verified before use.
+`acc` now does this itself on first run (any OS). This script remains for
+manual/offline use and for setup_tts.py, which imports `download`.
 """
 import hashlib
 import io

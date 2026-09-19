@@ -269,7 +269,7 @@ pub async fn entry() -> Result<()> {
         },
         Commands::Run(args) => app::run(args).await,
         Commands::Devices => audio::devices(),
-        Commands::Setup => setup(),
+        Commands::Setup => setup().await,
         Commands::Config { action } => match action {
             ConfigCommand::Show => {
                 println!("{}", serde_json::to_string_pretty(&Settings::load()?)?);
@@ -285,7 +285,7 @@ pub async fn entry() -> Result<()> {
             }
             ConfigCommand::Set { key, value } => Settings::load()?.set(&key, &value),
         },
-        Commands::Doctor => doctor(),
+        Commands::Doctor => doctor().await,
         Commands::Update { check } => {
             let text = crate::updates::report(&Settings::load()?, !check).await?;
             print!("{text}");
@@ -294,7 +294,7 @@ pub async fn entry() -> Result<()> {
             }
             Ok(())
         }
-        Commands::Transcribe { file, model_dir } => transcribe(file, model_dir),
+        Commands::Transcribe { file, model_dir } => transcribe(file, model_dir).await,
         Commands::Stt {
             action:
                 SttCommand::Test {
@@ -305,7 +305,7 @@ pub async fn entry() -> Result<()> {
                 },
         } => {
             if let Some(file) = file {
-                transcribe(file, model_dir)
+                transcribe(file, model_dir).await
             } else {
                 println!("Live transcription test: ALL speech is displayed. Nothing is sent to an agent. Ctrl+C to stop.");
                 let mut args = Run::parse_from(["acc"]);
@@ -393,8 +393,13 @@ pub async fn entry() -> Result<()> {
         },
     }
 }
-fn transcribe(file: PathBuf, dir: Option<PathBuf>) -> Result<()> {
-    let dir = dir.unwrap_or(Settings::load()?.assets()?.join("models/canary-180m-flash"));
+async fn transcribe(file: PathBuf, dir: Option<PathBuf>) -> Result<()> {
+    let s = Settings::load()?;
+    let assets = s.assets()?;
+    if dir.is_none() {
+        crate::stt_models::ensure_ready(&assets, "canary", |msg| println!("{msg}")).await?;
+    }
+    let dir = dir.unwrap_or(assets.join("models/canary-180m-flash"));
     let start = Instant::now();
     let mut model = audio::load_model(&dir)?;
     println!("Model loaded in {:.2}s", start.elapsed().as_secs_f64());
@@ -409,7 +414,7 @@ fn transcribe(file: PathBuf, dir: Option<PathBuf>) -> Result<()> {
     );
     Ok(())
 }
-fn setup() -> Result<()> {
+async fn setup() -> Result<()> {
     let mut s = Settings::load()?;
     s.wake_code = Input::new()
         .with_prompt("Wake code (activation phrase)")
@@ -425,9 +430,12 @@ fn setup() -> Result<()> {
         .interact()?;
     s.assets_dir = Some(s.assets()?);
     s.save()?;
+    let assets = s.assets()?;
+    crate::stt_models::ensure_ready(&assets, &s.stt.engine, |msg| println!("{msg}")).await?;
     println!(
-        "Saved to {}. Next: acc tts setup; acc connectors setup; acc",
-        config::path()?.display()
+        "Saved to {}. Speech files: {}. Next: acc tts setup; acc connectors setup; acc",
+        config::path()?.display(),
+        assets.display()
     );
     Ok(())
 }
@@ -491,8 +499,8 @@ fn read_secret_line(prompt: &str) -> Result<String> {
     ensure!(!key.is_empty(), "Empty key");
     Ok(key.into())
 }
-fn doctor() -> Result<()> {
-    let s = Settings::load()?;
+async fn doctor() -> Result<()> {
+    let mut s = Settings::load()?;
     let assets = s.assets()?;
     println!(
         "Accessor {}\nSettings: {}\nSpeech files: {}\nCodex: {}\nTTS: {}\nLocal STT engine: {}",
@@ -503,27 +511,28 @@ fn doctor() -> Result<()> {
         s.tts.provider,
         s.stt.engine
     );
+    if !crate::stt_models::speech_ready(&assets, &s.stt.engine) {
+        println!("Installing local speech for this computer...");
+        crate::stt_models::ensure_ready(&assets, &s.stt.engine, |msg| println!("  {msg}")).await?;
+        if s.assets_dir.is_none() && std::env::var_os("ACC_ASSETS").is_none() {
+            s.assets_dir = Some(assets.clone());
+            s.save()?;
+        }
+    }
     for offer in crate::stt_models::OFFERS {
         let state = if crate::stt_models::installed(&assets, offer) {
             "installed".to_string()
+        } else if offer.id == s.stt.engine {
+            "download failed".into()
         } else {
             format!(
-                "not downloaded (~{})",
+                "not downloaded (~{}) — pick it in /settings to fetch",
                 crate::stt_models::size_label(crate::stt_models::missing_bytes(&assets, offer))
             )
         };
         println!("  {} ({}): {}", offer.name, offer.id, state);
     }
-    let lib = if cfg!(windows) {
-        "onnxruntime.dll"
-    } else if cfg!(target_os = "macos") {
-        "libonnxruntime.dylib"
-    } else {
-        "libonnxruntime.so"
-    };
-    let runtime = std::env::var_os("ORT_DYLIB_PATH")
-        .map(PathBuf::from)
-        .unwrap_or(assets.join("runtime").join(lib));
+    let runtime = crate::stt_models::runtime_path(&assets);
     println!(
         "ONNX runtime: {}",
         if runtime.is_file() {

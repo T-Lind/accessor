@@ -137,7 +137,26 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut ui = Ui::new(args.plain)?;
     ui.set_chat(&settings.chat);
     if !args.text {
-        ui.message("Loading local speech...");
+        ui.message("Preparing local speech...");
+        ui.draw()?;
+        if let Err(e) = crate::stt_models::ensure_ready(&assets, &settings.stt.engine, |msg| {
+            ui.message(msg);
+            let _ = ui.draw();
+        })
+        .await
+        {
+            ui.message(format!(
+                "Could not finish speech setup: {e:#}. You can still type."
+            ));
+        } else if crate::stt_models::speech_ready(&assets, &settings.stt.engine) {
+            ui.message("Loading local speech...");
+        }
+        if settings.assets_dir.is_none() && std::env::var_os("ACC_ASSETS").is_none() {
+            settings.assets_dir = Some(assets.clone());
+            if let Err(e) = settings.save() {
+                ui.message(format!("Could not save speech-file location: {e:#}"));
+            }
+        }
     }
     ui.draw()?;
     let wake = wake::WakeCode::new(&wake_code, &args.wake_alias)?;

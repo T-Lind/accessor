@@ -243,6 +243,105 @@ fn whisper_cli_archive() -> Option<Archive> {
     }
 }
 
+pub fn runtime_lib_name() -> &'static str {
+    if cfg!(windows) {
+        "onnxruntime.dll"
+    } else if cfg!(target_os = "macos") {
+        "libonnxruntime.dylib"
+    } else {
+        "libonnxruntime.so"
+    }
+}
+
+pub struct RuntimeArchive {
+    pub url: &'static str,
+    pub sha256: &'static str,
+    pub filename: &'static str,
+}
+
+pub fn runtime_archive() -> Option<RuntimeArchive> {
+    let (filename, sha256, url) = if cfg!(all(windows, target_arch = "x86_64")) {
+        (
+            "onnxruntime-win-x64-1.24.2.zip",
+            "8e3e9c826375352e29cb2614fe44f3d7a4b0ff7b8028ad7a456af9d949a7e8b0",
+            "https://github.com/microsoft/onnxruntime/releases/download/v1.24.2/onnxruntime-win-x64-1.24.2.zip",
+        )
+    } else if cfg!(all(windows, target_arch = "aarch64")) {
+        (
+            "onnxruntime-win-arm64-1.24.2.zip",
+            "dd8180d98e5a0ead7ead99029acc80b86a8b905b9aba4cc978e388039bb5823b",
+            "https://github.com/microsoft/onnxruntime/releases/download/v1.24.2/onnxruntime-win-arm64-1.24.2.zip",
+        )
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        (
+            "onnxruntime-linux-x64-1.24.2.tgz",
+            "43725474ba5663642e17684717946693850e2005efbd724ac72da278fead25e6",
+            "https://github.com/microsoft/onnxruntime/releases/download/v1.24.2/onnxruntime-linux-x64-1.24.2.tgz",
+        )
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        (
+            "onnxruntime-linux-aarch64-1.24.2.tgz",
+            "6715b3d19965a2a6981e78ed4ba24f17a8c30d2d26420dbed10aac7ceca0085e",
+            "https://github.com/microsoft/onnxruntime/releases/download/v1.24.2/onnxruntime-linux-aarch64-1.24.2.tgz",
+        )
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        (
+            "onnxruntime-osx-arm64-1.24.2.tgz",
+            "0af4fa503e8ea285245b47ee42d0a7461b8156a81270857da0c1d4ecf858abde",
+            "https://github.com/microsoft/onnxruntime/releases/download/v1.24.2/onnxruntime-osx-arm64-1.24.2.tgz",
+        )
+    } else {
+        return None;
+    };
+    Some(RuntimeArchive {
+        url,
+        sha256,
+        filename,
+    })
+}
+
+pub fn runtime_path(assets: &Path) -> PathBuf {
+    std::env::var_os("ORT_DYLIB_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| assets.join("runtime").join(runtime_lib_name()))
+}
+
+pub fn runtime_present(assets: &Path) -> bool {
+    runtime_path(assets).is_file()
+}
+
+pub fn speech_ready(assets: &Path, engine: &str) -> bool {
+    let Some(offer) = get(engine) else {
+        return false;
+    };
+    installed(assets, offer) && (offer.kind == Kind::Whisper || runtime_present(assets))
+}
+
+pub(crate) fn flatten_runtime_name(path: &str) -> Option<String> {
+    let normalized = path.replace('\\', "/");
+    let leaf = Path::new(&normalized).file_name()?.to_str()?.to_string();
+    let in_lib = normalized.contains("/lib/");
+    let is_lib =
+        in_lib && (leaf.contains(".so") || leaf.contains(".dylib") || leaf.ends_with(".dll"));
+    let is_license = leaf == "LICENSE" || leaf == "ThirdPartyNotices.txt";
+    if !is_lib && !is_license {
+        return None;
+    }
+    if leaf.starts_with("libonnxruntime.so.") {
+        Some("libonnxruntime.so".into())
+    } else if leaf.starts_with("libonnxruntime.") && leaf.ends_with(".dylib") {
+        Some("libonnxruntime.dylib".into())
+    } else {
+        Some(leaf)
+    }
+}
+
+fn part_file(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".part");
+    path.with_file_name(name)
+}
+
 fn sha256_file(path: &Path) -> Result<String> {
     let mut hasher = Sha256::new();
     let mut file = std::fs::File::open(path)?;
@@ -262,7 +361,7 @@ async fn fetch(url: &str, dest: &Path, sha256: &str) -> Result<()> {
         return Ok(());
     }
     dest.parent().map(std::fs::create_dir_all).transpose()?;
-    let part = dest.with_extension("part");
+    let part = part_file(dest);
     let mut response = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3600))
         .build()?
@@ -349,6 +448,105 @@ pub async fn download(assets: PathBuf, id: &str) -> Result<String> {
     Ok(format!("Installed {}.", offer.name))
 }
 
+fn extract_archive(archive: &Path, dest: &Path) -> Result<()> {
+    std::fs::create_dir_all(dest)?;
+    let status = std::process::Command::new("tar")
+        .args(["-xf"])
+        .arg(archive)
+        .arg("-C")
+        .arg(dest)
+        .status()
+        .context("Could not unpack ONNX Runtime (need tar on PATH)")?;
+    ensure!(status.success(), "Extracting {} failed", archive.display());
+    Ok(())
+}
+
+fn copy_runtime_libs(unpack: &Path, dest: &Path) -> Result<()> {
+    std::fs::create_dir_all(dest)?;
+    let mut found_lib = false;
+    let mut stack = vec![unpack.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let rel = path.strip_prefix(unpack).unwrap_or(&path);
+            let Some(leaf) = flatten_runtime_name(&rel.to_string_lossy()) else {
+                continue;
+            };
+            std::fs::copy(&path, dest.join(&leaf))?;
+            if leaf == runtime_lib_name() {
+                found_lib = true;
+            }
+        }
+    }
+    ensure!(
+        found_lib,
+        "ONNX Runtime {} was not in the archive",
+        runtime_lib_name()
+    );
+    Ok(())
+}
+
+async fn install_runtime(assets: &Path, progress: &mut impl FnMut(&str)) -> Result<()> {
+    let spec = runtime_archive().context(
+        "No bundled ONNX Runtime for this OS/CPU. Set ORT_DYLIB_PATH to a 1.24+ library (Intel macOS needs a separate build).",
+    )?;
+    let runtime_dir = assets.join("runtime");
+    std::fs::create_dir_all(&runtime_dir)?;
+    let archive = runtime_dir.join(spec.filename);
+    progress(&format!("Downloading {}...", spec.filename));
+    fetch(spec.url, &archive, spec.sha256).await?;
+    progress("Unpacking ONNX Runtime...");
+    let unpack = runtime_dir.join("onnx-unpack");
+    let _ = std::fs::remove_dir_all(&unpack);
+    extract_archive(&archive, &unpack)?;
+    copy_runtime_libs(&unpack, &runtime_dir)?;
+    let _ = std::fs::remove_dir_all(&unpack);
+    ensure!(
+        runtime_present(assets),
+        "ONNX Runtime missing after unpack at {}",
+        runtime_path(assets).display()
+    );
+    Ok(())
+}
+
+/// Download ONNX Runtime (when needed) and the selected local STT model.
+pub async fn ensure_ready(
+    assets: &Path,
+    engine: &str,
+    mut progress: impl FnMut(&str),
+) -> Result<()> {
+    let offer = get(engine).context("Unknown local STT engine")?;
+    if speech_ready(assets, engine) {
+        return Ok(());
+    }
+    if offer.kind != Kind::Whisper && !runtime_present(assets) {
+        if std::env::var_os("ORT_DYLIB_PATH").is_some() {
+            anyhow::bail!(
+                "ONNX Runtime not found at {}. Set ORT_DYLIB_PATH to a working 1.24+ library.",
+                runtime_path(assets).display()
+            );
+        }
+        install_runtime(assets, &mut progress).await?;
+    }
+    if !installed(assets, offer) {
+        progress(&format!(
+            "Downloading {} (~{})...",
+            offer.name,
+            size_label(missing_bytes(assets, offer))
+        ));
+        download(assets.to_path_buf(), engine).await?;
+        progress(&format!("Installed {}.", offer.name));
+    }
+    Ok(())
+}
+
 pub fn whisper_model_file(assets: &Path, id: &str) -> Result<PathBuf> {
     let offer = get(id).context("Unknown Whisper model")?;
     ensure!(offer.kind == Kind::Whisper, "Not a Whisper model");
@@ -368,5 +566,91 @@ mod tests {
         assert_eq!(resolve("Parakeet unified"), Some("parakeet"));
         assert_eq!(resolve("whisper tiny"), Some("whisper-tiny"));
         assert!(get("nope").is_none());
+    }
+
+    #[test]
+    fn flatten_onnx_runtime_library_names() {
+        assert_eq!(
+            flatten_runtime_name("onnxruntime-linux-x64-1.24.2/lib/libonnxruntime.so.1.24.2")
+                .as_deref(),
+            Some("libonnxruntime.so")
+        );
+        assert_eq!(
+            flatten_runtime_name("onnxruntime-osx-arm64-1.24.2/lib/libonnxruntime.1.24.2.dylib")
+                .as_deref(),
+            Some("libonnxruntime.dylib")
+        );
+        assert_eq!(
+            flatten_runtime_name(r"onnxruntime-win-x64-1.24.2\lib\onnxruntime.dll").as_deref(),
+            Some("onnxruntime.dll")
+        );
+        assert_eq!(
+            flatten_runtime_name(
+                "onnxruntime-linux-x64-1.24.2/lib/libonnxruntime_providers_shared.so"
+            )
+            .as_deref(),
+            Some("libonnxruntime_providers_shared.so")
+        );
+        assert_eq!(
+            flatten_runtime_name(
+                "onnxruntime-osx-arm64-1.24.2/lib/libonnxruntime_providers_shared.dylib"
+            )
+            .as_deref(),
+            Some("libonnxruntime_providers_shared.dylib")
+        );
+        assert!(flatten_runtime_name("README.md").is_none());
+        assert!(flatten_runtime_name("include/onnxruntime_c_api.h").is_none());
+    }
+
+    #[test]
+    fn host_has_onnx_runtime_or_is_intel_mac() {
+        if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+            assert!(runtime_archive().is_none());
+        } else {
+            let archive = runtime_archive().expect("this OS/CPU should have a pinned runtime");
+            assert!(archive.filename.contains("onnxruntime"));
+            assert!(archive.url.contains("v1.24.2"));
+            assert_eq!(archive.sha256.len(), 64);
+        }
+    }
+
+    #[test]
+    fn empty_assets_are_not_speech_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!runtime_present(dir.path()));
+        assert!(!speech_ready(dir.path(), "canary"));
+        assert!(!speech_ready(dir.path(), "parakeet"));
+        assert!(!speech_ready(dir.path(), "whisper-tiny"));
+    }
+
+    #[test]
+    fn copy_runtime_libs_flattens_and_skips_docs() {
+        let unpack = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let lib = unpack.path().join("pkg/lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        let versioned = if cfg!(windows) {
+            "onnxruntime.dll"
+        } else if cfg!(target_os = "macos") {
+            "libonnxruntime.1.24.2.dylib"
+        } else {
+            "libonnxruntime.so.1.24.2"
+        };
+        std::fs::write(lib.join(versioned), b"lib").unwrap();
+        std::fs::write(unpack.path().join("pkg/README.md"), b"no").unwrap();
+        copy_runtime_libs(unpack.path(), dest.path()).unwrap();
+        assert_eq!(
+            std::fs::read(dest.path().join(runtime_lib_name())).unwrap(),
+            b"lib"
+        );
+        assert!(!dest.path().join("README.md").exists());
+    }
+
+    #[test]
+    fn part_file_keeps_compound_extensions() {
+        assert_eq!(
+            part_file(Path::new("/tmp/encoder-model.int8.onnx")),
+            PathBuf::from("/tmp/encoder-model.int8.onnx.part")
+        );
     }
 }

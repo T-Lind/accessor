@@ -18,10 +18,6 @@ try {
         & cargo build --release --locked --bin acc
         if ($LASTEXITCODE -ne 0) { throw 'Accessor build failed.' }
     }
-    if (-not $Text -and (-not (Test-Path -LiteralPath 'models\canary-180m-flash\vocab.txt') -or -not (Test-Path -LiteralPath 'runtime\onnxruntime.dll'))) {
-        & python scripts/setup_speech.py
-        if ($LASTEXITCODE -ne 0) { throw 'Speech setup failed.' }
-    }
     # Prefer the currently running desktop app's compatible executable over an
     # older npm CLI. Never change the user's global installation or configuration.
     if ($Agent -eq 'codex' -and -not $CodexBin) {

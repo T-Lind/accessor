@@ -37,7 +37,7 @@ fn speech_files_present(dir: &Path, kind: crate::stt_models::Kind) -> Result<()>
     for name in names {
         ensure!(
             dir.join(name).is_file(),
-            "Missing {}. Select the model in /settings to download it.",
+            "Missing {}. Accessor downloads the selected local STT model on start, or pick one in /settings.",
             dir.join(name).display()
         );
     }
@@ -45,21 +45,11 @@ fn speech_files_present(dir: &Path, kind: crate::stt_models::Kind) -> Result<()>
 }
 
 fn onnx_runtime_path() -> PathBuf {
-    std::env::var_os("ORT_DYLIB_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            crate::config::Settings::load()
-                .and_then(|s| s.assets())
-                .unwrap_or_else(|_| ".".into())
-                .join("runtime")
-                .join(if cfg!(windows) {
-                    "onnxruntime.dll"
-                } else if cfg!(target_os = "macos") {
-                    "libonnxruntime.dylib"
-                } else {
-                    "libonnxruntime.so"
-                })
-        })
+    crate::stt_models::runtime_path(
+        &crate::config::Settings::load()
+            .and_then(|s| s.assets())
+            .unwrap_or_else(|_| ".".into()),
+    )
 }
 
 fn prepare_ort() -> Result<()> {
@@ -69,7 +59,7 @@ fn prepare_ort() -> Result<()> {
             let runtime = onnx_runtime_path();
             ensure!(
                 runtime.is_file(),
-                "ONNX Runtime not found at {}. Run python scripts/setup_speech.py, or set ORT_DYLIB_PATH.",
+                "ONNX Runtime not found at {}. Accessor downloads it on start; set ORT_DYLIB_PATH to override.",
                 runtime.display()
             );
             let environment = ort::init_from(runtime)?;

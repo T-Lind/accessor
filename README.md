@@ -19,13 +19,12 @@ On Linux/macOS, install Rust and run:
 
 ```sh
 cargo install --path . --bin acc --locked
-acc config set assets-dir /absolute/path/to/accessor
-python scripts/setup_speech.py
-acc setup
 acc
 ```
 
-Python is needed only for speech setup and the optional Kokoro worker. Canary and the gateway run in the native Rust process. Codex uses its existing login; Accessor does not call the OpenAI API directly. Windows automatically prefers the desktop-bundled Codex executable when available. Override with `acc config set codex-bin PATH` or `--codex-bin PATH`.
+The first run downloads ONNX Runtime and the default Canary speech model into Accessor’s assets folder (`~/.config/accessor/assets` on Linux, `~/Library/Application Support/Accessor/assets` on macOS). No Python and no `assets-dir` pointing at the git checkout. `acc setup` and `acc doctor` do the same download if files are still missing.
+
+Python is needed only for the optional Kokoro worker. Canary and the gateway run in the native Rust process. Codex uses its existing login; Accessor does not call the OpenAI API directly. Windows automatically prefers the desktop-bundled Codex executable when available. Override with `acc config set codex-bin PATH` or `--codex-bin PATH`.
 
 ## A CLI for everyday use
 
