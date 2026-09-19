@@ -20,6 +20,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/update", "Check harness CLIs and apply updates"),
     ("/agent", "Open Codex; exit to return"),
     ("/events", "Show the event queue"),
+    ("/organizer", "Show notes, alarms, and scheduled tasks"),
     ("/status", "Show current state"),
     ("/stop", "Cancel and sleep"),
     ("/sleep", "Close voice access"),
@@ -138,6 +139,9 @@ pub fn parse(text: &str, s: &Settings) -> Result<Option<LocalCommand>> {
         ["/update", "check"] | ["/update", "--check"] => LocalCommand::Update { check: true },
         ["/connectors", "setup"] | ["/agent"] => LocalCommand::Native,
         ["/events"] => LocalCommand::Utility(vec!["events".into(), "status".into()]),
+        ["/organizer"] | ["/alarms"] | ["/tasks"] | ["/notes"] => {
+            LocalCommand::Utility(vec!["organizer".into(), "status".into()])
+        }
         ["/stt", "provider", provider] => {
             LocalCommand::Set("stt.conversation".into(), (*provider).into())
         }

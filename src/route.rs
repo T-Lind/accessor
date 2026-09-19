@@ -391,6 +391,8 @@ pub fn handoff_guide(settings: &Settings, models: &[crate::connectors::Model]) -
     lines.push_str(
         "\nDo not claim you already changed Accessor settings. Only ACCESSOR_SWITCH or the user's voice command does that.",
     );
+    lines.push_str("\n\n");
+    lines.push_str(&crate::organizer::guide());
     lines
 }
 

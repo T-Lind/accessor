@@ -18,6 +18,7 @@ struct LiveAgent {
     tx: mpsc::Sender<agent::CommandMessage>,
     task: tokio::task::JoinHandle<()>,
     first: Option<String>,
+    model: Option<String>,
 }
 
 fn identity_status(harness: &str, model: Option<&str>) -> String {
@@ -35,6 +36,7 @@ fn identity_status(harness: &str, model: Option<&str>) -> String {
 struct BannerState {
     active: bool,
     busy: bool,
+    alarm: bool,
     approval: bool,
     speaking: bool,
     settings_open: bool,
@@ -43,7 +45,9 @@ struct BannerState {
 }
 
 fn banner(state: BannerState, identity: &str) -> String {
-    let voice = if state.settings_open {
+    let voice = if state.alarm {
+        "ALARM: say 29 stop"
+    } else if state.settings_open {
         "SETTINGS: mic paused — Esc until Activity, then say 29"
     } else if state.setup {
         "SETUP: microphone paused"
@@ -114,6 +118,9 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut event_cancelled = false;
     let mut waiting_event: Option<crate::triggers::Event> = None;
     let mut last_event_poll = Instant::now();
+    let mut waiting_tasks = VecDeque::<crate::organizer::Task>::new();
+    let mut last_organizer_poll = Instant::now();
+    let mut organizer_error_warned = false;
     let wake_code = args
         .wake_code
         .take()
@@ -242,6 +249,7 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut tick = tokio::time::interval(Duration::from_millis(50));
     let mut speaker: Option<speech::Job> = None;
     let mut think: Option<audio::Cue> = None;
+    let mut alarm: Option<audio::Cue> = None;
     let mut think_warned = false;
     ui.message(format!(
         "Accessor {} — {}",
@@ -258,6 +266,7 @@ pub async fn run(mut args: Run) -> Result<()> {
         BannerState {
             active: session.active(),
             busy,
+            alarm: false,
             approval,
             speaking: speaker.is_some(),
             settings_open: false,
@@ -286,6 +295,7 @@ pub async fn run(mut args: Run) -> Result<()> {
             BannerState {
                 active: session.active(),
                 busy,
+                alarm: alarm.is_some(),
                 approval,
                 speaking: speaker.is_some(),
                 settings_open: panel.is_some(),
@@ -304,13 +314,22 @@ pub async fn run(mut args: Run) -> Result<()> {
             input = input_rx.recv(), if !eof || !input_rx.is_empty() => {
                 let Some(input) = input else { break; };
                 let is_event=matches!(&input,Input::Trigger(_));
+                let is_automatic=matches!(&input,Input::Trigger(_) | Input::Scheduled(_));
                 let spoken_setting=matches!(&input,Input::Configure{spoken:true,..});
-                let (mut text, typed, spoken_addressed, captured_during_output) = match input {
-                    Input::Configure{key,value,..}=>(format!("/config set {key} {value}"),true,false,false),
+                let (mut text, typed, spoken_addressed, captured_during_output, route_override) = match input {
+                    Input::Configure{key,value,..}=>(format!("/config set {key} {value}"),true,false,false,None),
                     Input::Trigger(event)=>{
                         if busy {waiting_event=Some(event);continue;}
                         let prompt=event.prompt(settings.event_owner.as_deref().unwrap_or(""));
-                        event_cancelled=false;current_event=Some(event);(prompt,false,false,false)
+                        event_cancelled=false;current_event=Some(event);(prompt,false,false,false,None)
+                    }
+                    Input::Scheduled(task)=>{
+                        if busy {waiting_tasks.push_front(task);continue;}
+                        let target=task.harness.as_ref().map(|harness| crate::route::Target {
+                            harness:harness.clone(),model:task.model.clone(),kind:"scheduled"
+                        });
+                        let prompt=format!("Scheduled task ‘{}’ is due. Execute these saved user instructions now:\n\n{}",task.label,task.prompt);
+                        (prompt,false,false,false,target)
                     }
                     Input::Eof => { if args.text { eof=true; } continue; }
                     Input::Activity { epoch: e } => {
@@ -329,19 +348,19 @@ pub async fn run(mut args: Run) -> Result<()> {
                     }
                     Input::Voice { text, epoch: captured_epoch, captured_at } => {
                         if muted.load(Ordering::SeqCst) || captured_epoch != epoch.load(Ordering::SeqCst) { continue; }
-                        let captured_during_output = busy || speaker.is_some()
+                        let captured_during_output = busy || speaker.is_some() || alarm.is_some()
                             || output_guard_until.is_some_and(|until| captured_at <= until);
                         let addressed=session.addressed(&text);
                         if !addressed && echo_guard.matches(&text,speaker.is_some()) {
                             continue;
                         }
                         crate::usage::record_stt("canary", 0.0);
-                        (text, false, addressed, captured_during_output)
+                        (text, false, addressed, captured_during_output, None)
                     }
                     Input::Pcm { samples, epoch: captured_epoch, captured_at } => {
                         if muted.load(Ordering::SeqCst) || captured_epoch != epoch.load(Ordering::SeqCst) { continue; }
                         if user_muted { continue; }
-                        let captured_during_output = busy || speaker.is_some()
+                        let captured_during_output = busy || speaker.is_some() || alarm.is_some()
                             || output_guard_until.is_some_and(|until| captured_at <= until);
                         match speech::cartesia_stt(&samples).await {
                             Ok(text) if !text.trim().is_empty() => {
@@ -350,13 +369,13 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 if !addressed && echo_guard.matches(&text,speaker.is_some()) {
                                     continue;
                                 }
-                                (text, false, addressed, captured_during_output)
+                                (text, false, addressed, captured_during_output, None)
                             }
                             Ok(_) => continue,
                             Err(e) => { ui.message(format!("Ink-2 STT unavailable: {e:#}. Say that again, or set Speech → local STT.")); continue; }
                         }
                     }
-                    Input::Text(text) => (text, true, false, false),
+                    Input::Text(text) => (text, true, false, false, None),
                 };
                 if pending_stt.is_some() && text.trim()=="/cancel" {
                     pending_stt=None;
@@ -511,7 +530,10 @@ pub async fn run(mut args: Run) -> Result<()> {
                                         if key=="wake-code" || key=="idle-seconds" || key=="addressed" {session=Session::new(wake::WakeCode::new(&settings.wake_code,&args.wake_alias)?,settings.addressed,Duration::from_secs(settings.idle_seconds));epoch.fetch_add(1,Ordering::SeqCst);}
                                         if key=="model" {
                                             active_model=settings.model.clone();
-                                            if let Some(live)=agents.get(&active_harness) {let _=live.tx.try_send(agent::CommandMessage::Model(settings.model.clone()));}
+                                            if let Some(live)=agents.get_mut(&active_harness) {
+                                                live.model=settings.model.clone();
+                                                let _=live.tx.try_send(agent::CommandMessage::Model(settings.model.clone()));
+                                            }
                                         }
                                         if key=="agent" {
                                             active_harness=settings.agent.clone();
@@ -659,6 +681,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                         ["/unmute"] => { if !microphone_available {ui.message("Microphone is unavailable. Check /devices and restart after setup.");continue;} user_muted=false;session.close();muted.store(panel.is_some() || (speaker.is_some() && !settings.barge_in),Ordering::SeqCst);epoch.fetch_add(1,Ordering::SeqCst);ui.message("[UNMUTED: waiting for wake code]"); }
                         ["/cancel"] | ["/stop"] => {
                             think=None;
+                            alarm=None;
                             if let Some(task)=utility.take() {task.abort();}
                             if text.trim()=="/stop" {
                                 session.close();
@@ -690,9 +713,9 @@ pub async fn run(mut args: Run) -> Result<()> {
                 // deterministic even when acoustic cancellation is imperfect.
                 if !spoken_input_allowed(
                     typed,
-                    is_event,
+                    is_automatic,
                     busy,
-                    speaker.is_some(),
+                    speaker.is_some() || alarm.is_some(),
                     captured_during_output,
                     spoken_addressed,
                     wake_listening,
@@ -701,7 +724,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                 }
                 if busy || speaker.is_some() {session.touch(Instant::now());}
                 let was_active = session.active();
-                let action = if is_event || (typed && !args.text) {
+                let action = if is_automatic || (typed && !args.text) {
                     Action::Prompt(text)
                 } else if user_muted {
                     session.hear_while_muted(&text, Instant::now())
@@ -744,6 +767,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                     }
                     Action::Mute => {
                         wake_listening=false;
+                        alarm=None;
                         user_muted=true;session.close();epoch.fetch_add(1,Ordering::SeqCst);
                         ui.message("[MUTED: only the local wake detector is active; say 29 unmute or type /unmute]");
                     }
@@ -755,12 +779,14 @@ pub async fn run(mut args: Run) -> Result<()> {
                     }
                     Action::Disconnect => {
                         wake_listening=false;
+                        alarm=None;
                         think=None;silence_reply=true;speech_queue.clear();speaker=None;echo_guard.finish();muted.store(false,Ordering::SeqCst);epoch.fetch_add(1,Ordering::SeqCst);
                         ui.message("Asleep. Waiting for wake code.");
                         if cues { muted.store(true,Ordering::SeqCst); if let Err(e)=audio::sleep_chime(settings.sounds.sleep) { ui.message(format!("Sleep chime unavailable: {}",safe(&e.to_string()))); } muted.store(false,Ordering::SeqCst); epoch.fetch_add(1,Ordering::SeqCst); }
                     }
                     Action::Cancel | Action::Stop => {
                         wake_listening=false;
+                        alarm=None;
                         think=None;
                         if matches!(action,Action::Stop) {
                             session.close();ui.message("Stopped. Waiting for wake code.");
@@ -773,7 +799,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                     Action::Prompt(text) => {
                         let wake_followup = wake_listening;
                         wake_listening = false;
-                        if !typed && !is_event && !spoken_addressed && !wake_followup && spoken_word_count(&text) < 2 {
+                        if !typed && !is_automatic && !spoken_addressed && !wake_followup && spoken_word_count(&text) < 2 {
                             ui.message("Ignored a one-word transcript; say “29” first or use a longer phrase.");
                             continue;
                         }
@@ -797,7 +823,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 }
                             }
                         }
-                        if !is_event {
+                        if !is_automatic {
                             if (busy || speaker.is_some()) && !settings.barge_in && (!typed || args.text) {ui.message("Barge-ins are off. Use /cancel or change /settings.");continue;}
                             if let Some(command)=crate::settings_ui::voice_command(&text,&models, Some(&settings)) {
                                 speech_queue.clear();speaker=None;think=None;echo_guard.finish();silence_reply=true;
@@ -821,9 +847,12 @@ pub async fn run(mut args: Run) -> Result<()> {
                             ui.message("Interrupting; your follow-up will run next.");continue;
                         }
                         if is_event {ui.message("Gmail notification received; asking the agent to handle the reply.");}
+                        else if is_automatic {ui.message("Scheduled task is due; asking the agent to run it.");}
                         else {ui.chat(Kind::User, &text);}
                         silence_reply=is_event;
-                        let target = if let Some((harness, model)) = &session_pin {
+                        let target = if let Some(target) = route_override {
+                            target
+                        } else if let Some((harness, model)) = &session_pin {
                             crate::route::Target {
                                 harness: harness.clone(),
                                 model: model.clone(),
@@ -843,7 +872,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                         last_route = Some(target.clone());
                         announce_next = settings.routing.announce
                             && crate::identity::should_announce(last_identity, Instant::now());
-                        if !is_event {
+                        if !is_automatic {
                             let blob = crate::route::transcript_text(transcript.make_contiguous());
                             if crate::usage::approx_tokens(&blob) > settings.routing.compact_tokens as usize {
                                 match crate::route::compact(&blob, &settings).await {
@@ -868,7 +897,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                         } else {
                             crate::route::bridge_prompt(&missed, &text, &settings).await
                         };
-                        if !is_event {
+                        if !is_automatic {
                             transcript.push_back(("User".into(), text));
                             if transcript.len() > 30 {
                                 while transcript.len() > 30 { transcript.pop_front(); }
@@ -878,6 +907,18 @@ pub async fn run(mut args: Run) -> Result<()> {
                         seen_history.insert(target.harness.clone(), transcript.len());
                         busy=true;
                         crate::usage::record_harness(&target.harness, crate::usage::approx_tokens(&outbound));
+                        let model_mismatch=agents.get(&target.harness).is_some_and(|live|live.model!=target.model);
+                        if model_mismatch && target.harness=="codex" {
+                            if let Some(live)=agents.get_mut(&target.harness) {
+                                live.model=target.model.clone();
+                                let _=live.tx.try_send(agent::CommandMessage::Model(target.model.clone()));
+                            }
+                        } else if model_mismatch {
+                            if let Some(live)=agents.remove(&target.harness) {
+                                let _=live.tx.try_send(agent::CommandMessage::Shutdown);
+                                live.task.abort();
+                            }
+                        }
                         if let Some(tx) = agents.get(&target.harness).map(|live| live.tx.clone()) {
                             agent_tx = Some(tx.clone());
                             if tx.send(agent::CommandMessage::Prompt(outbound)).await.is_err() {
@@ -898,7 +939,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 ),
                             },event_tx.clone());
                             agent_tx=Some(tx.clone());
-                            agents.insert(target.harness, LiveAgent { tx, task, first: Some(outbound) });
+                            agents.insert(target.harness, LiveAgent { tx, task, first: Some(outbound), model:target.model });
                         }
                     }
                 }
@@ -937,6 +978,28 @@ pub async fn run(mut args: Run) -> Result<()> {
                     }
                     agent::Event::Reply(text) => {
                         if harness != active_harness || pending_prompt.is_some() || pending_setting.is_some() {continue;}
+                        let (text, directives) = crate::organizer::take_directives(&text);
+                        for directive in directives {
+                            let result: Result<String> = match directive {
+                                crate::organizer::Directive::Sleep => {
+                                    session.close();alarm=None;epoch.fetch_add(1,Ordering::SeqCst);
+                                    Ok("Agent put the voice session to sleep. Waiting for wake code.".into())
+                                }
+                                crate::organizer::Directive::Note { text, title } => {
+                                    crate::organizer::add_note(&text,title.as_deref())
+                                        .map(|path|format!("Note saved: {}",path.display()))
+                                }
+                                crate::organizer::Directive::Alarm { label, delay_seconds, at_unix } => {
+                                    crate::organizer::add_alarm(label.as_deref(),delay_seconds,at_unix)
+                                        .map(|item|format!("Alarm {} saved for Unix {}.",item.id,item.at_unix))
+                                }
+                                crate::organizer::Directive::Schedule { prompt,label,delay_seconds,at_unix,every_seconds,harness,model } => {
+                                    crate::organizer::add_task(&prompt,label.as_deref(),delay_seconds,at_unix,every_seconds,harness.as_deref(),model.as_deref())
+                                        .map(|item|format!("Scheduled task {} saved for Unix {}.",item.id,item.next_unix))
+                                }
+                            };
+                            match result {Ok(message)=>ui.message(message),Err(e)=>ui.message(format!("Accessor control rejected: {e:#}"))}
+                        }
                         let (text, switch) = crate::route::take_handoff(&text);
                         if let Some((next, model)) = switch {
                             pending_handoff=Some((next.clone(), model));
@@ -974,6 +1037,18 @@ pub async fn run(mut args: Run) -> Result<()> {
                             active_harness = harness.clone();
                             active_model = if model == "default" { None } else { Some(model.clone()) };
                             session_pin = Some((active_harness.clone(), active_model.clone()));
+                            let model_mismatch=agents.get(&active_harness).is_some_and(|live|live.model!=active_model);
+                            if model_mismatch && active_harness=="codex" {
+                                if let Some(live)=agents.get_mut(&active_harness) {
+                                    live.model=active_model.clone();
+                                    let _=live.tx.try_send(agent::CommandMessage::Model(active_model.clone()));
+                                }
+                            } else if model_mismatch {
+                                if let Some(live)=agents.remove(&active_harness) {
+                                    let _=live.tx.try_send(agent::CommandMessage::Shutdown);
+                                    live.task.abort();
+                                }
+                            }
                             let existing = agents.get(&active_harness).map(|live| (live.tx.clone(), live.first.is_none()));
                             if let Some((tx, ready)) = existing {
                                 agent_tx=Some(tx.clone());
@@ -1008,6 +1083,22 @@ pub async fn run(mut args: Run) -> Result<()> {
 
             }
             _ = tick.tick() => {
+                if !args.stt_test && last_organizer_poll.elapsed()>=Duration::from_secs(1) {
+                    last_organizer_poll=Instant::now();
+                    match crate::organizer::claim_due() {
+                        Ok(items)=>{organizer_error_warned=false;for item in items {match item {
+                            crate::organizer::Due::Alarm(item)=>{
+                                alarm=None;
+                                match audio::alarm(settings.sounds.wake) {
+                                    Ok(cue)=>{alarm=Some(cue);ui.message(format!("[ALARM {}: {}] Say 29 stop.",item.id,item.label));}
+                                    Err(e)=>ui.message(format!("Alarm {} could not play: {e:#}",item.id)),
+                                }
+                            }
+                            crate::organizer::Due::Task(item)=>waiting_tasks.push_back(item),
+                        }}},
+                        Err(e)=>if !organizer_error_warned {organizer_error_warned=true;ui.message(format!("Organizer check failed: {e:#}"));},
+                    }
+                }
                 if !busy && speaker.is_none() && speech_queue.is_empty() && current_event.is_none() && waiting_event.is_none() && wizard.is_none() && panel.is_none() && pending_secret.is_none() && !args.stt_test && last_event_poll.elapsed()>=Duration::from_secs(1) {
                     last_event_poll=Instant::now();
                     if let Some(queue)=&event_queue {
@@ -1021,6 +1112,11 @@ pub async fn run(mut args: Run) -> Result<()> {
                 if !busy && wizard.is_none() && panel.is_none() && pending_secret.is_none() && !args.stt_test {if let Some(event)=waiting_event.take() {
                     if let Err(error)=input_tx.try_send(Input::Trigger(event)) {
                         if let Input::Trigger(event)=error.into_inner() {waiting_event=Some(event);}
+                    }
+                }}
+                if !busy && speaker.is_none() && speech_queue.is_empty() && wizard.is_none() && panel.is_none() && pending_secret.is_none() && !args.stt_test {if let Some(task)=waiting_tasks.pop_front() {
+                    if let Err(error)=input_tx.try_send(Input::Scheduled(task)) {
+                        if let Input::Scheduled(task)=error.into_inner() {waiting_tasks.push_front(task);}
                     }
                 }}
                 if model_lookup.as_ref().is_some_and(|task|task.is_finished()) {
@@ -1193,6 +1289,7 @@ mod tests {
             BannerState {
                 active: false,
                 busy: true,
+                alarm: false,
                 approval: false,
                 speaking: false,
                 settings_open: false,

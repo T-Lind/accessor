@@ -771,6 +771,28 @@ pub fn think(volume: f32) -> Result<Cue> {
     })
 }
 
+/// A repeating two-beep alarm. Dropping the returned cue stops it immediately.
+pub fn alarm(volume: f32) -> Result<Cue> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    let device = cpal::default_host()
+        .default_output_device()
+        .context("No speaker")?;
+    let supported = device.default_output_config()?;
+    let config: cpal::StreamConfig = supported.clone().into();
+    let stream = match supported.sample_format() {
+        cpal::SampleFormat::F32 => alarm_stream::<f32>(&device, &config, flag, volume)?,
+        cpal::SampleFormat::I16 => alarm_stream::<i16>(&device, &config, flag, volume)?,
+        cpal::SampleFormat::U16 => alarm_stream::<u16>(&device, &config, flag, volume)?,
+        _ => bail!("Unsupported speaker format"),
+    };
+    stream.play()?;
+    Ok(Cue {
+        stop,
+        _stream: stream,
+    })
+}
+
 fn notes_stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
@@ -846,6 +868,52 @@ where
                 let sample = think_sample(&mut phase, t, 1.0 / rate, volume);
                 for s in frame {
                     *s = T::from_sample(sample);
+                }
+            }
+        },
+        |_| {},
+        None,
+    )?)
+}
+
+fn alarm_stream<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    stop: Arc<AtomicBool>,
+    volume: f32,
+) -> Result<cpal::Stream>
+where
+    T: cpal::SizedSample + cpal::FromSample<f32>,
+{
+    let mut i = 0_u64;
+    let rate = config.sample_rate.0 as f32;
+    let channels = config.channels as usize;
+    let gain = 0.12 * volume.clamp(0.0, 1.5);
+    Ok(device.build_output_stream(
+        config,
+        move |data: &mut [T], _| {
+            for frame in data.chunks_mut(channels) {
+                let t = i as f32 / rate;
+                i += 1;
+                let cycle = t % 1.5;
+                let local = if cycle < 0.18 {
+                    Some(cycle)
+                } else if (0.28..0.46).contains(&cycle) {
+                    Some(cycle - 0.28)
+                } else {
+                    None
+                };
+                let sample = if stop.load(Ordering::SeqCst) {
+                    0.0
+                } else if let Some(local) = local {
+                    let envelope =
+                        (local / 0.02).min(1.0) * ((0.18 - local) / 0.04).clamp(0.0, 1.0);
+                    gain * envelope * (std::f32::consts::TAU * 880.0 * local).sin()
+                } else {
+                    0.0
+                };
+                for output in frame {
+                    *output = T::from_sample(sample);
                 }
             }
         },

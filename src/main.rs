@@ -8,6 +8,7 @@ mod dashboard;
 mod echo;
 mod identity;
 mod markdown;
+mod organizer;
 mod route;
 mod session;
 mod settings_ui;
@@ -25,6 +26,7 @@ pub enum Input {
         spoken: bool,
     },
     Trigger(triggers::Event),
+    Scheduled(organizer::Task),
     Text(String),
     Voice {
         text: String,

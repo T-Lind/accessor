@@ -163,6 +163,24 @@ acc agent mcp login SERVER_NAME
 
 Accessor uses the same local Codex configuration and login. Plugins limited to the desktop UI may not work in a standalone App Server. Custom MCP setup remains provider-specific. A Gmail tool connection permits on-demand email tasks; it does not by itself deliver incoming-email notifications.
 
+## Notes, alarms, sleep, and scheduled tasks
+
+The voice metaprompt tells every supported harness about Accessor's structured local controls. You can say things such as “make a note that the filter size is 20 by 25,” “set an alarm for five minutes,” “run this every morning using Codex and Sol,” or “go to sleep.” The agent emits a strict one-line JSON directive; Accessor removes it from the reply, validates it, performs the local action, and reports what was saved. A sleep directive closes voice access after the reply and waits for the wake code again.
+
+Notes are private Markdown files under `notes/` in the directory shown by `acc config locations`. Alarms and scheduled tasks persist in `schedules.json`. An alarm repeats a two-beep cue until you say “29 stop” or type `/stop`. Alarms and tasks are checked once per second only while an `acc` process is running; this release does not install a background service or wake a powered-off/suspended computer.
+
+Scheduled tasks contain a prompt, a first run time, an optional repeat interval, and optional harness/model overrides. When no harness is specified, the task goes through normal Jev/keyword routing. A model override requires an explicit harness. Repeating tasks must be at least 60 seconds apart. If Accessor was not running at the scheduled time, a one-shot task runs once when Accessor next starts; a recurring task runs once and advances to its next future interval.
+
+The same store has a direct CLI for inspection and scripting:
+
+```sh
+acc organizer status
+acc organizer note "Filter size is 20 by 25" --title workshop
+acc organizer alarm --in-seconds 300 --label tea
+acc organizer task "Summarize today's project status" --in-seconds 3600 --every-seconds 86400 --harness codex --model gpt-5.6-sol
+acc organizer cancel ITEM_ID
+```
+
 ## Incoming replies through an event trigger
 
 This release provides the **local handoff** for an existing email automation. It never polls Gmail or invokes an LLM just to check for mail. Configure the reply address and explicitly enable event handling:

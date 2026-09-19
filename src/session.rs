@@ -97,12 +97,12 @@ impl Session {
     }
 
     /// While privacy-muted, keep the wake detector local and accept only the
-    /// exact unmute control. No other phrase may open a session.
+    /// exact unmute or stop control. No other phrase may open a session.
     pub fn hear_while_muted(&mut self, text: &str, now: Instant) -> Action {
         self.close();
         let action = self.hear(text, now);
         self.close();
-        if matches!(action, Action::Unmute) {
+        if matches!(action, Action::Unmute | Action::Stop) {
             action
         } else {
             Action::Ignore
@@ -242,6 +242,7 @@ mod tests {
         assert!(!s.active());
         assert_eq!(s.hear_while_muted("unmute", now), Action::Ignore);
         assert_eq!(s.hear_while_muted("29 unmute", now), Action::Unmute);
+        assert_eq!(s.hear_while_muted("29 stop", now), Action::Stop);
         assert!(!s.active());
     }
 }

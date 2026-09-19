@@ -26,6 +26,11 @@ enum Commands {
         #[command(subcommand)]
         action: EventCommand,
     },
+    /// Manage local notes, alarms, and persistent scheduled tasks.
+    Organizer {
+        #[command(subcommand)]
+        action: OrganizerCommand,
+    },
     /// Start the voice gateway (also the default when no command is given).
     Run(Run),
     /// Save wake, voice, and speech-file settings interactively.
@@ -195,6 +200,41 @@ enum EventCommand {
     Status,
 }
 
+#[derive(Subcommand)]
+enum OrganizerCommand {
+    /// Show the notes folder and pending alarms/tasks.
+    Status,
+    /// Save a Markdown note.
+    Note {
+        text: String,
+        #[arg(long)]
+        title: Option<String>,
+    },
+    /// Set an alarm relative to now.
+    Alarm {
+        #[arg(long)]
+        in_seconds: u64,
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Schedule an agent prompt relative to now.
+    Task {
+        prompt: String,
+        #[arg(long)]
+        in_seconds: u64,
+        #[arg(long)]
+        every_seconds: Option<u64>,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        harness: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// Cancel a pending item by its 8-character ID, or use "all".
+    Cancel { id: String },
+}
+
 fn normalized(mut args: Vec<OsString>) -> Vec<OsString> {
     if args.len() == 1 {
         args.push("run".into());
@@ -241,6 +281,54 @@ fn normalized(mut args: Vec<OsString>) -> Vec<OsString> {
 pub async fn entry() -> Result<()> {
     let cli = Cli::parse_from(normalized(std::env::args_os().collect()));
     match cli.command {
+        Commands::Organizer { action } => match action {
+            OrganizerCommand::Status => {
+                println!("{}", crate::organizer::list()?);
+                Ok(())
+            }
+            OrganizerCommand::Note { text, title } => {
+                let path = crate::organizer::add_note(&text, title.as_deref())?;
+                println!("Saved {}", path.display());
+                Ok(())
+            }
+            OrganizerCommand::Alarm { in_seconds, label } => {
+                let item = crate::organizer::add_alarm(label.as_deref(), Some(in_seconds), None)?;
+                println!("Alarm {} saved for Unix {}.", item.id, item.at_unix);
+                Ok(())
+            }
+            OrganizerCommand::Task {
+                prompt,
+                in_seconds,
+                every_seconds,
+                label,
+                harness,
+                model,
+            } => {
+                let item = crate::organizer::add_task(
+                    &prompt,
+                    label.as_deref(),
+                    Some(in_seconds),
+                    None,
+                    every_seconds,
+                    harness.as_deref(),
+                    model.as_deref(),
+                )?;
+                println!("Task {} saved for Unix {}.", item.id, item.next_unix);
+                Ok(())
+            }
+            OrganizerCommand::Cancel { id } => {
+                crate::organizer::require_id(&id)?;
+                println!(
+                    "{}",
+                    if crate::organizer::cancel(&id)? {
+                        "Cancelled."
+                    } else {
+                        "No matching pending item."
+                    }
+                );
+                Ok(())
+            }
+        },
         Commands::Events { action } => match action {
             EventCommand::Setup => {
                 let mut s = Settings::load()?;
