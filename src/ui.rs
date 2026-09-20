@@ -431,7 +431,7 @@ impl Ui {
                 layout[2],
             );
             f.render_widget(
-                Paragraph::new(if self.settings.is_some() {" ↑/↓ choose · Enter select · Esc back · changes save on confirmation "} else {" Say wake code, then pause · Esc cancel · /sleep · /audio · /settings "})
+                Paragraph::new(if self.settings.is_some() {" ↑/↓ choose · Enter select · Esc back · changes save on confirmation "} else {" Continue while thinking · wake code during speech · Esc cancel · /sleep · /audio · /settings "})
                     .style(Style::default().fg(color)),
                 layout[3],
             );
@@ -511,7 +511,7 @@ fn status_lines(status: &str) -> String {
         .replace("GREEN: conversation open", "Listening · conversation open")
         .replace(
             "BLUE: waiting for reply",
-            "Thinking · wake code to interrupt",
+            "Thinking · listening for your follow-up",
         );
     let identity = parts.get(2).copied().unwrap_or("");
     let task = parts
@@ -628,7 +628,7 @@ fn status_color(status: &str) -> Color {
     } else if status.contains("AMBER") || status.contains("SETTINGS") {
         Color::Yellow
     } else if status.contains("BLUE") {
-        Color::Blue
+        Color::LightBlue
     } else if status.contains("GREEN") {
         Color::Green
     } else {
@@ -654,7 +654,7 @@ mod tests {
             Color::Magenta
         );
         assert_eq!(status_color("GREEN: conversation open"), Color::Green);
-        assert_eq!(status_color("BLUE: agent working"), Color::Blue);
+        assert_eq!(status_color("BLUE: agent working"), Color::LightBlue);
         assert_eq!(status_color("SETTINGS: mic paused"), Color::Yellow);
     }
     #[test]

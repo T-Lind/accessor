@@ -1,5 +1,7 @@
 """Protocol fixture: never connects to a model or executes a command."""
 import json
+import os
+import time
 import sys
 from control_fixtures import control_reply
 
@@ -14,6 +16,7 @@ for line in sys.stdin:
     msg = json.loads(line)
     method = msg.get("method")
     if method == "initialize":
+        time.sleep(float(os.environ.get("ACC_FIXTURE_START_DELAY", "0")))
         send({"id": msg["id"], "result": {}})
     elif method == "thread/start":
         assert msg["params"]["sandbox"] == "read-only"

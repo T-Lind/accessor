@@ -588,7 +588,7 @@ pub async fn entry() -> Result<()> {
                         path.display()
                     );
                 } else {
-                    let mut job = speech::start(text, s.tts);
+                    let mut job = speech::start(text, s.tts, Default::default());
                     (&mut job.task).await??;
                     println!(
                         "Speech test finished in {:.2}s (including playback)",

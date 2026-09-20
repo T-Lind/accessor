@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc, Arc, Mutex, OnceLock,
     },
     time::{Duration, Instant},
@@ -139,7 +139,48 @@ impl Diagnostics {
     }
 }
 
+#[derive(Default)]
+pub struct SpeechState {
+    active: AtomicBool,
+    pending: AtomicUsize,
+    processing: AtomicBool,
+    playback: AtomicBool,
+}
+impl SpeechState {
+    pub fn summary(&self) -> String {
+        format!(
+            "Speech detected: {}; clips awaiting recognition: {}; input processing: {}",
+            self.active.load(Ordering::SeqCst),
+            self.pending.load(Ordering::SeqCst),
+            self.processing.load(Ordering::SeqCst)
+        )
+    }
+    pub fn processing(&self, value: bool) {
+        self.processing.store(value, Ordering::SeqCst);
+    }
+    pub fn playback(&self, value: bool) {
+        self.playback.store(value, Ordering::SeqCst);
+    }
+    pub fn holding(&self) -> bool {
+        self.active.load(Ordering::SeqCst)
+            || self.pending.load(Ordering::SeqCst) > 0
+            || self.processing.load(Ordering::SeqCst)
+    }
+}
+struct PendingSpeech(Arc<SpeechState>);
+impl PendingSpeech {
+    fn new(state: &Arc<SpeechState>) -> Self {
+        state.pending.fetch_add(1, Ordering::SeqCst);
+        Self(state.clone())
+    }
+}
+impl Drop for PendingSpeech {
+    fn drop(&mut self) {
+        self.0.pending.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 pub struct MicFlags {
+    pub speech_state: Arc<SpeechState>,
     pub diagnostics: Arc<Diagnostics>,
     pub interrupting: Arc<AtomicBool>,
     pub epoch: Arc<AtomicU64>,
@@ -322,22 +363,23 @@ struct Chunk {
     at: Instant,
 }
 struct Utterance {
+    during_output: bool,
+    _pending: Option<PendingSpeech>,
     started: Instant,
     samples: Vec<f32>,
     epoch: u64,
     at: Instant,
 }
 
-const END_SILENCE_SAMPLES: usize = 10_240;
+const END_SILENCE_SAMPLES: usize = 16_000;
 
-/// Fixed-memory utterance segmentation: 320ms pre-roll, 640ms trailing silence.
-/// Discard overlong speech rather than executing a truncated command.
+/// Fixed-memory utterance segmentation: 320ms pre-roll, 1000ms trailing silence.
+/// Long speech is delivered in overlapping chunks instead of discarded.
 struct Segmenter {
     before: VecDeque<f32>,
     current: Vec<f32>,
     voiced: usize,
     silence: usize,
-    overflow: bool,
 }
 impl Segmenter {
     fn new() -> Self {
@@ -346,11 +388,10 @@ impl Segmenter {
             current: Vec::new(),
             voiced: 0,
             silence: 0,
-            overflow: false,
         }
     }
     fn push(&mut self, frame: &[f32], speech: bool) -> Option<Vec<f32>> {
-        if self.current.is_empty() && !self.overflow {
+        if self.current.is_empty() {
             self.before.extend(frame);
             while self.before.len() > 5120 {
                 self.before.pop_front();
@@ -359,7 +400,7 @@ impl Segmenter {
                 return None;
             }
             self.current.extend(self.before.drain(..));
-        } else if !self.overflow {
+        } else {
             self.current.extend_from_slice(frame);
         }
         if speech {
@@ -368,12 +409,23 @@ impl Segmenter {
         } else {
             self.silence += frame.len();
         }
-        if self.current.len() > 16_000 * 15 {
-            self.current.clear();
-            self.overflow = true;
+        if self.current.len() >= 16_000 * 30 {
+            let chunk = std::mem::take(&mut self.current);
+            self.before = chunk
+                .iter()
+                .rev()
+                .take(5120)
+                .copied()
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            self.voiced = 0;
+            self.silence = 0;
+            return Some(chunk);
         }
         if self.silence >= END_SILENCE_SAMPLES {
-            let result = if !self.overflow && self.voiced >= 1536 {
+            let result = if self.voiced >= 1536 {
                 Some(std::mem::take(&mut self.current))
             } else {
                 None
@@ -440,6 +492,7 @@ pub fn listen(
         Some(load_asr(assets, &engine_id)?)
     };
     let MicFlags {
+        speech_state,
         diagnostics,
         interrupting,
         epoch,
@@ -462,9 +515,9 @@ pub fn listen(
     let supported = device.default_input_config()?;
     let config: cpal::StreamConfig = supported.clone().into();
     let (raw_tx, raw_rx) = mpsc::sync_channel::<Chunk>(256);
-    // Keep only the latest completed utterance. During slow inference this lets
-    // a deliberate command replace stale room noise or residual speaker echo.
-    let speech_slot = Arc::new(Mutex::new(None::<Utterance>));
+    // Keep clean utterances in capture order while recognition is busy.
+    // Wake probes are replaceable; user utterances are not.
+    let speech_slot = Arc::new(Mutex::new(VecDeque::<Utterance>::new()));
     let probe_slot = Arc::new(Mutex::new(None::<Utterance>));
     let dsp_probe = probe_slot.clone();
     let dsp_interrupting = interrupting.clone();
@@ -508,6 +561,7 @@ pub fn listen(
     let dsp_muted = muted.clone();
     let dsp_warm = warm.clone();
     let dsp_speech = speech_slot.clone();
+    let dsp_state = speech_state.clone();
     let reference = crate::echo::connect();
     std::thread::spawn(move || {
         let result = (|| -> Result<()> {
@@ -520,6 +574,8 @@ pub fn listen(
             let mut wake_window = WakeWindow::default();
             let mut last_activity = Instant::now();
             let mut speech_run = 0_usize;
+            let mut last_voice: Option<Instant> = None;
+            let mut was_output = false;
             let mut current_epoch = dsp_epoch.load(Ordering::SeqCst);
             while !dsp_stop.load(Ordering::SeqCst) {
                 let chunk = match raw_rx.recv_timeout(Duration::from_millis(100)) {
@@ -541,6 +597,8 @@ pub fn listen(
                     segments = Segmenter::new();
                     wake_window = WakeWindow::default();
                     speech_run = 0;
+                    last_voice = None;
+                    dsp_state.active.store(false, Ordering::SeqCst);
                     dsp_warm.store(false, Ordering::SeqCst);
                     detector = earshot::Detector::default();
                     resampler.reset();
@@ -570,6 +628,22 @@ pub fn listen(
                     while frames.len() >= 256 {
                         let frame: Vec<f32> = frames.drain(..256).collect();
                         let speech = detector.predict_f32(&frame) >= 0.5;
+                        let output_active = dsp_interrupting.load(Ordering::SeqCst)
+                            || dsp_state.playback.load(Ordering::SeqCst);
+                        if output_active != was_output {
+                            segments = Segmenter::new();
+                            was_output = output_active;
+                            last_voice = None;
+                        }
+                        if speech && !output_active {
+                            last_voice = Some(Instant::now());
+                        }
+                        dsp_state.active.store(
+                            !output_active
+                                && last_voice
+                                    .is_some_and(|t| t.elapsed() < Duration::from_millis(1200)),
+                            Ordering::SeqCst,
+                        );
                         dsp_diagnostics.frames.fetch_add(1, Ordering::Relaxed);
                         if speech {
                             dsp_diagnostics.voiced.fetch_add(1, Ordering::Relaxed);
@@ -579,6 +653,8 @@ pub fn listen(
                                 dsp_diagnostics.probes.fetch_add(1, Ordering::Relaxed);
                                 if let Ok(mut slot) = dsp_probe.lock() {
                                     *slot = Some(Utterance {
+                                        during_output: true,
+                                        _pending: None,
                                         started: Instant::now(),
                                         at: Instant::now(),
                                         samples,
@@ -612,12 +688,20 @@ pub fn listen(
                                         samples.len() as f64 / 16_000.0,
                                     ))
                                     .unwrap_or(at);
-                                *slot = Some(Utterance {
+                                let item = Utterance {
                                     started,
                                     samples,
                                     epoch: current_epoch,
                                     at: Instant::now(),
-                                });
+                                    during_output: output_active,
+                                    _pending: (!output_active)
+                                        .then(|| PendingSpeech::new(&dsp_state)),
+                                };
+                                if slot.len() < 16 {
+                                    slot.push_back(item);
+                                } else {
+                                    let _=dsp_output.try_send(crate::Input::Error("Speech queue filled; some audio could not be retained. Accessor kept listening; please pause while it catches up.".into()));
+                                }
                             }
                         }
                     }
@@ -678,7 +762,10 @@ pub fn listen(
                 }
                 last_asr = Instant::now();
             }
-            let u = speech_slot.lock().ok().and_then(|mut slot| slot.take());
+            let u = speech_slot
+                .lock()
+                .ok()
+                .and_then(|mut slot| slot.pop_front());
             let Some(u) = u else {
                 lazy_asr_tick(
                     &mut model,
@@ -693,15 +780,15 @@ pub fn listen(
                 std::thread::sleep(Duration::from_millis(20));
                 continue;
             };
-            // While output/work is active only bounded wake windows are decoded.
+            // Clips captured during audible output are handled by bounded wake windows.
             // Speaker utterances must never occupy the recognizer for many seconds.
-            if interrupting.load(Ordering::SeqCst) {
+            if u.during_output {
                 diagnostics.skipped_clips.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
             if muted.load(Ordering::SeqCst)
                 || u.epoch != epoch.load(Ordering::SeqCst)
-                || u.at.elapsed() > Duration::from_secs(2)
+                || u.at.elapsed() > Duration::from_secs(300)
             {
                 continue;
             }
@@ -713,7 +800,8 @@ pub fn listen(
                 };
                 match transcribe_asr(loaded, &u.samples) {
                     Ok(text) if heard_transcript(&text) => {
-                        let _ = output.try_send(crate::Input::Pcm {
+                        speech_state.processing(true);
+                        let _ = output.blocking_send(crate::Input::Pcm {
                             samples: u.samples,
                             local_text: text,
                             epoch: u.epoch,
@@ -739,7 +827,8 @@ pub fn listen(
                         && u.epoch == epoch.load(Ordering::SeqCst)
                         && !muted.load(Ordering::SeqCst) =>
                 {
-                    let _ = output.try_send(crate::Input::Voice {
+                    speech_state.processing(true);
+                    let _ = output.blocking_send(crate::Input::Voice {
                         text,
                         epoch: u.epoch,
                         captured_at: u.started,
@@ -1497,7 +1586,7 @@ mod tests {
         let frame = [0.1; 256];
         let mut checks = 0;
         for _ in 0..2000 {
-            assert!(segment.push(&frame, true).is_none());
+            let _ = segment.push(&frame, true);
             if let Some(probe) = window.push(&frame, true) {
                 checks += 1;
                 assert!(probe.len() <= 38_400);
@@ -1543,23 +1632,66 @@ mod tests {
             assert!(s.push(&f, true).is_none());
         }
         let mut result = None;
-        for _ in 0..40 {
+        for _ in 0..80 {
             result = s.push(&f, false).or(result);
         }
         assert!(result.unwrap().len() >= 5120 + 9 * 256 + END_SILENCE_SAMPLES);
     }
     #[test]
-    fn overlong_commands_are_discarded() {
+    fn a_short_pause_keeps_both_phrases_in_one_clip() {
+        let mut segment = Segmenter::new();
+        for _ in 0..20 {
+            assert!(segment.push(&[0.1; 256], true).is_none());
+        }
+        // The former 640 ms endpoint would have sent the first phrase already.
+        for _ in 0..48 {
+            assert!(segment.push(&[0.0; 256], false).is_none());
+        }
+        for _ in 0..20 {
+            assert!(segment.push(&[0.2; 256], true).is_none());
+        }
+        let mut clip = None;
+        for _ in 0..80 {
+            clip = segment.push(&[0.0; 256], false).or(clip);
+        }
+        let clip = clip.unwrap();
+        assert_eq!(clip.iter().filter(|v| **v == 0.1).count(), 20 * 256);
+        assert_eq!(clip.iter().filter(|v| **v == 0.2).count(), 20 * 256);
+    }
+
+    #[test]
+    fn playback_waits_for_every_pending_clip_and_its_processing() {
+        let state = Arc::new(SpeechState::default());
+        let first = PendingSpeech::new(&state);
+        let second = PendingSpeech::new(&state);
+        assert!(state.holding());
+        drop(first);
+        assert!(state.holding());
+        state.processing(true);
+        drop(second);
+        assert!(state.holding());
+        state.processing(false);
+        assert!(!state.holding());
+        state.active.store(true, Ordering::SeqCst);
+        assert!(state.holding());
+    }
+
+    #[test]
+    fn long_speech_is_chunked_without_discarding_audio() {
         let mut s = Segmenter::new();
-        let f = [0.0; 256];
-        for _ in 0..1100 {
-            assert!(s.push(&f, true).is_none());
-            assert!(s.current.len() <= 240_000);
+        let frame = [0.1; 256];
+        let mut total = 0;
+        for _ in 0..2400 {
+            if let Some(chunk) = s.push(&frame, true) {
+                total += chunk.len();
+            }
         }
-        for _ in 0..50 {
-            assert!(s.push(&f, false).is_none());
+        for _ in 0..80 {
+            if let Some(chunk) = s.push(&frame, false) {
+                total += chunk.len();
+            }
         }
-        assert!(!s.overflow);
+        assert!(total >= 2400 * 256, "long speech disappeared");
     }
     #[test]
     fn think_warble_stays_low_frequency() {

@@ -204,7 +204,7 @@ impl Drop for Job {
         self.cancel();
     }
 }
-pub fn start(text: String, settings: Tts) -> Job {
+pub fn start(text: String, settings: Tts, capture: Arc<crate::audio::SpeechState>) -> Job {
     let stop = Arc::new(AtomicBool::new(false));
     let paused = Arc::new(AtomicBool::new(false));
     let pause = paused.clone();
@@ -231,13 +231,24 @@ pub fn start(text: String, settings: Tts) -> Job {
                 let cfg = settings.clone();
                 upcoming = Some(tokio::spawn(async move { render(&next, &cfg).await }));
             }
+            // Synthesis may finish after the user has started another phrase.
+            // Wait through capture, recognition and relevance checking before playback.
+            while capture.holding() {
+                if flag.load(Ordering::SeqCst) {
+                    return Ok(());
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            let capture = capture.clone();
             let pause = pause.clone();
             let flag = flag.clone();
             let playback = playback.clone();
             tokio::task::spawn_blocking(move || {
+                capture.playback(true);
                 playback.store(true, Ordering::SeqCst);
                 let result = crate::audio::play_wav(&wav, &flag, pause);
                 playback.store(false, Ordering::SeqCst);
+                capture.playback(false);
                 result
             })
             .await??;

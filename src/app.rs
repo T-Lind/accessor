@@ -205,6 +205,9 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut wake_echoes = 0_u64;
     let mut wake_decode_ms = 0_u64;
     let audio_diagnostics = Arc::new(audio::Diagnostics::default());
+    let speech_state = Arc::new(audio::SpeechState::default());
+    let mut voice_inbox = VecDeque::new();
+    let mut voice_epoch = epoch.load(Ordering::SeqCst);
     let mut wake_errors = 0_u64;
     let mut last_wake_probe = String::new();
     let awake = Arc::new(AtomicBool::new(false));
@@ -231,6 +234,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                 .or(settings.microphone.as_deref()),
             input_tx.clone(),
             audio::MicFlags {
+                speech_state: speech_state.clone(),
                 diagnostics: audio_diagnostics.clone(),
                 interrupting: interrupting.clone(),
                 epoch: epoch.clone(),
@@ -332,17 +336,25 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut pending_secret: Option<&'static str> = None;
     let mut utility: Option<tokio::task::JoinHandle<Result<String>>> = None;
     let mut speech_queue = VecDeque::<String>::new();
-    let mut speaker_was_active = false;
-    let mut output_guard_until: Option<Instant> = None;
     let mut wake_listening = false;
     loop {
-        let speaking_now = speaker.is_some();
-        if speaker_was_active && !speaking_now {
-            // A completed utterance may still be waiting in the STT queue. Keep
-            // judging it by when it was captured, not when inference finishes.
-            output_guard_until = Some(Instant::now() + Duration::from_millis(600));
+        let current_voice_epoch = epoch.load(Ordering::SeqCst);
+        if voice_epoch != current_voice_epoch {
+            voice_epoch = current_voice_epoch;
+            voice_inbox.clear();
+            if let Some(job) = gate_job.take() {
+                job.abort();
+            }
+            if let Some(job) = cloud_job.take() {
+                job.abort();
+            }
         }
-        speaker_was_active = speaking_now;
+        speech_state.processing(
+            !voice_inbox.is_empty()
+                || !input_rx.is_empty()
+                || gate_job.is_some()
+                || cloud_job.is_some(),
+        );
         awake.store(session.active(), Ordering::SeqCst);
         interrupting.store(
             settings.barge_in
@@ -350,7 +362,11 @@ pub async fn run(mut args: Run) -> Result<()> {
                 && panel.is_none()
                 && pending_secret.is_none()
                 && wizard.is_none()
-                && (busy || worker.is_some() || speaker.is_some() || alarm.is_some()),
+                && output_needs_wake(
+                    speaker.as_ref().is_some_and(|s| s.is_playing()),
+                    alarm.is_some(),
+                    wake_listening,
+                ),
             Ordering::SeqCst,
         );
 
@@ -369,11 +385,22 @@ pub async fn run(mut args: Run) -> Result<()> {
         ));
         ui.draw()?;
         tokio::select! {
+            biased;
             _ = tokio::signal::ctrl_c() => break,
-            input = input_rx.recv(), if !eof || !input_rx.is_empty() => {
+            input = async {
+                if gate_job.is_none() && cloud_job.is_none() && !voice_inbox.is_empty() {voice_inbox.pop_front()} else {input_rx.recv().await}
+            }, if !eof || !input_rx.is_empty() || !voice_inbox.is_empty() => {
                 let Some(input) = input else { break; };
+                if matches!(&input, Input::Voice{..}|Input::Pcm{..}|Input::CloudVoice{..}|Input::GatedVoice{..}) {speech_state.processing(true);}
+                if matches!(&input,Input::Voice{..}|Input::Pcm{..}) && (gate_job.is_some() || cloud_job.is_some()) {
+                    if voice_inbox.len()<64 {voice_inbox.push_back(input);} else {ui.message("Speech processing is overloaded; please pause. Some speech could not be queued.");}
+                    continue;
+                }
+                // Completion events acknowledge each stage before the next captured clip.
+                if matches!(&input,Input::CloudVoice{epoch:e,..} if *e==epoch.load(Ordering::SeqCst)) {cloud_job=None;}
+                if matches!(&input,Input::GatedVoice{epoch:e,..} if *e==epoch.load(Ordering::SeqCst)) {gate_job=None;}
                 let is_gated=matches!(&input,Input::GatedVoice{..});
-                let voice_capture=match &input {Input::Voice{epoch,captured_at,..}|Input::GatedVoice{epoch,captured_at,..}=>(*epoch,*captured_at),_=>(epoch.load(Ordering::SeqCst),Instant::now())};
+                let voice_capture=match &input {Input::Voice{epoch,captured_at,..}|Input::GatedVoice{epoch,captured_at,..}|Input::CloudVoice{epoch,captured_at,..}=>(*epoch,*captured_at),_=>(epoch.load(Ordering::SeqCst),Instant::now())};
                 let is_event=matches!(&input,Input::Trigger(_));
                 let is_internal=matches!(&input,Input::Internal(_));
                 let is_automatic=matches!(&input,Input::Trigger(_) | Input::Scheduled(_) | Input::Internal(_));
@@ -394,7 +421,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 let stopped=alarm.take().is_some();ui.message(if stopped {"MCP: alarm stopped."}else{"MCP: no alarm is ringing."});
                                 serde_json::json!({"stopped":stopped,"receipt":if stopped {"Alarm stopped"}else{"No alarm is ringing"}})
                             },
-                            crate::control::Action::Status=>serde_json::json!({"awake":session.active(),"busy":busy || worker.is_some(),"speaking":speaker.is_some(),"alarm_ringing":alarm.is_some(),"barge_in":settings.barge_in,"wake_checks":wake_checks,"wake_hits":wake_hits,"wake_echoes":wake_echoes,"wake_decode_ms":wake_decode_ms,"audio":audio_diagnostics.summary(),"capture_paused":muted.load(Ordering::SeqCst),"wake_errors":wake_errors}),
+                            crate::control::Action::Status=>serde_json::json!({"awake":session.active(),"busy":busy || worker.is_some(),"speaking":speaker.is_some(),"alarm_ringing":alarm.is_some(),"barge_in":settings.barge_in,"wake_checks":wake_checks,"wake_hits":wake_hits,"wake_echoes":wake_echoes,"wake_decode_ms":wake_decode_ms,"audio":audio_diagnostics.summary(),"speech":speech_state.summary(),"capture_paused":muted.load(Ordering::SeqCst),"wake_errors":wake_errors}),
                         };
                         let _=request.reply.send(result);continue;
                     },
@@ -442,37 +469,33 @@ pub async fn run(mut args: Run) -> Result<()> {
                         wake_hits+=1;
                         (settings.wake_code.clone(),false,true,true,None)
                     }
-                    Input::Voice { text, epoch: captured_epoch, captured_at } | Input::GatedVoice { text, epoch: captured_epoch, captured_at } => {
+                    Input::Voice { text, epoch: captured_epoch, .. } | Input::GatedVoice { text, epoch: captured_epoch, .. } | Input::CloudVoice { text, epoch: captured_epoch, .. } => {
                         if muted.load(Ordering::SeqCst) || captured_epoch != epoch.load(Ordering::SeqCst) { continue; }
-                        let captured_during_output = busy || worker.is_some() || speaker.is_some() || alarm.is_some()
-                            || output_guard_until.is_some_and(|until| captured_at <= until);
+                        if text.trim().is_empty() {continue;}
+                        let captured_during_output = false;
                         let addressed=session.addressed(&text);
-                        if echo_guard.matches(&text,speaker.is_some()) {
-                            continue;
-                        }
+
                         crate::usage::record_stt("canary", 0.0);
                         (text, false, addressed, captured_during_output, None)
                     }
                     Input::Pcm { samples, local_text, epoch: captured_epoch, captured_at } => {
                         if muted.load(Ordering::SeqCst) || captured_epoch != epoch.load(Ordering::SeqCst) { continue; }
                         if mic_unavailable { continue; }
-                        let captured_during_output = busy || worker.is_some() || speaker.is_some() || alarm.is_some()
-                            || output_guard_until.is_some_and(|until| captured_at <= until);
+                        let captured_during_output = false;
                         let local_control = session.addressed(&local_text);
                         if local_control || wake_listening {
-                            if echo_guard.matches(&local_text,speaker.is_some()) {continue;}
+
                             let addressed=session.addressed(&local_text);
                             (local_text, false, addressed, captured_during_output, None)
                         } else {
                             if captured_during_output { continue; }
-                            if let Some(job)=cloud_job.take() {job.abort();}
                             let tx=input_tx.clone();
                             cloud_job=Some(tokio::spawn(async move {
                                 let text=match speech::cartesia_stt(&samples).await {
                                     Ok(text)=>{crate::usage::record_stt("cartesia",samples.len() as f64/16_000.0);text},
                                     Err(_)=>local_text,
                                 };
-                                if !text.trim().is_empty() {let _=tx.send(Input::Voice {text,epoch:captured_epoch,captured_at}).await;}
+                                let _=tx.send(Input::CloudVoice {text,epoch:captured_epoch,captured_at}).await;
                             }));
                             continue;
                         }
@@ -747,7 +770,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 Err(e)=>ui.message(format!("Could not read memory: {e:#}")),
                             }
                         },
-                        ["/audio"] => ui.message(format!("Local wake checks: {wake_checks}; wake hits: {wake_hits}; speaker echoes rejected: {wake_echoes}; last decode: {wake_decode_ms} ms. Rolling checks active: {}. Local engine: {}. Say {}, pause, then your request. No recordings saved.\n{}; capture paused: {}; decoder errors: {wake_errors}; last wake-window recognition (diagnostic only): {}",interrupting.load(Ordering::SeqCst),settings.stt.engine,settings.wake_code,audio_diagnostics.summary(),muted.load(Ordering::SeqCst),last_wake_probe)),
+                        ["/audio"] => ui.message(format!("Local wake checks: {wake_checks}; wake hits: {wake_hits}; speaker echoes rejected: {wake_echoes}; last decode: {wake_decode_ms} ms. Rolling checks active: {}. Local engine: {}. Say {}, pause, then your request. No recordings saved.\n{}; {}; capture paused: {}; decoder errors: {wake_errors}; last wake-window recognition (diagnostic only): {}",interrupting.load(Ordering::SeqCst),settings.stt.engine,settings.wake_code,audio_diagnostics.summary(),speech_state.summary(),muted.load(Ordering::SeqCst),last_wake_probe)),
                         ["/limits"] => ui.message(limits.report()),
                         [action @ ("/worker-approve" | "/worker-deny"), number] => {
                             if let (Ok(number),Some(w))=(number.parse(),worker.as_ref()) {
@@ -787,14 +810,11 @@ pub async fn run(mut args: Run) -> Result<()> {
                 if text.trim().is_empty() {continue;}
                 if text.len() > 32_000 { ui.message("Input too long; discarded."); continue; }
                 if args.stt_test {ui.message(format!("Transcript: {}",safe(&text)));continue;}
-                // Speaker echo cannot issue a wake-addressed command. Requiring
-                // the code while output or reasoning is active makes barge-in
-                // deterministic even when acoustic cancellation is imperfect.
+                // Classify by capture time, not by whether a reply started before
+                // recognition finished. Clean continuations remain valid while thinking.
                 if !spoken_input_allowed(
                     typed,
                     is_automatic,
-                    busy || worker.is_some(),
-                    speaker.is_some() || alarm.is_some(),
                     captured_during_output,
                     spoken_addressed,
                     wake_listening,
@@ -819,9 +839,10 @@ pub async fn run(mut args: Run) -> Result<()> {
                 } else {
                     session.hear(&text, Instant::now())
                 };
-                if !is_event && !typed && !was_active && matches!(&action, Action::Open | Action::Prompt(_)) {
-                    epoch.fetch_add(1,Ordering::SeqCst);
-                    if !args.no_chime && !args.text { muted.store(true,Ordering::SeqCst); if let Err(e)=audio::chime(settings.sounds.wake) { ui.message(format!("Chime unavailable: {}",safe(&e.to_string()))); } muted.store(panel.is_some() || pending_secret.is_some() || wizard.is_some(),Ordering::SeqCst); epoch.fetch_add(1,Ordering::SeqCst); }
+                if !is_event && !typed && !was_active && matches!(&action, Action::Open | Action::Prompt(_)) && !args.no_chime && !args.text {
+                    let volume=settings.sounds.wake;
+                    let tx=input_tx.clone();
+                    tokio::task::spawn_blocking(move || {if let Err(e)=audio::chime(volume) {let _=tx.blocking_send(Input::Error(format!("Wake chime unavailable: {e}; kept listening")));}});
                 }
                 match action {
                     Action::Ignore => continue,
@@ -836,7 +857,6 @@ pub async fn run(mut args: Run) -> Result<()> {
                             if let Some(tx)=&agent_tx {cancelled_turn=true;cancel_started=Some(Instant::now());let _=tx.try_send(agent::CommandMessage::Cancel);}
                         }
                         if let Some(live)=agents.get_mut(&active_harness) {live.first=None;}
-                        epoch.fetch_add(1,Ordering::SeqCst);
                         muted.store(false,Ordering::SeqCst);
                         ui.message("Listening. Take your time; say your request or never mind.");
                     }
@@ -871,15 +891,13 @@ pub async fn run(mut args: Run) -> Result<()> {
                         if !typed && !is_automatic && !is_gated {
                             if settings.routing.input_gate!="off" && !crate::route::meaningful_input(&text) {continue;}
                             if settings.routing.input_gate=="jev" && crate::route::jev_available() {
-                                if let Some(job)=gate_job.take() {job.abort();}
                                 let tx=input_tx.clone();let history=transcript.iter().cloned().collect::<Vec<_>>();
                                 let captured_epoch=epoch.load(Ordering::SeqCst);
                                 let addressed=spoken_addressed || wake_listening;
                                 wake_listening=true;
                                 gate_job=Some(tokio::spawn(async move {
-                                    if crate::route::relevant_input(&text,&history,addressed).await {
-                                        let _=tx.send(Input::GatedVoice{text:raw_voice,epoch:captured_epoch,captured_at:voice_capture.1}).await;
-                                    }
+                                    let relevant=crate::route::relevant_input(&text,&history,addressed).await;
+                                    let _=tx.send(Input::GatedVoice{text:if relevant {raw_voice} else {String::new()},epoch:captured_epoch,captured_at:voice_capture.1}).await;
                                 }));continue;
                             }
                         }
@@ -925,9 +943,10 @@ pub async fn run(mut args: Run) -> Result<()> {
                         }
                         if busy {
                             ui.chat(Kind::User, &text);
+                            transcript.push_back(("User".into(),text.clone()));
                             silence_reply=true;event_cancelled=true;
                             if agents.get(&active_harness).is_some_and(|l| l.first.is_some()) {
-                                if let Some(live)=agents.get_mut(&active_harness) { live.first=Some(text); }
+                                if let Some(live)=agents.get_mut(&active_harness) { if let Some(first)=&mut live.first {first.push_str("\nAdditional user speech: ");first.push_str(&text);} }
                                 silence_reply=false;
                             }
                             else if let Some(queued)=&mut pending_prompt {if queued.len()+text.len()<32_000 {queued.push(' ');queued.push_str(&text);}else{ui.message("Too much pending speech; wait for the follow-up to start.");}}
@@ -1239,6 +1258,7 @@ pub async fn run(mut args: Run) -> Result<()> {
 
             }
             _ = tick.tick() => {
+                let capture_holding = speech_state.holding() || !input_rx.is_empty();
                 if busy && cancel_started.is_some_and(|at|at.elapsed()>=Duration::from_secs(2)) {
                     if let Some(live)=agents.remove(&active_harness) {live.task.abort();}
                     agent_tx=None;connected=false;busy=false;approval=false;cancel_started=None;
@@ -1339,7 +1359,8 @@ pub async fn run(mut args: Run) -> Result<()> {
                 }
                 if let Some(text)=ui.input()? {if input_tx.try_send(Input::Text(text)).is_err() {ui.message("Input queue is busy; please enter the command again.");}}
                 if !wake_listening && (busy || worker.is_some() || speaker.is_some() || !speech_queue.is_empty()) {session.touch(Instant::now());}
-                if session.expire(Instant::now()) {
+                if capture_holding {session.touch(Instant::now());}
+                if !capture_holding && session.expire(Instant::now()) {
                     wake_listening=false;
                     think=None;epoch.fetch_add(1,Ordering::SeqCst);
                     ui.message("Asleep. Waiting for wake code.");
@@ -1350,15 +1371,15 @@ pub async fn run(mut args: Run) -> Result<()> {
                     match (&mut job.task).await {Ok(Ok(()))=>{},Ok(Err(e))=>ui.message(format!("Speech unavailable: {e:#}")),Err(e)=>ui.message(format!("Speech stopped: {e}"))}
                     echo_guard.finish();muted.store(panel.is_some() || pending_secret.is_some() || wizard.is_some(),Ordering::SeqCst);if !settings.barge_in {epoch.fetch_add(1,Ordering::SeqCst);}session.touch(Instant::now());
                 }
-                if speaker.is_none() {if let Some(text)=speech_queue.pop_front() {
+                if speaker.is_none() && !capture_holding {if let Some(text)=speech_queue.pop_front() {
                     think=None;
                     muted.store(panel.is_some() || pending_secret.is_some() || wizard.is_some() || (!settings.barge_in && !mic_unavailable),Ordering::SeqCst);if !settings.barge_in {epoch.fetch_add(1,Ordering::SeqCst);}
                     echo_guard.add(&speech::spoken_text(&text));
-                    speaker=Some(speech::start(text,settings.tts.clone()));
+                    speaker=Some(speech::start(text,settings.tts.clone(),speech_state.clone()));
                 }}
                 if worker.is_none() {worker_approval=false;}
                 let should_think = thinking_audible(busy || worker.is_some(), speaker.as_ref().is_some_and(|job|job.is_playing()), false, approval || worker_approval, silence_reply)
-                    && !args.text && panel.is_none() && !mic_unavailable && alarm.is_none();
+                    && !args.text && panel.is_none() && !mic_unavailable && alarm.is_none() && !capture_holding;
                 if !should_think { think=None; }
                 else if think.is_none() && !think_warned && settings.sounds.think > 0.001 {
                     match audio::think(settings.sounds.think) {
@@ -1425,16 +1446,20 @@ fn thinking_audible(
     busy && !speaking && !queued && !approval && !cancelled
 }
 
+// After a wake during an alarm, capture the instruction that will tell main
+// what to do. Keeping alarm presence as a wake-only gate would lose that speech.
+fn output_needs_wake(speaking: bool, alarm: bool, wake_listening: bool) -> bool {
+    speaking || (alarm && !wake_listening)
+}
+
 fn spoken_input_allowed(
     typed: bool,
     event: bool,
-    busy: bool,
-    speaking: bool,
     captured_during_output: bool,
     addressed: bool,
     wake_listening: bool,
 ) -> bool {
-    typed || event || wake_listening || (!busy && !speaking && !captured_during_output) || addressed
+    typed || event || wake_listening || !captured_during_output || addressed
 }
 
 fn stt_confirm(text: &str) -> Option<bool> {
@@ -1492,25 +1517,18 @@ mod tests {
     }
 
     #[test]
-    fn active_output_requires_a_wake_addressed_barge_in() {
-        assert!(!spoken_input_allowed(
-            false, false, false, true, true, false, false
-        ));
-        assert!(!spoken_input_allowed(
-            false, false, true, false, true, false, false
-        ));
-        assert!(!spoken_input_allowed(
-            false, false, false, false, true, false, false
-        ));
-        assert!(spoken_input_allowed(
-            false, false, true, true, true, true, false
-        ));
-        assert!(spoken_input_allowed(
-            false, false, true, false, true, false, true
-        ));
-        assert!(spoken_input_allowed(
-            true, false, true, true, true, false, false
-        ));
+    fn alarm_wake_opens_capture_for_the_agents_control_request() {
+        assert!(output_needs_wake(false, true, false));
+        assert!(!output_needs_wake(false, true, true));
+        assert!(output_needs_wake(true, true, true));
+    }
+
+    #[test]
+    fn clean_capture_survives_a_later_output_transition() {
+        assert!(spoken_input_allowed(false, false, false, false, false));
+        assert!(!spoken_input_allowed(false, false, true, false, false));
+        assert!(spoken_input_allowed(false, false, true, true, false));
+        assert!(spoken_input_allowed(true, false, true, false, false));
     }
 
     #[test]

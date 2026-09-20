@@ -47,6 +47,25 @@ class RuntimeTests(unittest.TestCase):
         self.addCleanup(app.close)
         return app
 
+    def test_continuation_before_harness_ready_keeps_original_request(self):
+        self.env["ACC_FIXTURE_START_DELAY"] = "0.7"
+        app = self.app()
+        app.send("29 first part of the request")
+        app.expect("You: first part")
+        app.send("and the second part")
+        app.expect("Interrupting;")
+        app.expect("fixture: first part of the request")
+        app.expect("Additional user speech: and the second part")
+
+    def test_continuation_while_thinking_needs_no_wake_code(self):
+        app = self.app()
+        app.send("29 hold")
+        app.expect("▸ hold")
+        app.send("and include Chicago please")
+        app.expect("Interrupting;")
+        app.expect("fixture: and include Chicago please")
+        self.assertNotIn("Agent: interrupted", "".join(app.seen))
+
     def test_alarm_stop_is_an_agent_control_on_every_harness(self):
         for harness in ("codex", "claude", "antigravity"):
             with self.subTest(harness=harness):

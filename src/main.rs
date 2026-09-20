@@ -42,6 +42,11 @@ pub enum Input {
         epoch: u64,
         decode_ms: u64,
     },
+    CloudVoice {
+        text: String,
+        epoch: u64,
+        captured_at: std::time::Instant,
+    },
     GatedVoice {
         text: String,
         epoch: u64,
