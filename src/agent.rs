@@ -459,6 +459,41 @@ async fn claude_cli(
     .await
 }
 
+fn antigravity_args(options: &Options) -> Vec<String> {
+    let mut args = vec![
+        "--input-format".into(),
+        "stream-json".into(),
+        "--output-format".into(),
+        "stream-json".into(),
+        "--print-timeout".into(),
+        "15m".into(),
+    ];
+    if let Some(model) = &options.model {
+        args.push("--model".into());
+        args.push(model.clone());
+    } else if let Some(model) = crate::config::harness_default_model("antigravity") {
+        args.push("--model".into());
+        args.push(model.into());
+    }
+    let effort = match options.reasoning.as_str() {
+        "low" | "medium" | "high" => options.reasoning.as_str(),
+        _ => "low",
+    };
+    args.push("--effort".into());
+    args.push(effort.into());
+    args.push("--mode".into());
+    args.push(if options.writable {
+        "accept-edits".into()
+    } else {
+        "plan".into()
+    });
+    args.push("--sandbox".into());
+    if options.auto_review {
+        args.push("--dangerously-skip-permissions".into());
+    }
+    args
+}
+
 async fn antigravity_cli(
     options: Options,
     commands: mpsc::Receiver<CommandMessage>,
@@ -471,35 +506,12 @@ async fn antigravity_cli(
     } else {
         cmd.env_remove("ACC_CONTROL_ENDPOINT");
     }
-    cmd.args([
-        "--input-format",
-        "stream-json",
-        "--output-format",
-        "stream-json",
-        "--print-timeout",
-        "15m",
-    ])
-    .current_dir(&options.workspace)
-    .stdin(Stdio::piped())
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped())
-    .kill_on_drop(true);
-    if let Some(model) = &options.model {
-        cmd.arg("--model").arg(model);
-    } else if let Some(model) = crate::config::harness_default_model("antigravity") {
-        cmd.arg("--model").arg(model);
-    }
-    let effort = match options.reasoning.as_str() {
-        "low" | "medium" | "high" => options.reasoning.as_str(),
-        _ => "low",
-    };
-    cmd.arg("--effort").arg(effort);
-    cmd.arg("--mode").arg(if options.writable {
-        "accept-edits"
-    } else {
-        "plan"
-    });
-    cmd.arg("--sandbox");
+    cmd.args(antigravity_args(&options))
+        .current_dir(&options.workspace)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
     stdio_agent(
         crate::process_tree::spawn(&mut cmd)
             .context("Could not start Antigravity. Install the `agy` CLI and log in.")?,
@@ -904,5 +916,29 @@ mod tests {
             harness_exit_message("Antigravity", true, failed, "authentication required").unwrap();
         assert!(msg.contains("authentication required"));
         assert!(msg.contains("2") || msg.contains("status"));
+    }
+    #[test]
+    fn antigravity_args_honor_auto_review_and_mode() {
+        let mut opts = Options {
+            control: None,
+            shared_memory: false,
+            executable: "agy".into(),
+            workspace: "/tmp/work".into(),
+            writable: false,
+            model: None,
+            auto_review: false,
+            reasoning: "low".into(),
+            instructions: String::new(),
+        };
+        let args = antigravity_args(&opts);
+        assert!(args.contains(&"--sandbox".to_string()));
+        assert!(args.contains(&"plan".to_string()));
+        assert!(!args.contains(&"--dangerously-skip-permissions".to_string()));
+
+        opts.auto_review = true;
+        opts.writable = true;
+        let args = antigravity_args(&opts);
+        assert!(args.contains(&"accept-edits".to_string()));
+        assert!(args.contains(&"--dangerously-skip-permissions".to_string()));
     }
 }

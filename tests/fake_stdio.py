@@ -21,7 +21,8 @@ if "--no-session-persistence" in sys.argv:
     sys.exit(0)
 assert "--effort" in sys.argv, sys.argv
 assert "--model" in sys.argv, sys.argv
-assert "--dangerously-skip-permissions" not in sys.argv
+if kind == "claude":
+    assert "--dangerously-skip-permissions" not in sys.argv
 if kind == "antigravity":
     assert "--sandbox" in sys.argv
 
@@ -50,7 +51,10 @@ for line in sys.stdin:
         continue
     reply = 'stdio reply: ' + text
     if text.startswith("Conversation data to summarize:"):
+        assert "--dangerously-skip-permissions" not in sys.argv
         reply = "compact-model=" + sys.argv[sys.argv.index("--model") + 1] + "; compact-effort=" + sys.argv[sys.argv.index("--effort") + 1]
+    elif kind == "antigravity":
+        assert "--dangerously-skip-permissions" in sys.argv
     if text == "note fixture":
         reply = '{"accessor":{"action":"note","text":"Only save once"}}'
     reply = control_reply(text) or reply
