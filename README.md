@@ -26,7 +26,7 @@ The first run downloads ONNX Runtime and the default Canary speech model into Ac
 
 Python is needed only for the optional Kokoro worker. Canary and the gateway run in the native Rust process. Codex uses its existing login; Accessor does not call the OpenAI API directly. Windows automatically prefers the desktop-bundled Codex executable when available. Override with `acc config set codex-bin PATH` or `--codex-bin PATH`.
 
-## A CLI for everyday use
+## A CLI for main use
 
 ```sh
 acc setup
@@ -71,29 +71,36 @@ Wake, timeout, speech, and voice changes take effect immediately. Microphone, as
 
 Open `/settings` for a category menu (Voice, Speech, Harnesses, Display, Tests). **↑/↓** moves, **Enter** opens or toggles, **Esc** goes up one level. Typed `/settings KEY VALUE` still works for scripts. Changes persist and apply immediately. The status bar always shows the live **harness · model** and a short identity code (`X S` Codex Sol, `C F` Claude Fable, `A F` Antigravity Flash).
 
-**Harnesses:** **Plugin** is the CLI with Gmail/Calendar/Docs connectors. **Coding** is repos and tests. **Everyday** is general chat. Each role has its own independent model setting (Everyday = Antigravity shows Gemini, not the Codex catalog); sharing the same CLI does not make one role inherit another role's model. Router `keywords` or `jev` (TypeSafe; `/jev key` or `TYPESAFE_API_KEY`) picks among those three per turn, which indirectly selects that role's configured model. Jev sees recent user-and-agent conversation plus the previous route, so follow-ups remain attached to an ongoing calendar, coding, or everyday task. `off` always uses everyday. Paste API keys with Ctrl+Shift+V / Shift+Insert, or `printf '%s' "$KEY" | acc jev key`. Enable **Jev auto-select** to use Jev whenever a TypeSafe key is present.
+**Harnesses:** **Main** is the persistent main conversation, with a lightweight model by default (Codex Luna, Claude Haiku, Antigravity Flash). **Coding** and **Plugin** select separate worker roles and independent models. The metaprompt tells the main agent to delegate coding, difficult analysis, and plugin work, even when all roles use the same CLI. A worker has a fresh process, its own model and low/medium/high reasoning, a 15-minute deadline, and a bounded result returned to the main conversation. Only one worker runs at a time. Accessor worker controls cannot recursively delegate. Existing native tools still enforce their own policies.
+
+Settings → Harnesses → **Lightweight main conversation** is on by default (`routing.coordinator=true`). The agent selects delegation from the metaprompt; this is a routing policy, not a sandbox that prevents the main harness using its own tools. Turn it off to restore keyword/Jev routing. Jev remains an optional legacy classifier; the coordinator does not call it. Plugin delegation uses `agent` and `routing.plugin-model`, independently of the main model, even for the same harness.
 
 Model discovery reads the selected Codex installation's account catalog without running an LLM. `/settings refresh` refreshes it; the last successful list is cached for offline display.
 
-Once activated, say "switch to Codex" or "switch agent to Codex". Say "switch model to Astra" using a name from your available list. A running harness can emit `ACCESSOR_SWITCH harness=codex` (or JSON `accessor_switch`) to pin this conversation to another CLI without rewriting the plugin/coding/everyday slots. These local controls obey the same wake-code and barge-in settings as ordinary speech.
+Once activated, say "switch to Codex" or "switch agent to Codex". Say "switch model to Astra" using a name from your available list. A running harness can emit `ACCESSOR_SWITCH harness=codex` (or JSON `accessor_switch`) to pin this conversation to another CLI without rewriting the plugin/coding/main slots. These local controls obey the same wake-code and barge-in settings as ordinary speech.
 
 Direct equivalents: `/settings barge-in true`, `/settings idle-seconds 120`, `/settings speak-progress false`, `/settings chat activity`, `/settings tts.speed 1.1`, `/settings model MODEL_ID`. The numbered model picker and spoken commands use the discovered list; an exact ID can also be set manually for a newly available model. The backend makes the final availability check.
 
 ## Conversation behavior
 
-Say “twenty-nine” or “hey twenty-nine”, pause for the chime, then speak, or say “twenty-nine, do this” in one utterance. Every new voice request requires the wake code. A bare “twenty-nine” opens exactly one follow-up utterance; after that request Accessor waits for the code again. This mandatory addressed mode prevents residual TTS or room conversation from becoming an agent turn. The default idle timeout is 120 seconds and applies while Accessor is waiting after a bare wake. Use `--idle-seconds 0` to disable that timeout. When the listening window expires, a descending chime plays.
+Say “twenty-nine” or “hey twenty-nine”, pause for the chime, then speak, or say “twenty-nine, do this” in one utterance. The conversation stays open for **120 seconds of idle time** after the last accepted request or completed work/speech. Follow-ups while idle do not need the wake code. Room noise alone does not extend the window. Use `--idle-seconds 0` to disable automatic sleep. The assistant can also apply a structured sleep control when asked.
 
 | Control | Result |
 | --- | --- |
 | “29 stop”, “stop” while awake, or `/stop` | Cancel the task, stop playback, return to sleep |
-| “go to sleep”, “go back to sleep”, “disconnect”, `/sleep`, `/disconnect` | Close voice access locally (the agent cannot sleep the microphone by talking) |
-| “cancel the task”, `/cancel`, Escape | Cancel work/playback; wait for the next wake code |
-| “29 mute”, “29 unmute”, `/mute`, `/unmute` | Privacy-mute/unmute; while muted only the local unmute detector remains active |
+| “go to sleep”, “go back to sleep”, “disconnect”, `/sleep`, `/disconnect` | Close active listening; the local wake detector remains available |
+| “cancel the task”, `/cancel`, Escape | Cancel main/worker work and playback; an open conversation remains open |
+| `/sleep`, “29 go to sleep” | Close active listening; the local wake detector stays on |
+| `/audio` | Show rolling wake checks, accepted hits, echo rejections and decoder time |
 | `/approve N`, `/deny N` | Answer one pending permission request by typing |
 | `/status`, `/help` | Inspect state or controls |
 | `/quit`, Ctrl+C | Stop Accessor and its agent connection |
 
-The numeric code prevents some accidental activations; it is not authentication. “Hey 29”, “hi 29”, and “ok 29” are accepted as well as “29”. Say “29 mute” (or say “mute” after waking) to enter privacy mute. Muted audio is handled only by the local wake model: “29 unmute” resumes normal input, and no other muted speech is sent to Cartesia or an agent. The banner always shows the mute state. Quitting releases the device. Barge-ins are enabled by default: the microphone stays live during synthesis and playback. While Accessor is speaking or working, say “29 stop” to cancel playback and reasoning, or say “29” to stop it and open one follow-up turn. A combined phrase such as “29 stop, tell me about Mars” immediately replaces the current request. Requiring the code during a barge-in keeps residual speaker echo from becoming a user turn. Raw voice activity alone does not pause playback. The replacement request starts after cancellation completes. Local WebRTC AEC3 receives the actual speaker audio to reduce echo, with a residual transcript filter as a second check. Echo performance depends on the microphone, speakers, room, and device buffering; headphones provide the clearest separation. In `/settings`, disable barge-ins to suppress the microphone during speech and reject spoken follow-ups while an agent is busy. While the agent is reasoning or using tools and not speaking, a quiet warble plays. Sleep plays a descending chime. Settings/credential entry still suppress capture. Typed cancellation remains available.
+The numeric code reduces accidental activations; it is not authentication. “Hey 29”, “hi 29”, and “ok 29” are accepted. There are two voice states: awake and asleep. Sleep ends active listening and leaves the local wake detector on. Separate mute/unmute mode has been removed; use the hardware/OS mic switch or quit for microphone privacy. Asking the agent to mute or be quiet means sleep, and it must invoke the control before claiming success.
+
+During speech or work, **say “29”, pause, then say your request**. During output/work, the recognizer decodes only short wake windows, bypassing completed long speaker clips. Rolling local wake checks inspect up to 2.4 seconds of audio at roughly 600 ms intervals, without waiting for the room to become silent. Actual recognition latency depends on the local model and computer; `/audio` reports it, alongside capture/VAD/window counts, decoder errors, capture-paused state and the latest transient wake-window text. That diagnostic text is not added to agent history or saved to disk. A rolling detection only interrupts and opens listening: mixed speaker/user text is never submitted as a request. The listening window stays silent and gives at least eight seconds to begin speaking. Raw voice activity alone does not interrupt. Escape remains immediate typed cancellation.
+
+WebRTC AEC3 receives actual TTS playback, thinking warble, alarm and chime samples to estimate and remove acoustic echo. Residual transcript checks also reject recognizable self-speech, including wake words in recent output. These checks reduce loops but are not speaker identification; when the agent itself is saying the wake code, interruption may be suppressed. Headphones provide the clearest separation. Physical room/device validation is still needed. Settings and credential entry suppress capture. Disabling barge-ins suppresses the mic during speech. The thinking warble pauses for speech and approvals, resumes during unfinished work, and stops on cancellation.
 
 The activity pane shows user lines, formatted agent replies (bold, links), and live tool calls. Commentary/progress text is spoken when enabled but hidden from the pane unless `/settings chat transcript`. `/settings chat off` keeps only tools and system notices.
 
@@ -169,9 +176,9 @@ The voice metaprompt tells every supported harness about Accessor's structured l
 
 Notes are private Markdown files under `notes/` in the directory shown by `acc config locations`. Alarms and scheduled tasks persist in `schedules.json`. An alarm repeats a two-beep cue until you say “29 stop” or type `/stop`. Alarms and tasks are checked once per second only while an `acc` process is running; this release does not install a background service or wake a powered-off/suspended computer.
 
-Scheduled tasks contain a prompt, a first run time, an optional repeat interval, and optional harness/model overrides. When no harness is specified, the task goes through normal Jev/keyword routing. A model override requires an explicit harness. Repeating tasks must be at least 60 seconds apart. If Accessor was not running at the scheduled time, a one-shot task runs once when Accessor next starts; a recurring task runs once and advances to its next future interval.
+Scheduled tasks require instructions, a first run time, a harness, an explicit model (or supported alias), and a reasoning level (default low). They can be listed, edited, paused/resumed, and deleted by any of the three main harnesses through validated local controls. The agent receives the actual local result, including task IDs or errors. Editing preserves omitted fields; changing the harness also requires a model. Repetition is an elapsed interval of at least 60 seconds, not a timezone-aware calendar recurrence.
 
-This is Accessor's common scheduler, not the harness vendor's scheduler. Schedule-creation language normally routes to the plugin harness, which emits the validated local directive. When the task becomes due, Accessor invokes Codex, Claude Code, or Antigravity itself. This keeps behavior and storage uniform even though their native scheduling products differ.
+Due tasks run in isolated workers. Known usage-limit backoff leaves them pending. A missed recurring task runs once and advances to its next future interval. Claims and completion/interruption receipts persist; a claimed task with an unknown outcome is not automatically replayed after a crash. The last 100 receipts are retained; status shows the newest ten. This is Accessor's local scheduler, independent of vendor scheduling products.
 
 The same store has a direct CLI for inspection and scripting:
 
@@ -180,6 +187,9 @@ acc organizer status
 acc organizer note "Filter size is 20 by 25" --title workshop
 acc organizer alarm --in-seconds 300 --label tea
 acc organizer task "Summarize today's project status" --in-seconds 3600 --every-seconds 86400 --harness codex --model gpt-5.6-sol
+acc organizer edit ITEM_ID --in-seconds 7200 --prompt "Updated instructions" --harness claude --model sonnet --reasoning high
+acc organizer edit ITEM_ID --paused true
+acc organizer edit ITEM_ID --every-seconds 0
 acc organizer cancel ITEM_ID
 ```
 
@@ -202,7 +212,7 @@ Use Gmail API IDs, not an email address or the RFC Message-ID header. Both value
 
 Notifications persist as metadata in the user configuration directory. One process can consume the queue at a time. While idle, it checks this local queue once per second (no provider requests). An event starts an agent turn even while voice access is asleep; it does not open the voice conversation or read the response aloud. It asks the agent to use its Gmail connector, verify the configured owner and reply context, and respond in that thread. It instructs the agent to limit email-originated work to email replies and seek local authorization for machine actions. These instructions are not an independent security sandbox; the external trigger must authenticate the source, and the agent/connector must enforce its own permissions.
 
-Duplicate message IDs are suppressed across restarts. A receipt is written before dispatch, so crashes and uncertain sends are not blindly retried. Receipts report agent-turn completion, not proof of email delivery. Inspect Gmail and receipts before retrying an uncertain action. `acc events status` shows the queue location/counts. `/mute` mutes microphone input; it does not disable the explicitly enabled event consumer. Quit Accessor to stop both.
+Duplicate message IDs are suppressed across restarts. A receipt is written before dispatch, so crashes and uncertain sends are not blindly retried. Receipts report agent-turn completion, not proof of email delivery. Inspect Gmail and receipts before retrying an uncertain action. `acc events status` shows the queue location/counts. `/sleep` closes active listening; it does not disable the explicitly enabled event consumer. Quit Accessor to stop both.
 
 **The upstream email automation is not installed or configured by this repository.** Connect that source to the local handoff before expecting replies to wake Accessor. No live email has been sent as part of development/testing.
 
@@ -212,7 +222,7 @@ The default Codex sandbox is read-only. `--workspace-write --workspace PATH` per
 
 The agent’s sandbox and connector permissions remain the enforcement boundaries. Read-only filesystem access does not imply read-only Gmail tools or prevent reading private files. Accessor is not a sandbox around arbitrary tools. Use appropriate OS-account and agent permissions for the device.
 
-One agent connection owns the conversation and can use its own tools/delegation. Accessor handles the microphone, wake/sleep, display, speech, approvals, and external event handoff. A second supervisory LLM is unnecessary for this layer. Ambient audio and transcripts are held in bounded memory and not saved by Accessor; activated requests are passed to the agent, whose logging/retention rules are separate. There are no automatic retries of agent actions after a connection failure.
+One lightweight main agent owns the conversation; isolated workers return their results to it. Accessor handles the microphone, wake/sleep, display, speech, approvals, and external event handoff. A second supervisory LLM is unnecessary for this layer. Ambient audio and transcripts are held in bounded memory and not saved by Accessor; activated requests are passed to the agent, whose logging/retention rules are separate. There are no automatic retries of agent actions after a connection failure.
 
 ## Platform and development status
 
@@ -226,16 +236,38 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 cargo build --release --locked --bin acc
 python tests/smoke.py
+python tests/runtime.py
 ```
 
 The offline tests cover wake boundaries, interruption and replacement of a busy turn, disabling barge-ins, speech queuing for early progress, model discovery/selection and spoken switching, live wake-policy changes, synthetic echo attenuation, stop/sleep, active work delaying timeout, typed permissions, denied unsupported requests, saved settings, and event deduplication. Real-model WAV tests are separate from microphone/noise and long-running power measurements. Cartesia needs a user-provided key for a live test. See [THIRD_PARTY.md](THIRD_PARTY.md) for attribution.
 
 ### Measured on this Windows machine
 
-- 23 Rust tests and 18 offline process tests passed; formatting and Clippy checks passed.
+- Historical baseline: 23 Rust tests and 18 offline process tests passed. Current regression suites also cover the coordinator, schedule editing/receipts, usage backoff, and Claude/Antigravity protocol fixtures.
 - The full-screen dashboard was exercised in a Windows terminal: activation, reply, stop, and terminal restoration worked.
 - Canary: the 2.95-second synthetic WAV transcribed correctly in 0.24 seconds after a 0.98-second load.
 - Kokoro fp32: a 3.47-second sample took about 5.1 seconds including initial load, then approximately 1.8 seconds with the model loaded (two CPU threads). Other simultaneous work increased these times considerably.
 - Codex reported Gmail, Calendar, Drive, GitHub, and other apps as accessible. This was metadata inspection; no live email send/receive test was performed.
 
 Live microphone/noise behavior, acoustic quality on the target laptop, Cartesia requests, an external email trigger, and Linux/macOS hardware remain unverified.
+
+### Agent settings and interruption
+
+Settings → Harnesses now groups each agent into **harness → model → reasoning** pages. **Main agent** is first; Plugins & connectors defaults to following main and is only a connector preference. Coding and difficult work use isolated workers. The console highlights the selected setting, keeps it visible while navigating, and puts Main harness on its own status line.
+
+Wake interruption stops output/work and waits silently for your request. Ordinary intent such as “stop the alarm” goes to main, which can invoke `stop_alarm`. Optional Jev relevance filtering considers conversation context; “never mind” normally needs no reply and is not a hardcoded stop action. Skipped speech stays out of history. Without a TypeSafe key the local fallback filters only obvious filler/noise. Cloud transcription and compaction run asynchronously so controls remain responsive.
+
+`/compact` still works from the command line input, and now honors the selected CLI/model/reasoning. It summarizes Accessor's handoff history; each CLI still owns its native compaction. Failed compaction preserves the existing history.
+
+
+### Shared memory and MCP
+
+Accessor stores stable facts and preferences in `memory.json` alongside its settings, shared by all harnesses. Agents may save user-supported stable information automatically. Raw room speech, secrets, temporary guesses and permissions must not be saved as memories. Global scope is for cross-project preferences; project scope is tied to a canonical workspace directory. Repository instructions remain in native harness files. Memory is fallible context, never authority over current instructions.
+
+Use `/memory` in the console to inspect shared facts. `acc memory list`, `acc memory search "query"`, `acc memory save key "fact" --source "user statement"`, and `acc memory forget key --revision N` inspect and maintain the store from any shell. Add `--scope global` for a personal preference. Corrections require the revision returned by search; new keys use revision 0. File locks and atomic replacement protect concurrent writers. Forget clears text/source and retains a key tombstone, which blocks old agents from recreating that key. It does not erase copies in provider history, backups, native memories, or previously compacted context. Do not mirror Accessor facts into those stores.
+
+`acc mcp` serves memory search/save/forget and durable note/timer/schedule controls over stdio. Codex and Claude launched by Accessor receive a session-specific MCP connection; existing connectors remain available. Startup detects available harnesses and checks Antigravity registration automatically; `acc mcp-install` is also available for manual repair. Connections open when each harness starts. Registration preserves unrelated entries and refuses name collisions. Accessor passes the active workspace to Antigravity's server. Native harness tool permissions still apply. Main and worker prompts include the same memory policy; compaction prompts do not instruct memory retrieval or saving.
+
+Memory search first filters global/current-project entries and ranks keyword matches locally. `acc memory search "query" --rerank` or MCP `rerank:true` optionally sends the query and at most 20 candidates to Jev using the configured TypeSafe credential. It has a three-second timeout and falls back to local ranking. Reranking orders candidates; it cannot grant permissions or change scope. It is not embedding-based semantic retrieval, so a keyword-free paraphrase can still miss a fact.
+
+`session_control` MCP applies sleep and ringing-alarm stop through an authenticated loopback bridge to the launching Accessor session, and exposes live status. `organizer_control` also accepts sleep/stop_alarm. A receipt is returned after the UI applies the action. Session capabilities are supplied to main sessions, not isolated workers or compaction jobs; standalone memory MCP connections report that no live session is attached. Native tool permissions still apply. The old reply directives remain compatibility fallbacks. A successful MCP action must not also be emitted as a duplicate directive. Shared memory persists independently of CLI compaction and Accessor's handoff summaries.

@@ -10,9 +10,9 @@ use crossterm::{
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Layout},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
     Terminal,
 };
 use std::{
@@ -333,7 +333,7 @@ impl Ui {
         };
         terminal.draw(|f| {
             let layout = Layout::vertical([
-                Constraint::Length(3),
+                Constraint::Length(4),
                 Constraint::Min(3),
                 Constraint::Length(3),
                 Constraint::Length(1),
@@ -342,11 +342,12 @@ impl Ui {
             let color = status_color(&self.status);
             let border = Style::default().fg(color);
             f.render_widget(
-                Paragraph::new(self.status.clone())
+                Paragraph::new(status_lines(&self.status))
                     .style(Style::default().fg(color))
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded)
                             .border_style(border)
                             .title(" ACCESSOR · voice & agents "),
                     ),
@@ -362,6 +363,8 @@ impl Ui {
                             rest.to_string(),
                             Style::default().fg(Color::Cyan),
                         )));
+                    } else if line.starts_with("› ") {
+                        visual.push(Line::from(Span::styled(line.to_string(),Style::default().fg(Color::White).bg(Color::Rgb(35,62,79)).add_modifier(Modifier::BOLD))));
                     } else {
                         visual.push(Line::from(line.to_string()));
                     }
@@ -381,14 +384,15 @@ impl Ui {
             }
             let available = layout[1].height.saturating_sub(2) as usize;
             let (start, end) = if self.settings.is_some() {
-                let start = (self.scroll as usize).min(visual.len().saturating_sub(available));
+                let selected=visual.iter().position(|l|l.spans.first().is_some_and(|s|s.content.starts_with("› ")));
+                let start = settings_scroll(self.scroll as usize,selected,available,visual.len());
                 (start, (start + available).min(visual.len()))
             } else {
                 let end = visual.len().saturating_sub(self.scroll as usize);
                 (end.saturating_sub(available), end)
             };
             let title = if self.settings.is_some() {
-                " Settings · ↑/↓ Enter · Esc back · Esc on this list listens "
+                " Settings · microphone paused "
             } else if self.chat == "off" {
                 " Tools · chat hidden · /settings "
             } else if self.chat == "transcript" {
@@ -400,6 +404,7 @@ impl Ui {
                 Paragraph::new(visual[start..end].to_vec()).block(
                     Block::default()
                         .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded)
                         .border_style(border)
                         .title(title),
                 ),
@@ -415,6 +420,7 @@ impl Ui {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded)
                         .border_style(border)
                         .title(if self.secret {
                             " Secret · paste (Ctrl+Shift+V / Shift+Insert) · Enter saves · Esc cancels "
@@ -425,7 +431,7 @@ impl Ui {
                 layout[2],
             );
             f.render_widget(
-                Paragraph::new(" Esc cancel  ·  /sleep  ·  /mute  ·  /approve N  ·  Ctrl+C quit ")
+                Paragraph::new(if self.settings.is_some() {" ↑/↓ choose · Enter select · Esc back · changes save on confirmation "} else {" Say wake code, then pause · Esc cancel · /sleep · /audio · /settings "})
                     .style(Style::default().fg(color)),
                 layout[3],
             );
@@ -457,6 +463,7 @@ impl Ui {
                             .block(
                                 Block::default()
                                     .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded)
                                     .border_style(border)
                                     .title(" Commands · ↑/↓ choose · Enter opens · Tab completes "),
                             ),
@@ -473,6 +480,47 @@ impl Ui {
         })?;
         Ok(())
     }
+}
+fn settings_scroll(
+    scroll: usize,
+    selected: Option<usize>,
+    available: usize,
+    total: usize,
+) -> usize {
+    let max = total.saturating_sub(available);
+    let mut start = scroll.min(max);
+    if let Some(row) = selected {
+        if row < start {
+            start = row;
+        } else if row + 2 >= start + available {
+            start = (row + 3).saturating_sub(available).min(max);
+        }
+    }
+    start
+}
+fn status_lines(status: &str) -> String {
+    let parts: Vec<_> = status.split(" | ").collect();
+    let voice = parts
+        .first()
+        .copied()
+        .unwrap_or(status)
+        .replace(
+            "WHITE: waiting for wake code",
+            "Asleep · say your wake code",
+        )
+        .replace("GREEN: conversation open", "Listening · conversation open")
+        .replace(
+            "BLUE: waiting for reply",
+            "Thinking · wake code to interrupt",
+        );
+    let identity = parts.get(2).copied().unwrap_or("");
+    let task = parts
+        .get(1)
+        .copied()
+        .unwrap_or("")
+        .replace("BLUE: agent working", "Working")
+        .replace("AMBER: approval pending", "Approval needed");
+    format!("{voice}  ·  {task}\nMain harness: {identity}")
 }
 fn plain_prefix(kind: Kind, text: &str) -> String {
     match kind {
@@ -590,6 +638,15 @@ fn status_color(status: &str) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn settings_selection_stays_visible_in_short_terminals() {
+        assert_eq!(settings_scroll(0, Some(17), 8, 25), 12);
+        assert_eq!(settings_scroll(12, Some(2), 8, 25), 2);
+        assert!(
+            status_lines("GREEN: conversation open | idle | codex · luna")
+                .contains("Main harness: codex · luna")
+        );
+    }
     #[test]
     fn speaking_paints_accessor_purple() {
         assert_eq!(

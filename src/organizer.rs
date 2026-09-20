@@ -13,6 +13,23 @@ use std::{
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Directive {
     Sleep,
+    StopAlarm,
+    ListSchedules,
+    DeleteSchedule {
+        id: String,
+    },
+    UpdateSchedule {
+        id: String,
+        changes: TaskPatch,
+    },
+    Delegate {
+        prompt: String,
+        #[serde(default)]
+        role: Option<String>,
+        harness: String,
+        model: String,
+        reasoning: String,
+    },
     Note {
         text: String,
         #[serde(default)]
@@ -40,7 +57,28 @@ pub enum Directive {
         harness: Option<String>,
         #[serde(default)]
         model: Option<String>,
+        #[serde(default = "low_reasoning")]
+        reasoning: String,
     },
+}
+
+fn low_reasoning() -> String {
+    "low".into()
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct TaskPatch {
+    pub prompt: Option<String>,
+    pub label: Option<String>,
+    pub delay_seconds: Option<u64>,
+    pub at_unix: Option<u64>,
+    /// Zero removes repetition; omitted preserves it.
+    pub every_seconds: Option<u64>,
+    pub harness: Option<String>,
+    pub model: Option<String>,
+    pub reasoning: Option<String>,
+    pub paused: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -65,6 +103,10 @@ pub struct Task {
     pub every_seconds: Option<u64>,
     pub harness: Option<String>,
     pub model: Option<String>,
+    #[serde(default = "low_reasoning")]
+    pub reasoning: String,
+    #[serde(default)]
+    pub paused: bool,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -72,6 +114,14 @@ pub struct Task {
 struct ScheduleBook {
     alarms: Vec<Alarm>,
     tasks: Vec<Task>,
+    runs: Vec<RunRecord>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct RunRecord {
+    id: String,
+    at_unix: u64,
+    state: String,
 }
 
 #[derive(Debug)]
@@ -118,8 +168,25 @@ fn load() -> Result<ScheduleBook> {
     if !path.exists() {
         return Ok(ScheduleBook::default());
     }
-    serde_json::from_slice(&fs::read(&path)?)
-        .with_context(|| format!("Invalid organizer data: {}", path.display()))
+    let mut book: ScheduleBook = serde_json::from_slice(&fs::read(&path)?)
+        .with_context(|| format!("Invalid organizer data: {}", path.display()))?;
+    let mut migrated = false;
+    for task in &mut book.tasks {
+        if task.harness.is_none() || task.model.is_none() {
+            let settings = config::Settings::load()?;
+            let harness = task
+                .harness
+                .get_or_insert_with(|| settings.routing.main.clone());
+            task.model
+                .get_or_insert_with(|| config::light_model(harness).into());
+            migrated = true;
+        }
+        validate_task(task)?;
+    }
+    if migrated {
+        save(&book)?;
+    }
+    Ok(book)
 }
 
 fn save(book: &ScheduleBook) -> Result<()> {
@@ -155,24 +222,8 @@ pub fn take_directives(text: &str) -> (String, Vec<Directive>) {
 fn parse_directive(line: &str) -> Option<Directive> {
     let value: Value = serde_json::from_str(line).ok()?;
     let control = value.get("accessor")?.as_object()?;
-    let action = control.get("action")?.as_str()?;
-    let allowed: &[&str] = match action {
-        "sleep" => &["action"],
-        "note" => &["action", "text", "title"],
-        "alarm" => &["action", "label", "delay_seconds", "at_unix"],
-        "schedule" => &[
-            "action",
-            "prompt",
-            "label",
-            "delay_seconds",
-            "at_unix",
-            "every_seconds",
-            "harness",
-            "model",
-        ],
-        _ => return None,
-    };
-    if control.keys().any(|key| !allowed.contains(&key.as_str())) {
+    if matches!(control.get("action")?.as_str()?, "sleep" | "list_schedules") && control.len() != 1
+    {
         return None;
     }
     serde_json::from_value::<Envelope>(value)
@@ -239,6 +290,7 @@ pub fn add_alarm(label: Option<&str>, delay: Option<u64>, at: Option<u64>) -> Re
     Ok(alarm)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn add_task(
     prompt: &str,
     label: Option<&str>,
@@ -247,6 +299,7 @@ pub fn add_task(
     every: Option<u64>,
     harness: Option<&str>,
     model: Option<&str>,
+    reasoning: &str,
 ) -> Result<Task> {
     let prompt = prompt.trim();
     ensure!(
@@ -284,24 +337,125 @@ pub fn add_task(
         every_seconds: every,
         harness: harness.map(str::to_owned),
         model: model.map(str::to_owned),
+        reasoning: reasoning.into(),
+        paused: false,
     };
+    validate_task(&task)?;
     book.tasks.push(task.clone());
     save(&book)?;
     Ok(task)
 }
 
-pub fn claim_due() -> Result<Vec<Due>> {
+pub fn validate_execution(harness: &str, model: &str, reasoning: &str) -> Result<()> {
+    ensure!(
+        ["codex", "claude", "antigravity", "mock"].contains(&harness),
+        "Unknown harness"
+    );
+    ensure!(
+        !model.is_empty()
+            && model != "default"
+            && model.len() <= 128
+            && model
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-._/:".contains(c)),
+        "Specify an explicit model ID or supported alias"
+    );
+    ensure!(
+        ["low", "medium", "high"].contains(&reasoning),
+        "Reasoning must be low, medium, or high"
+    );
+    Ok(())
+}
+
+fn validate_task(task: &Task) -> Result<()> {
+    ensure!(
+        !task.prompt.trim().is_empty() && task.prompt.len() <= 32_000,
+        "Task prompt must contain 1–32000 characters"
+    );
+    ensure!(
+        task.every_seconds.is_none_or(|s| s >= 60),
+        "Repeating tasks must be at least 60 seconds apart"
+    );
+    validate_execution(
+        task.harness
+            .as_deref()
+            .context("A scheduled task requires a harness")?,
+        task.model
+            .as_deref()
+            .context("A scheduled task requires a model")?,
+        &task.reasoning,
+    )
+}
+
+fn apply_patch(task: &mut Task, patch: TaskPatch) -> Result<()> {
+    if let Some(v) = patch.prompt {
+        task.prompt = v;
+    }
+    if let Some(v) = patch.label {
+        task.label = v.chars().take(120).collect();
+    }
+    if patch.delay_seconds.is_some() || patch.at_unix.is_some() {
+        task.next_unix = due_time(patch.delay_seconds, patch.at_unix)?;
+    }
+    if let Some(v) = patch.every_seconds {
+        task.every_seconds = (v != 0).then_some(v);
+    }
+    if patch
+        .harness
+        .as_ref()
+        .is_some_and(|h| Some(h) != task.harness.as_ref())
+    {
+        ensure!(
+            patch.model.is_some(),
+            "Changing harness also requires its model"
+        );
+    }
+    if let Some(v) = patch.harness {
+        task.harness = Some(v);
+    }
+    if let Some(v) = patch.model {
+        task.model = Some(v);
+    }
+    if let Some(v) = patch.reasoning {
+        task.reasoning = v;
+    }
+    if let Some(v) = patch.paused {
+        task.paused = v;
+    }
+    validate_task(task)
+}
+
+pub fn update(id: &str, patch: TaskPatch) -> Result<Task> {
+    require_id(id)?;
+    let _lock = lock()?;
+    let mut book = load()?;
+    let task = book
+        .tasks
+        .iter_mut()
+        .find(|t| t.id == id)
+        .context("No matching pending task")?;
+    apply_patch(task, patch)?;
+    let result = task.clone();
+    save(&book)?;
+    Ok(result)
+}
+
+pub fn claim_due(eligible: impl FnMut(&Task) -> bool) -> Result<Vec<Due>> {
     let _lock = lock()?;
     let mut book = load()?;
     let now = now_unix();
-    let due = take_due(&mut book, now);
+    let due = take_due(&mut book, now, eligible);
     if !due.is_empty() {
         save(&book)?;
     }
     Ok(due)
 }
 
-fn take_due(book: &mut ScheduleBook, now: u64) -> Vec<Due> {
+fn take_due(
+    book: &mut ScheduleBook,
+    now: u64,
+    mut eligible: impl FnMut(&Task) -> bool,
+) -> Vec<Due> {
     let mut due = Vec::new();
     book.alarms.retain(|alarm| {
         if alarm.at_unix <= now {
@@ -312,20 +466,37 @@ fn take_due(book: &mut ScheduleBook, now: u64) -> Vec<Due> {
         }
     });
     book.tasks.retain_mut(|task| {
-        if task.next_unix > now {
+        if task.paused || task.next_unix > now || !eligible(task) {
             return true;
         }
         due.push(Due::Task(task.clone()));
+        book.runs.push(RunRecord {
+            id: task.id.clone(),
+            at_unix: now,
+            state: "claimed; outcome unknown until completion".into(),
+        });
         if let Some(every) = task.every_seconds {
-            while task.next_unix <= now {
-                task.next_unix = task.next_unix.saturating_add(every);
-            }
+            let steps = (now - task.next_unix) / every.max(1) + 1;
+            task.next_unix = task.next_unix.saturating_add(steps.saturating_mul(every));
             true
         } else {
             false
         }
     });
+    if book.runs.len() > 100 {
+        book.runs.drain(..book.runs.len() - 100);
+    }
     due
+}
+
+pub fn finish_run(id: &str, state: &str) -> Result<()> {
+    let _lock = lock()?;
+    let mut book = load()?;
+    if let Some(run) = book.runs.iter_mut().rev().find(|r| r.id == id) {
+        run.state = state.into();
+        save(&book)?;
+    }
+    Ok(())
 }
 
 pub fn list() -> Result<String> {
@@ -340,7 +511,7 @@ pub fn list() -> Result<String> {
     }
     for task in book.tasks {
         lines.push(format!(
-            "Task {} · {} · next Unix {}{} · {} / {}",
+            "Task {} · {} · next Unix {}{} · {} / {} · {} · paused={}\n  Instructions: {}",
             task.id,
             task.label,
             task.next_unix,
@@ -348,7 +519,16 @@ pub fn list() -> Result<String> {
                 .map(|n| format!(" · every {n}s"))
                 .unwrap_or_default(),
             task.harness.as_deref().unwrap_or("auto"),
-            task.model.as_deref().unwrap_or("default")
+            task.model.as_deref().unwrap_or("default"),
+            task.reasoning,
+            task.paused,
+            task.prompt
+        ));
+    }
+    for run in book.runs.iter().rev().take(10) {
+        lines.push(format!(
+            "Run {} · Unix {} · {}",
+            run.id, run.at_unix, run.state
         ));
     }
     if lines.len() == 1 {
@@ -376,10 +556,16 @@ pub fn cancel(id: &str) -> Result<bool> {
 }
 
 pub fn guide() -> String {
-    format!(
-        "Accessor local controls are available through one-line JSON directives. Current Unix time is {}. Emit a directive only when the user explicitly asks for that action; include a concise plain-language acknowledgement before it. Accessor validates, applies, and removes the directive from the spoken reply. Sleep only when the user asks to end or sleep the voice session. Notes are private Markdown files in Accessor's notes folder. Alarms beep locally while Accessor is running and stop on ‘29 stop’. Scheduled tasks persist and run while Accessor is running; delay_seconds is relative to now, at_unix is absolute, every_seconds makes a task repeat (minimum 60). Use exactly one of delay_seconds or at_unix. Optional harness values: codex, claude, antigravity, mock. Omit harness/model for normal Jev routing. Formats:\n{{\"accessor\":{{\"action\":\"sleep\"}}}}\n{{\"accessor\":{{\"action\":\"note\",\"title\":\"short title\",\"text\":\"note body\"}}}}\n{{\"accessor\":{{\"action\":\"alarm\",\"label\":\"tea\",\"delay_seconds\":300}}}}\n{{\"accessor\":{{\"action\":\"schedule\",\"label\":\"daily summary\",\"prompt\":\"Summarize...\",\"delay_seconds\":3600,\"every_seconds\":86400,\"harness\":\"codex\",\"model\":\"gpt-5.6-sol\"}}}}",
-        now_unix()
-    )
+    r#"Accessor local controls use strict one-line JSON in a final reply. When organizer MCP tools are available, prefer them for durable notes/timers/schedules and use their returned receipts; never also emit a duplicate directive. Prefer session_control MCP for sleep and stop_alarm; it reaches the running session and returns a receipt. The JSON forms are compatibility fallbacks when the MCP tool is unavailable. Emit controls only for user-authorized actions. Do not claim success until Accessor returns the actual result. Timers use alarm; stop_alarm silences the currently ringing alarm without cancelling unrelated future timers; notes are private Markdown. Schedules run only while Accessor is running. Every task MUST specify a harness, explicit model, and low/medium/high reasoning. Timing uses exactly one of delay_seconds or at_unix (Unix seconds). Repeats are elapsed seconds, minimum 60, not timezone/calendar recurrence. Ask for a timezone if an absolute clock time is ambiguous. List before editing/deleting when the ID is unknown. Updates preserve omitted fields; every_seconds:0 removes repetition; paused:true/false pauses/resumes. Changing harness also requires a model. Delete supports a specific ID; use all only when explicitly requested. Never repeat a successful control. Sleep ends active listening while keeping the wake detector local.
+{"accessor":{"action":"sleep"}}
+{"accessor":{"action":"stop_alarm"}}
+{"accessor":{"action":"note","title":"workshop","text":"Filter is 20 by 25"}}
+{"accessor":{"action":"alarm","label":"tea","delay_seconds":300}}
+{"accessor":{"action":"schedule","label":"summary","prompt":"Summarize project status","delay_seconds":3600,"every_seconds":86400,"harness":"codex","model":"gpt-5.6-luna","reasoning":"low"}}
+{"accessor":{"action":"list_schedules"}}
+{"accessor":{"action":"update_schedule","id":"0123abcd","changes":{"delay_seconds":7200,"prompt":"Updated instructions","harness":"claude","model":"sonnet","reasoning":"medium","paused":false}}}
+{"accessor":{"action":"delete_schedule","id":"0123abcd"}}
+"#.into()
 }
 
 pub fn require_id(id: &str) -> Result<()> {
@@ -410,6 +596,7 @@ mod tests {
     #[test]
     fn due_recurring_task_runs_once_and_advances() {
         let mut book = ScheduleBook {
+            runs: vec![],
             alarms: vec![Alarm {
                 id: "alarm123".into(),
                 label: "Tea".into(),
@@ -423,11 +610,91 @@ mod tests {
                 every_seconds: Some(20),
                 harness: None,
                 model: None,
+                reasoning: "low".into(),
+                paused: false,
             }],
         };
-        let due = take_due(&mut book, 100);
+        let due = take_due(&mut book, 100, |_| true);
         assert_eq!(due.len(), 2);
         assert!(book.alarms.is_empty());
         assert_eq!(book.tasks[0].next_unix, 110);
+    }
+
+    fn sample_task() -> Task {
+        Task {
+            id: "0123abcd".into(),
+            label: "Report".into(),
+            prompt: "Original instructions".into(),
+            next_unix: 50,
+            every_seconds: Some(60),
+            harness: Some("codex".into()),
+            model: Some("gpt-5.6-luna".into()),
+            reasoning: "low".into(),
+            paused: false,
+        }
+    }
+
+    #[test]
+    fn task_patch_preserves_fields_and_requires_model_on_harness_change() {
+        let mut task = sample_task();
+        apply_patch(
+            &mut task,
+            TaskPatch {
+                prompt: Some("New instructions".into()),
+                paused: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(task.model.as_deref(), Some("gpt-5.6-luna"));
+        assert_eq!(task.next_unix, 50);
+        assert!(task.paused);
+        assert!(apply_patch(
+            &mut task,
+            TaskPatch {
+                harness: Some("claude".into()),
+                ..Default::default()
+            }
+        )
+        .is_err());
+        apply_patch(
+            &mut task,
+            TaskPatch {
+                harness: Some("claude".into()),
+                model: Some("sonnet".into()),
+                reasoning: Some("high".into()),
+                every_seconds: Some(0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(task.every_seconds, None);
+        assert_eq!(task.reasoning, "high");
+        task.model = None;
+        assert!(validate_task(&task).is_err());
+    }
+
+    #[test]
+    fn unavailable_and_paused_tasks_remain_pending() {
+        let mut book = ScheduleBook {
+            tasks: vec![sample_task()],
+            ..Default::default()
+        };
+        assert!(take_due(&mut book, 100, |_| false).is_empty());
+        assert_eq!(book.tasks[0].next_unix, 50);
+        book.tasks[0].paused = true;
+        assert!(take_due(&mut book, 100, |_| true).is_empty());
+        book.tasks[0].paused = false;
+        assert_eq!(take_due(&mut book, 100, |_| true).len(), 1);
+        assert_eq!(book.runs.len(), 1);
+        assert!(book.runs[0].state.contains("unknown"));
+    }
+
+    #[test]
+    fn malformed_edit_is_not_executed() {
+        let (_, controls) = take_directives(
+            r#"{"accessor":{"action":"update_schedule","id":"0123abcd","changes":{"modle":"typo"}}}"#,
+        );
+        assert!(controls.is_empty());
     }
 }

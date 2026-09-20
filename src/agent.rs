@@ -23,6 +23,8 @@ pub enum Event {
     Reply(String),
     Progress(String),
     Done,
+    Cancelled,
+    Failed(String),
     Approval { number: u64, detail: String },
     ApprovalClosed,
     Error(String),
@@ -31,6 +33,8 @@ pub enum Event {
 }
 
 pub struct Options {
+    pub control: Option<crate::control::Endpoint>,
+    pub shared_memory: bool,
     pub executable: PathBuf,
     pub workspace: PathBuf,
     pub writable: bool,
@@ -45,10 +49,24 @@ pub fn spawn(
     options: Options,
     events: mpsc::Sender<(String, Event)>,
 ) -> (mpsc::Sender<CommandMessage>, tokio::task::JoinHandle<()>) {
+    spawn_tagged(harness, harness, options, events)
+}
+
+pub fn spawn_tagged(
+    harness: &str,
+    tag: &str,
+    mut options: Options,
+    events: mpsc::Sender<(String, Event)>,
+) -> (mpsc::Sender<CommandMessage>, tokio::task::JoinHandle<()>) {
+    if options.shared_memory {
+        options.instructions.push_str("\n\n");
+        options.instructions.push_str(crate::memory::POLICY);
+        options.instructions.push_str("\nIf MCP tools are unavailable, use acc memory --help through your normal shell permissions.");
+    }
     let (tx, rx) = mpsc::channel(8);
     let (inner_tx, mut inner_rx) = mpsc::channel(32);
-    let tag = harness.to_owned();
-    let kind = tag.clone();
+    let tag = tag.to_owned();
+    let kind = harness.to_owned();
     tokio::spawn(async move {
         while let Some(event) = inner_rx.recv().await {
             if events.send((tag.clone(), event)).await.is_err() {
@@ -156,10 +174,23 @@ async fn codex(
     mut commands: mpsc::Receiver<CommandMessage>,
     events: mpsc::Sender<Event>,
 ) -> Result<()> {
-    let mut process: Child = Command::new(&options.executable).arg("app-server")
+    let mut cmd = Command::new(&options.executable);
+    cmd.arg("app-server");
+    let _mcp_config = if options.shared_memory {
+        crate::mcp::configure(
+            &mut cmd,
+            "codex",
+            &options.workspace,
+            options.control.as_ref(),
+        )?
+    } else {
+        None
+    };
+    let mut process: Child = crate::process_tree::spawn(cmd
         .current_dir(&options.workspace).stdin(Stdio::piped()).stdout(Stdio::piped())
-        .stderr(Stdio::null()).kill_on_drop(true).spawn()
+        .stderr(Stdio::null()).kill_on_drop(true))
         .context("Could not start Codex. Install/login to Codex CLI, or pass --codex-bin with its executable path")?;
+    let _tree = crate::process_tree::ProcessTree::attach(&process)?;
     let mut stdin = process.stdin.take().context("Codex stdin missing")?;
     let mut lines = BufReader::new(process.stdout.take().context("Codex stdout missing")?).lines();
     write(&mut stdin, json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"accessor","title":"Accessor","version":env!("CARGO_PKG_VERSION")}}})).await?;
@@ -167,6 +198,7 @@ async fn codex(
     let mut model = options.model.clone();
     let mut turn: Option<String> = None;
     let mut turn_starting = false;
+    let mut replies = Vec::new();
     let mut cancel_requested = false;
     let mut next_id = 10_u64;
     let mut approval_number = 0_u64;
@@ -206,7 +238,7 @@ async fn codex(
                             if item["type"] == "agentMessage" {
                                 if let Some(text) = item["text"].as_str() {
                                     if item["phase"]=="commentary" {events.send(Event::Progress(text.into())).await?;}
-                                    else {events.send(Event::Reply(text.into())).await?;}
+                                    else {replies.push(text.to_owned());}
                                 }
                             } else if let Some(text) = summarize_item(item, true) {
                                 events.send(Event::Tool(text)).await?;
@@ -216,7 +248,11 @@ async fn codex(
                             turn = None; turn_starting = false; cancel_requested = false;
                             for (_, p) in pending.drain() { write(&mut stdin, rejected(p.id, &p.method)).await?; }
                             let completed = &msg["params"]["turn"];
-                            if completed["status"] == "failed" { events.send(Event::Note(format!("Task failed: {}", completed["error"]))).await?; }
+                            if completed["status"] == "failed" { events.send(Event::Failed(format!("Task failed: {}", completed["error"]))).await?; }
+                            else if completed["status"]=="completed" {
+                                for text in replies.drain(..) {events.send(Event::Reply(text)).await?;}
+                            }
+                            replies.clear();
                             events.send(Event::Done).await?;
                         }
                         "serverRequest/resolved" => {
@@ -230,7 +266,7 @@ async fn codex(
                     if let Some(error) = msg.get("error") {
                         if id <= 2 { bail!("Codex setup failed: {error}"); }
                         if requests.remove(&id) == Some("turn/start") { turn_starting = false; events.send(Event::Done).await?; }
-                        events.send(Event::Note(format!("Codex request failed: {error}"))).await?;
+                        events.send(Event::Failed(format!("Codex request failed: {error}"))).await?;
                         continue;
                     }
                     if id == 1 {
@@ -259,6 +295,7 @@ async fn codex(
                     Some(CommandMessage::Prompt(text)) => {
                         if turn.is_some() || turn_starting { events.send(Event::Note("Agent is working. Cancel or wait before sending another request.".into())).await?; continue; }
                         cancel_requested=false;
+                        replies.clear();
                         let Some(t) = &thread else { events.send(Event::Note("Agent is still connecting; repeat your request when ready.".into())).await?; events.send(Event::Done).await?; continue; };
                         next_id += 1;
                         requests.insert(next_id, "turn/start");
@@ -355,6 +392,16 @@ async fn claude_cli(
     events: mpsc::Sender<Event>,
 ) -> Result<()> {
     let mut cmd = Command::new(&options.executable);
+    let _mcp_config = if options.shared_memory {
+        crate::mcp::configure(
+            &mut cmd,
+            "claude",
+            &options.workspace,
+            options.control.as_ref(),
+        )?
+    } else {
+        None
+    };
     cmd.args([
         "--output-format",
         "stream-json",
@@ -376,11 +423,19 @@ async fn claude_cli(
     if let Some(model) = &options.model {
         cmd.arg("--model").arg(model);
     }
-    if !options.instructions.is_empty() {
-        cmd.arg("--append-system-prompt").arg(&options.instructions);
+    // A file avoids Windows batch-wrapper newline/length limits and keeps the
+    // full metaprompt out of the command line. Keep it alive for this process.
+    let home = crate::config::home()?;
+    std::fs::create_dir_all(&home)?;
+    let mut instruction_file = tempfile::NamedTempFile::new_in(home)?;
+    std::io::Write::write_all(&mut instruction_file, options.instructions.as_bytes())?;
+    cmd.arg("--append-system-prompt-file")
+        .arg(instruction_file.path());
+    if options.reasoning != "default" {
+        cmd.arg("--effort").arg(&options.reasoning);
     }
     stdio_agent(
-        cmd.spawn()
+        crate::process_tree::spawn(&mut cmd)
             .context("Could not start Claude Code. Install the `claude` CLI and log in.")?,
         commands,
         events,
@@ -397,6 +452,12 @@ async fn antigravity_cli(
     events: mpsc::Sender<Event>,
 ) -> Result<()> {
     let mut cmd = Command::new(&options.executable);
+    cmd.env("ACC_MEMORY_WORKSPACE", &options.workspace);
+    if let Some(endpoint) = &options.control {
+        cmd.env("ACC_CONTROL_ENDPOINT", serde_json::to_string(endpoint)?);
+    } else {
+        cmd.env_remove("ACC_CONTROL_ENDPOINT");
+    }
     cmd.args([
         "--input-format",
         "stream-json",
@@ -420,11 +481,14 @@ async fn antigravity_cli(
         _ => "low",
     };
     cmd.arg("--effort").arg(effort);
-    if options.auto_review {
-        cmd.arg("--dangerously-skip-permissions");
-    }
+    cmd.arg("--mode").arg(if options.writable {
+        "accept-edits"
+    } else {
+        "plan"
+    });
+    cmd.arg("--sandbox");
     stdio_agent(
-        cmd.spawn()
+        crate::process_tree::spawn(&mut cmd)
             .context("Could not start Antigravity. Install the `agy` CLI and log in.")?,
         commands,
         events,
@@ -484,6 +548,15 @@ fn parse_stream_line(msg: &Value) -> StreamLine {
 }
 
 fn claude_stream_line(msg: &Value) -> StreamLine {
+    if msg["type"] == "result" && msg["is_error"] == true {
+        return StreamLine::Finished {
+            reply: None,
+            error: Some(
+                nonempty_str(&msg["result"])
+                    .unwrap_or_else(|| format!("Claude task failed: {}", msg["errors"])),
+            ),
+        };
+    }
     let kind = msg["type"].as_str().or_else(|| msg["event"].as_str());
     match kind {
         Some("result" | "end" | "done" | "turn_complete") => StreamLine::Finished {
@@ -567,6 +640,7 @@ async fn stdio_agent(
     name: &'static str,
     instructions: String,
 ) -> Result<()> {
+    let mut tree = crate::process_tree::ProcessTree::attach(&process)?;
     let mut stdin = process.stdin.take().context("Agent stdin missing")?;
     let mut lines = BufReader::new(process.stdout.take().context("Agent stdout missing")?).lines();
     let mut err_lines =
@@ -576,6 +650,7 @@ async fn stdio_agent(
     let mut err_log = String::new();
     let mut err_open = true;
     let mut primed = instructions.is_empty();
+    let mut reply_buffer = String::new();
     loop {
         tokio::select! {
             line = lines.next_line() => {
@@ -600,14 +675,17 @@ async fn stdio_agent(
                 match parse_stream_line(&msg) {
                     StreamLine::Skip => {}
                     StreamLine::Tool(text) => events.send(Event::Tool(text)).await?,
-                    StreamLine::Reply(text) => events.send(Event::Reply(text)).await?,
+                    StreamLine::Reply(text) => {
+                        if !reply_buffer.ends_with(&text) { reply_buffer.push_str(&text); reply_buffer.push('\n'); }
+                    },
                     StreamLine::Finished { reply, error } => {
+                        let failed=error.is_some();
                         if let Some(error) = error {
-                            events.send(Event::Note(format!("{name}: {error}"))).await?;
+                            events.send(Event::Failed(format!("{name}: {error}"))).await?;
                         }
-                        if let Some(reply) = reply {
+                        if !failed {if let Some(reply) = reply.or_else(|| (!reply_buffer.is_empty()).then(|| std::mem::take(&mut reply_buffer))) {
                             events.send(Event::Reply(reply)).await?;
-                        }
+                        }}
                         busy = false;
                         events.send(Event::Done).await?;
                     }
@@ -635,6 +713,7 @@ async fn stdio_agent(
                             continue;
                         }
                         busy = true;
+                        reply_buffer.clear();
                         events.send(Event::Started).await?;
                         let text = if primed {
                             text
@@ -645,8 +724,14 @@ async fn stdio_agent(
                         write(&mut stdin, encode(&text)).await?;
                     }
                     Some(CommandMessage::Cancel) => {
-                        busy = false;
-                        events.send(Event::Done).await?;
+                        // These CLIs have no shared turn-interrupt protocol.
+                        // Stop the actual process before acknowledging cancellation.
+                        tree.stop();
+                        let _=process.start_kill();
+                        process.wait().await?;
+                        events.send(Event::Note(format!("{name}: cancelled; reconnecting starts a fresh session with a handoff summary."))).await?;
+                        events.send(Event::Cancelled).await?;
+                        return Ok(());
                     }
                     None | Some(CommandMessage::Shutdown) => {
                         drop(stdin);
@@ -689,6 +774,8 @@ mod tests {
     #[test]
     fn defaults_and_unknown_requests_fail_closed() {
         let p = thread_params(&Options {
+            control: None,
+            shared_memory: false,
             executable: "codex".into(),
             workspace: "/tmp/work".into(),
             writable: false,
@@ -701,6 +788,8 @@ mod tests {
         assert_eq!(p["approvalsReviewer"], "user");
         assert_eq!(
             thread_params(&Options {
+                control: None,
+                shared_memory: false,
                 executable: "codex".into(),
                 workspace: "/tmp/work".into(),
                 writable: true,

@@ -1,6 +1,7 @@
 """Protocol fixture: never connects to a model or executes a command."""
 import json
 import sys
+from control_fixtures import control_reply
 
 def send(msg):
     print(json.dumps(msg), flush=True)
@@ -24,6 +25,25 @@ for line in sys.stdin:
         send({"id": msg["id"], "result": {"turn": {"id": "turn-1"}}})
         send({"method": "turn/started", "params": {"turn": {"id": "turn-1"}}})
         text = msg["params"]["input"][0]["text"]
+        if text.startswith("Conversation data to summarize:"):
+            reply("compact-model=" + str(msg["params"].get("model")) + "; compact-effort=" + str(msg["params"].get("effort")))
+            continue
+        control = control_reply(text.rsplit("Current request:\n", 1)[-1])
+        if control:
+            reply(control)
+            continue
+        if "Accessor worker" in text and "<worker_result>" in text:
+            reply("main received worker result")
+            continue
+        if text in ("delegate fixture", "delegate hold fixture"):
+            reply(json.dumps({"accessor": {"action":"delegate", "prompt":"hold" if "hold" in text else "worker settings", "harness":"codex", "model":"fixture-worker", "reasoning":"high"}}))
+            continue
+        if text == "worker settings":
+            reply("model=" + str(msg["params"].get("model")) + "; effort=" + str(msg["params"].get("effort")))
+            continue
+        if text == "plugin delegate fixture":
+            reply(json.dumps({"accessor":{"action":"delegate","role":"plugin","prompt":"worker settings","harness":"codex","model":"ignored-worker-model","reasoning":"medium"}}))
+            continue
         if text == "approval test":
             send({"id": "approval-1", "method": "item/commandExecution/requestApproval", "params": {"command": "fixture-only; no execution", "threadId": "thread-1", "turnId": "turn-1"}})
         elif text == "grant test":

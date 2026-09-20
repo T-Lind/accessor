@@ -691,8 +691,15 @@ mod tests {
 
     #[test]
     fn whisper_runtime_library_names_are_detected() {
-        assert!(whisper_runtime_library(Path::new("libwhisper.so.1")));
-        assert!(whisper_runtime_library(Path::new("libggml-cpu-x64.so")));
+        if cfg!(windows) {
+            assert!(whisper_runtime_library(Path::new("whisper.dll")));
+            assert!(whisper_runtime_library(Path::new("ggml-cpu.dll")));
+        } else if cfg!(target_os = "macos") {
+            assert!(whisper_runtime_library(Path::new("libwhisper.dylib")));
+        } else {
+            assert!(whisper_runtime_library(Path::new("libwhisper.so.1")));
+            assert!(whisper_runtime_library(Path::new("libggml-cpu-x64.so")));
+        }
         assert!(!whisper_runtime_library(Path::new("README.md")));
     }
 

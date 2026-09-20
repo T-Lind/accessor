@@ -21,6 +21,21 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
+    /// Serve shared memory and durable organizer tools over local MCP stdio.
+    Mcp {
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Inspect, save, correct or forget shared durable facts and preferences.
+    Memory {
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        #[command(subcommand)]
+        action: MemoryCommand,
+    },
+    /// Register Accessor MCP for Antigravity (Codex/Claude connect per session).
+    McpInstall,
+
     /// Receive notifications from an existing email automation; no inbox polling.
     Events {
         #[command(subcommand)]
@@ -76,10 +91,36 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<OsString>,
     },
-    /// Save a TypeSafe API key for Jev routing.
+    /// Save a TypeSafe API key for Jev input relevance.
     Jev {
         #[command(subcommand)]
         action: JevCommand,
+    },
+}
+#[derive(Subcommand)]
+enum MemoryCommand {
+    List,
+    Search {
+        query: String,
+        #[arg(long)]
+        rerank: bool,
+    },
+    Save {
+        key: String,
+        text: String,
+        #[arg(long, default_value = "project")]
+        scope: String,
+        #[arg(long)]
+        source: String,
+        #[arg(long, default_value_t = 0)]
+        revision: u64,
+    },
+    Forget {
+        key: String,
+        #[arg(long, default_value = "project")]
+        scope: String,
+        #[arg(long)]
+        revision: u64,
     },
 }
 #[derive(Clone, Copy, ValueEnum, PartialEq)]
@@ -228,6 +269,30 @@ enum OrganizerCommand {
         harness: Option<String>,
         #[arg(long)]
         model: Option<String>,
+        #[arg(long, default_value = "low")]
+        reasoning: String,
+    },
+    /// Edit a task. Only provided fields change; every-seconds 0 stops repetition.
+    Edit {
+        id: String,
+        #[arg(long)]
+        prompt: Option<String>,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        in_seconds: Option<u64>,
+        #[arg(long)]
+        at_unix: Option<u64>,
+        #[arg(long)]
+        every_seconds: Option<u64>,
+        #[arg(long)]
+        harness: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        reasoning: Option<String>,
+        #[arg(long)]
+        paused: Option<bool>,
     },
     /// Cancel a pending item by its 8-character ID, or use "all".
     Cancel { id: String },
@@ -279,6 +344,51 @@ fn normalized(mut args: Vec<OsString>) -> Vec<OsString> {
 pub async fn entry() -> Result<()> {
     let cli = Cli::parse_from(normalized(std::env::args_os().collect()));
     match cli.command {
+        Commands::Mcp { workspace } => {
+            crate::mcp::serve(
+                &workspace
+                    .or_else(|| std::env::var_os("ACC_MEMORY_WORKSPACE").map(PathBuf::from))
+                    .unwrap_or(std::env::current_dir()?),
+            )
+            .await
+        }
+        Commands::Memory { workspace, action } => {
+            use serde_json::json;
+            let (name, args) = match action {
+                MemoryCommand::List => ("memory_search", json!({"query":"","limit":100})),
+                MemoryCommand::Search { query, rerank } => {
+                    ("memory_search", json!({"query":query,"rerank":rerank}))
+                }
+                MemoryCommand::Save {
+                    key,
+                    text,
+                    scope,
+                    source,
+                    revision,
+                } => (
+                    "memory_save",
+                    json!({"key":key,"text":text,"scope":scope,"source":source,"revision":revision}),
+                ),
+                MemoryCommand::Forget {
+                    key,
+                    scope,
+                    revision,
+                } => (
+                    "memory_forget",
+                    json!({"key":key,"scope":scope,"revision":revision}),
+                ),
+            };
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&crate::mcp::call(name, &args, &workspace).await?)?
+            );
+            Ok(())
+        }
+        Commands::McpInstall => {
+            crate::mcp::install_antigravity()?;
+            println!("Accessor MCP registered for Antigravity. It connects when the harness starts. Codex and Claude connect automatically inside Accessor.");
+            Ok(())
+        }
         Commands::Organizer { action } => match action {
             OrganizerCommand::Status => {
                 println!("{}", crate::organizer::list()?);
@@ -301,6 +411,7 @@ pub async fn entry() -> Result<()> {
                 label,
                 harness,
                 model,
+                reasoning,
             } => {
                 let item = crate::organizer::add_task(
                     &prompt,
@@ -310,6 +421,7 @@ pub async fn entry() -> Result<()> {
                     every_seconds,
                     harness.as_deref(),
                     model.as_deref(),
+                    &reasoning,
                 )?;
                 println!("Task {} saved for Unix {}.", item.id, item.next_unix);
                 Ok(())
@@ -324,6 +436,35 @@ pub async fn entry() -> Result<()> {
                         "No matching pending item."
                     }
                 );
+                Ok(())
+            }
+            OrganizerCommand::Edit {
+                id,
+                prompt,
+                label,
+                in_seconds,
+                at_unix,
+                every_seconds,
+                harness,
+                model,
+                reasoning,
+                paused,
+            } => {
+                let task = crate::organizer::update(
+                    &id,
+                    crate::organizer::TaskPatch {
+                        prompt,
+                        label,
+                        delay_seconds: in_seconds,
+                        at_unix,
+                        every_seconds,
+                        harness,
+                        model,
+                        reasoning,
+                        paused,
+                    },
+                )?;
+                println!("Updated task {} for Unix {}.", task.id, task.next_unix);
                 Ok(())
             }
         },
@@ -472,7 +613,7 @@ pub async fn entry() -> Result<()> {
                     "TypeSafe API key (saved in the OS credential store, not settings.json)",
                 )?;
                 config::save_secret("typesafe", &key)?;
-                println!("Saved. In Accessor: Harnesses → Jev auto-select on, or Router → jev.");
+                println!("Saved. In Accessor: Harnesses → Input relevance → Jev.");
                 Ok(())
             }
             JevCommand::ForgetKey => config::delete_secret("typesafe"),

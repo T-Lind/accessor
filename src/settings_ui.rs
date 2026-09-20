@@ -27,6 +27,7 @@ pub struct Panel {
     page: Page,
     cursor: usize,
     field: Option<&'static str>,
+    agent_edit: Option<AgentEdit>,
 }
 impl Default for Panel {
     fn default() -> Self {
@@ -34,6 +35,7 @@ impl Default for Panel {
             page: Page::Home,
             cursor: 0,
             field: None,
+            agent_edit: None,
         }
     }
 }
@@ -43,7 +45,6 @@ pub enum Answer {
     Close,
 }
 
-const ROUTERS: &[&str] = &["keywords", "jev", "off"];
 const REASONING: &[&str] = &["default", "low", "medium", "high"];
 const REVIEWERS: &[&str] = &["auto", "user"];
 const STT_MODES: &[&str] = &["local", "cartesia"];
@@ -54,6 +55,7 @@ struct Row {
 }
 enum Action {
     Open(Page),
+    Agent(&'static str),
     Toggle(&'static str),
     Cycle(&'static str, &'static [&'static str]),
     Edit(&'static str),
@@ -61,14 +63,14 @@ enum Action {
     Close,
 }
 
-fn rows(page: Page, s: &Settings, connected: bool) -> Vec<Row> {
+fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
     match page {
         Page::Home => vec![
             row("Voice", "wake, barge-in, idle", Action::Open(Page::Voice)),
             row("Speech", "TTS, STT, speed", Action::Open(Page::Speech)),
             row(
                 "Harnesses",
-                "plugin, coding, everyday",
+                "main, coding, compaction",
                 Action::Open(Page::Harnesses),
             ),
             row(
@@ -163,92 +165,77 @@ fn rows(page: Page, s: &Settings, connected: bool) -> Vec<Row> {
         ],
         Page::Harnesses => vec![
             row(
-                "Plugin harness",
+                "Main agent",
                 &format!(
-                    "{} · {}",
-                    harness_label(s, &s.agent),
-                    if connected {
-                        "connected"
-                    } else {
-                        "connects on use"
-                    }
+                    "{} · {} · {}",
+                    s.routing.main,
+                    s.routing
+                        .main_model
+                        .as_deref()
+                        .unwrap_or(crate::config::light_model(&s.routing.main)),
+                    s.routing.reasoning
                 ),
-                Action::Edit("agent"),
+                Action::Agent("main"),
             ),
             row(
-                "Plugin model",
-                s.routing
-                    .plugin_model
-                    .as_deref()
-                    .unwrap_or("harness default"),
-                Action::Edit("routing.plugin-model"),
+                "Coding agent",
+                &format!(
+                    "{} · {} · {}",
+                    s.routing.coding,
+                    s.model
+                        .as_deref()
+                        .unwrap_or(crate::config::worker_model(&s.routing.coding)),
+                    s.routing.coding_reasoning
+                ),
+                Action::Agent("coding"),
             ),
             row(
-                "Coding harness",
-                &harness_label(s, &s.routing.coding),
-                Action::Edit("routing.coding"),
-            ),
-            row(
-                "Coding model",
-                s.model.as_deref().unwrap_or("harness default"),
-                Action::Edit("model"),
-            ),
-            row(
-                "Everyday harness",
-                &harness_label(s, &s.routing.routine),
-                Action::Edit("routing.routine"),
-            ),
-            row(
-                "Everyday model",
-                s.routing
-                    .routine_model
-                    .as_deref()
-                    .unwrap_or("harness default"),
-                Action::Edit("routing.routine-model"),
-            ),
-            row(
-                "Router",
-                &s.routing.router,
-                Action::Cycle("routing.router", ROUTERS),
-            ),
-            row(
-                "Jev auto-select",
-                &jev_status(s),
-                Action::Toggle("routing.auto-model"),
-            ),
-            row(
-                "TypeSafe Jev key",
-                "hidden credential",
-                Action::Run("/jev key"),
-            ),
-            row(
-                "Reasoning",
-                &s.routing.reasoning,
-                Action::Cycle("routing.reasoning", REASONING),
-            ),
-            row(
-                "Approvals",
-                if s.approvals.reviewer == "auto" {
-                    "auto-review classifier"
-                } else {
-                    "ask me every time"
-                },
-                Action::Cycle("approvals.reviewer", REVIEWERS),
-            ),
-            row(
-                "Compaction provider",
-                &s.routing.compaction_harness,
-                Action::Edit("routing.compaction-harness"),
-            ),
-            row(
-                "Compaction model",
-                &s.routing.compaction_model,
-                Action::Edit("routing.compaction-model"),
+                "Compaction agent",
+                &format!(
+                    "{} · {} · {}",
+                    s.routing.compaction_harness,
+                    s.routing.compaction_model,
+                    s.routing.compaction_reasoning
+                ),
+                Action::Agent("compaction"),
             ),
             row(
                 "Compact around",
                 &format!("~{} tokens", s.routing.compact_tokens),
                 Action::Edit("routing.compact-tokens"),
+            ),
+            row(
+                "Plugins & connectors",
+                if s.routing.plugin_use_main {
+                    "Use main agent"
+                } else {
+                    &s.agent
+                },
+                Action::Agent("plugin"),
+            ),
+            row(
+                "Input relevance",
+                if s.routing.input_gate == "jev" && !crate::route::jev_available() {
+                    "Jev · needs key; local fallback"
+                } else {
+                    &s.routing.input_gate
+                },
+                Action::Cycle("routing.input-gate", &["local", "jev", "off"]),
+            ),
+            row(
+                "TypeSafe Jev key",
+                "optional input classifier",
+                Action::Run("/jev key"),
+            ),
+            row(
+                "Approvals",
+                &s.approvals.reviewer,
+                Action::Cycle("approvals.reviewer", REVIEWERS),
+            ),
+            row(
+                "Usage limits",
+                "observed limits and backoff",
+                Action::Run("/limits"),
             ),
             row("Connected apps", "", Action::Run("/connectors")),
             row(
@@ -292,14 +279,15 @@ fn rows(page: Page, s: &Settings, connected: bool) -> Vec<Row> {
 }
 fn hint(action: &Action) -> &'static str {
     match action {
+        Action::Agent(_) => "Choose harness, then model, then reasoning. Saved together on the last page.",
         Action::Open(Page::Voice) => {
-            "Wake code (required for every voice request), idle sleep, and barge-in."
+            "Wake once, continue the conversation until idle sleep. Use the wake code to interrupt output."
         }
         Action::Open(Page::Speech) => {
             "TTS voice, speed, and which transcriber runs after you are already awake."
         }
         Action::Open(Page::Harnesses) => {
-            "Plugin CLI (email, calendar, docs), coding vs everyday, routing, and compaction."
+            "Plugin CLI (email, calendar, docs), coding vs main, routing, and compaction."
         }
         Action::Open(Page::Display) => {
             "What the chat shows, spoken identity letters, and the editable voice metaprompt."
@@ -321,8 +309,9 @@ fn hint(action: &Action) -> &'static str {
         Action::Toggle("routing.announce") => {
             "Spoken letters (A. D.) at most once every 5 minutes. Replies in between skip the identity prefix."
         }
+        Action::Toggle("routing.coordinator") => "Keep a lightweight main conversation and delegate plugin/coding/difficult work to isolated workers.",
         Action::Toggle("routing.auto-model") => {
-            "If a TypeSafe key exists, Jev uses recent conversation and the previous route to select plugin, coding, or everyday—and therefore that role's model."
+            "In legacy routing (coordinator off), Jev uses recent conversation and the previous route to select plugin, coding, or main—and therefore that role's model."
         }
         Action::Cycle("stt.conversation", _) => {
             "Wake is always on-device with the selected local model. After GREEN, Ink-2 only runs on a finished VAD clip if that model heard a real word — never a live stream."
@@ -331,24 +320,24 @@ fn hint(action: &Action) -> &'static str {
             "Activity shows tools plus replies. Transcript shows everything. Off hides commentary."
         }
         Action::Cycle("routing.router", _) => {
-            "keywords: plugins (email/calendar/docs) then code-like turns then everyday. jev: TypeSafe classifies those three. off: always the everyday harness."
+            "keywords: plugins (email/calendar/docs) then code-like turns then main. jev: TypeSafe classifies those three. off: always the main harness."
         }
         Action::Cycle("routing.reasoning", _) => {
-            "Codex turn effort, and Antigravity --effort (required with --model; default maps to low). Say “use high reasoning” to change it; agent replies cannot."
+            "Main reasoning effort for Codex, Claude, and Antigravity. The coordinator defaults to low; workers choose their own effort. Say “use high reasoning” to change it; agent replies cannot."
         }
         Action::Cycle("approvals.reviewer", _) => {
             "auto: Codex Guardian/auto-review handles sandbox asks. user: you type /approve N."
         }
         Action::Edit("wake-code") => "Digits you say to wake Accessor, e.g. 29 or hey 29.",
         Action::Edit("idle-seconds") => {
-            "Seconds to wait for speech after a bare wake code. 0 waits indefinitely."
+            "Idle seconds after the last accepted request or finished reply. 0 waits indefinitely."
         }
         Action::Edit("agent") => {
             "Plugin CLI: email, calendar, Google Docs, and other connected apps. Used when the turn needs those connectors."
         }
         Action::Edit("routing.coding") => "CLI for repos, diffs, tests, and refactors.",
-        Action::Edit("routing.routine") => {
-            "Everyday CLI for general chat: time, planning, questions that are not code and not a plugin."
+        Action::Edit("routing.main") => {
+            "Main CLI for general chat: time, planning, questions that are not code and not a plugin."
         }
         Action::Edit("model") => {
             "Models for the coding CLI. Antigravity lists Gemini; Codex uses its account catalog."
@@ -356,8 +345,8 @@ fn hint(action: &Action) -> &'static str {
         Action::Edit("routing.plugin-model") => {
             "Models for the plugin CLI — the list matches that harness, not the coding one."
         }
-        Action::Edit("routing.routine-model") => {
-            "Models for the everyday CLI. If everyday is Antigravity, this is Gemini/Claude, not Codex."
+        Action::Edit("routing.main-model") => {
+            "Models for the main CLI. If main is Antigravity, this is Gemini/Claude, not Codex."
         }
         Action::Edit("routing.compaction-harness") => {
             "Pick Gateway or an installed harness, then a model from that provider. Uninstalled CLIs are omitted."
@@ -401,7 +390,7 @@ fn hint(action: &Action) -> &'static str {
         Action::Run("/update") => {
             "Run each found harness's own updater (codex update, claude update, agy update). /update check only prints versions."
         }
-        Action::Close => "Leave settings and unmute the microphone.",
+        Action::Close => "Leave settings and resume voice input.",
         _ => "Enter to change this setting. Esc goes back.",
     }
 }
@@ -427,7 +416,7 @@ fn prompt_preview(prompt: &str) -> String {
 fn model_picker(key: &str, s: &Settings, discovered: &[Model]) -> String {
     let (role, harness) = match key {
         "routing.plugin-model" => ("Plugin", s.agent.as_str()),
-        "routing.routine-model" => ("Everyday", s.routing.routine.as_str()),
+        "routing.main-model" => ("Main", s.routing.main.as_str()),
         _ => ("Coding", s.routing.coding.as_str()),
     };
     let catalog = harness_models(harness, discovered);
@@ -446,7 +435,7 @@ fn model_picker(key: &str, s: &Settings, discovered: &[Model]) -> String {
 fn catalog_for_key(key: &str, s: &Settings, discovered: &[Model]) -> Vec<Model> {
     let harness = match key {
         "routing.plugin-model" => s.agent.as_str(),
-        "routing.routine-model" => s.routing.routine.as_str(),
+        "routing.main-model" => s.routing.main.as_str(),
         _ => s.routing.coding.as_str(),
     };
     harness_models(harness, discovered)
@@ -455,7 +444,7 @@ fn harness_models(harness: &str, discovered: &[Model]) -> Vec<Model> {
     match harness {
         "codex" => {
             let mut list = discovered.to_vec();
-            for id in ["gpt-5.6-luna", "gpt-5.4-sol"] {
+            for id in ["gpt-5.6-luna", "gpt-5.6-sol"] {
                 if !list.iter().any(|m| m.id == id) {
                     list.push(Model {
                         id: id.into(),
@@ -524,6 +513,7 @@ fn compaction_providers(s: &Settings) -> Vec<(&'static str, &'static str)> {
     }
     list
 }
+#[allow(dead_code)]
 fn jev_status(s: &Settings) -> String {
     if !s.routing.auto_model {
         return "off".into();
@@ -534,6 +524,7 @@ fn jev_status(s: &Settings) -> String {
         "on · no TypeSafe key, so keywords still run".into()
     }
 }
+#[allow(dead_code)]
 fn harness_label(s: &Settings, id: &str) -> String {
     crate::config::harness_offers(s, None)
         .into_iter()
@@ -598,6 +589,14 @@ fn current_value<'a>(key: &str, s: &'a Settings) -> &'a str {
                 "false"
             }
         }
+        "routing.coordinator" => {
+            if s.routing.coordinator {
+                "true"
+            } else {
+                "false"
+            }
+        }
+        "routing.input-gate" => &s.routing.input_gate,
         "routing.auto-model" => {
             if s.routing.auto_model {
                 "true"
@@ -626,14 +625,287 @@ fn cycle_next(current: &str, options: &[&str]) -> String {
     options[(i + 1) % options.len()].to_string()
 }
 
+struct AgentEdit {
+    role: &'static str,
+    step: usize,
+    cursor: usize,
+    harness: String,
+    model: String,
+    reasoning: String,
+    choices: Vec<(String, String)>,
+    harnesses: Vec<(String, String)>,
+    models: Vec<Model>,
+}
+impl AgentEdit {
+    fn new(role: &'static str, s: &Settings, models: &[Model]) -> Self {
+        let (harness, model, reasoning) = match role {
+            "main" => (
+                s.routing.main.as_str(),
+                s.routing
+                    .main_model
+                    .as_deref()
+                    .unwrap_or(crate::config::light_model(&s.routing.main)),
+                s.routing.reasoning.as_str(),
+            ),
+            "coding" => (
+                s.routing.coding.as_str(),
+                s.model
+                    .as_deref()
+                    .unwrap_or(crate::config::worker_model(&s.routing.coding)),
+                s.routing.coding_reasoning.as_str(),
+            ),
+            "compaction" => (
+                s.routing.compaction_harness.as_str(),
+                s.routing.compaction_model.as_str(),
+                s.routing.compaction_reasoning.as_str(),
+            ),
+            _ if s.routing.plugin_use_main => ("main", "default", "default"),
+            _ => (
+                s.agent.as_str(),
+                s.routing.plugin_model.as_deref().unwrap_or("default"),
+                s.routing.plugin_reasoning.as_str(),
+            ),
+        };
+        let mut harnesses: Vec<_> = crate::config::harness_offers(s, None)
+            .into_iter()
+            .map(|h| {
+                (
+                    h.id.to_owned(),
+                    format!(
+                        "{}{}",
+                        h.name,
+                        if h.found { "" } else { " · not installed" }
+                    ),
+                )
+            })
+            .collect();
+        if role == "plugin" {
+            harnesses.insert(0, ("main".into(), "Use main agent (recommended)".into()));
+        }
+        if role == "compaction" {
+            harnesses.insert(
+                0,
+                ("local".into(), "Local trim · no model or account".into()),
+            );
+            harnesses.push(("gateway".into(), "AI Gateway · requires key".into()));
+        }
+        let mut edit = Self {
+            role,
+            step: 0,
+            cursor: 0,
+            harness: harness.into(),
+            model: model.into(),
+            reasoning: reasoning.into(),
+            choices: vec![],
+            harnesses,
+            models: models.to_vec(),
+        };
+        edit.refresh();
+        edit
+    }
+    fn refresh(&mut self) {
+        self.choices = match self.step {
+            0 => self.harnesses.clone(),
+            1 if self.harness == "main" => {
+                vec![("default".into(), "Follow main model automatically".into())]
+            }
+            1 if self.harness == "local" => {
+                vec![("default".into(), "No model · keep recent context".into())]
+            }
+            1 => {
+                let mut list = vec![("default".into(), "Recommended role default".into())];
+                list.extend(
+                    harness_models(&self.harness, &self.models)
+                        .into_iter()
+                        .map(|m| (m.id, m.name)),
+                );
+                if self.model != "default" && !list.iter().any(|(id, _)| id == &self.model) {
+                    list.push((self.model.clone(), self.model.clone()));
+                }
+                list
+            }
+            _ if matches!(self.harness.as_str(), "main" | "local") => vec![(
+                "default".into(),
+                if self.harness == "main" {
+                    "Follow main reasoning automatically"
+                } else {
+                    "No inference needed"
+                }
+                .into(),
+            )],
+            _ => REASONING
+                .iter()
+                .map(|id| {
+                    (
+                        (*id).into(),
+                        match *id {
+                            "low" => "Low · quick tasks",
+                            "medium" => "Medium · bounded work",
+                            "high" => "High · difficult reasoning",
+                            _ => "Default · harness chooses",
+                        }
+                        .into(),
+                    )
+                })
+                .collect(),
+        };
+        let selected = match self.step {
+            0 => &self.harness,
+            1 => &self.model,
+            _ => &self.reasoning,
+        };
+        self.cursor = self
+            .choices
+            .iter()
+            .position(|(id, _)| id == selected)
+            .unwrap_or(0);
+    }
+    fn display(&self) -> String {
+        let label = match self.role {
+            "main" => "Main agent",
+            "coding" => "Coding agent",
+            "compaction" => "Compaction agent",
+            _ => "Plugins & connectors",
+        };
+        let step = ["Harness", "Model", "Reasoning level"][self.step];
+        let mut out = format!(
+            "{label}  ·  Step {} of 3\nHarness → Model → Reasoning\n\n{step}{}\n",
+            self.step + 1,
+            if self.role == "main" && self.step == 0 {
+                " · Main harness"
+            } else {
+                ""
+            }
+        );
+        if self.step > 0 {
+            out.push_str(&format!("Selected harness: {}\n", self.harness));
+        }
+        if self.step > 1 {
+            out.push_str(&format!("Selected model: {}\n", self.model));
+        }
+        for (i, (_, name)) in self.choices.iter().enumerate() {
+            out.push_str(&format!(
+                "{}{}  {name}\n",
+                if i == self.cursor { "› " } else { "  " },
+                i + 1
+            ));
+        }
+        out.push_str("\n↑/↓ move · Enter choose · Esc back · type a number or model ID\n");
+        out.push_str(if self.role == "plugin" {
+            "A preference given to the main agent for connector work. Usually follows main."
+        } else {
+            "Nothing changes until you confirm reasoning on the last page."
+        });
+        out
+    }
+    fn answer(&mut self, value: &str) -> Result<Answer> {
+        let selected = if value.is_empty() || value == "enter" {
+            self.choices[self.cursor].0.clone()
+        } else if let Ok(n) = value.parse::<usize>() {
+            self.choices
+                .get(n.wrapping_sub(1))
+                .map(|c| c.0.clone())
+                .ok_or_else(|| anyhow::anyhow!("Choose a listed number."))?
+        } else if let Some(c) = self
+            .choices
+            .iter()
+            .find(|(id, _)| id.eq_ignore_ascii_case(value))
+        {
+            c.0.clone()
+        } else if self.step == 1
+            && !matches!(self.harness.as_str(), "main" | "local")
+            && !value.is_empty()
+            && value.len() <= 128
+            && value
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-._/".contains(c))
+        {
+            value.into()
+        } else {
+            bail!("Choose a listed option.")
+        };
+        match self.step {
+            0 => {
+                if self.harness != selected {
+                    self.model = "default".into();
+                }
+                self.harness = selected;
+            }
+            1 => self.model = selected,
+            _ => {
+                self.reasoning = selected;
+                return Ok(Answer::Command(format!(
+                    "/agent-settings {} {} {} {}",
+                    self.role, self.harness, self.model, self.reasoning
+                )));
+            }
+        }
+        self.step += 1;
+        self.refresh();
+        Ok(Answer::Show)
+    }
+}
+
+pub fn apply_agent(
+    s: &mut Settings,
+    role: &str,
+    harness: &str,
+    model: &str,
+    reasoning: &str,
+) -> Result<()> {
+    let mut next = s.clone();
+    let model = (model != "default").then(|| model.to_owned());
+    match role {
+        "main" => {
+            next.routing.main = harness.into();
+            next.routing.main_model = model;
+            next.routing.reasoning = reasoning.into();
+            next.routing.coordinator = true;
+        }
+        "coding" => {
+            next.routing.coding = harness.into();
+            next.model = model;
+            next.routing.coding_reasoning = reasoning.into();
+        }
+        "plugin" => {
+            next.routing.plugin_use_main = harness == "main";
+            if harness != "main" {
+                next.agent = harness.into();
+                next.routing.plugin_model = model;
+                next.routing.plugin_reasoning = reasoning.into();
+            }
+        }
+        "compaction" => {
+            next.routing.compaction_harness = harness.into();
+            next.routing.compaction_model = model.unwrap_or_else(|| {
+                if matches!(harness, "local" | "mock") {
+                    "local".into()
+                } else if harness == "gateway" {
+                    "google/gemini-3.5-flash".into()
+                } else {
+                    crate::config::light_model(harness).into()
+                }
+            });
+            next.routing.compaction_reasoning = reasoning.into();
+        }
+        _ => bail!("Unknown agent role"),
+    }
+    next.save()?;
+    *s = next;
+    Ok(())
+}
+
 impl Panel {
     pub fn display(&self, s: &Settings, connected: bool, models: &[Model]) -> String {
+        if let Some(edit) = &self.agent_edit {
+            return edit.display();
+        }
         if let Some(key) = self.field {
             return match key {
-                "model" | "routing.plugin-model" | "routing.routine-model" => {
+                "model" | "routing.plugin-model" | "routing.main-model" => {
                     model_picker(key, s, models)
                 }
-                "agent" | "routing.coding" | "routing.routine" => {
+                "agent" | "routing.coding" | "routing.main" => {
                     let mut text = String::from(
                         "CLIs Accessor found on this machine (type a number or id):\n",
                     );
@@ -699,19 +971,7 @@ impl Panel {
             self.page.title().to_uppercase()
         );
         if self.page == Page::Home {
-            out.push_str("Categories — not a numbered dump.\n");
-        }
-        if self.page == Page::Harnesses {
-            out.push_str("CLIs on this machine:\n");
-            for h in crate::config::harness_offers(s, None) {
-                out.push_str(&format!(
-                    "  {}  {} ({})  {}\n",
-                    if h.found { "found  " } else { "missing" },
-                    h.name,
-                    h.id,
-                    h.detail
-                ));
-            }
+            out.push_str("Choose a category. Changes are saved when confirmed.\n");
         }
         for (i, row) in list.iter().enumerate() {
             out.push_str(if i == self.cursor { "› " } else { "  " });
@@ -729,6 +989,10 @@ impl Panel {
         out
     }
     pub fn nav(&mut self, dir: i32, s: &Settings, connected: bool) {
+        if let Some(edit) = &mut self.agent_edit {
+            edit.cursor = (edit.cursor as i32 + dir).rem_euclid(edit.choices.len() as i32) as usize;
+            return;
+        }
         if self.field.is_some() {
             return;
         }
@@ -740,6 +1004,15 @@ impl Panel {
         self.cursor = ((cur % n as i32 + n as i32) % n as i32) as usize;
     }
     pub fn back(&mut self) -> Answer {
+        if let Some(edit) = &mut self.agent_edit {
+            if edit.step == 0 {
+                self.agent_edit = None;
+            } else {
+                edit.step -= 1;
+                edit.refresh();
+            }
+            return Answer::Show;
+        }
         if self.field.is_some() {
             self.field = None;
             return Answer::Show;
@@ -752,7 +1025,10 @@ impl Panel {
             Answer::Show
         }
     }
-    pub fn activate(&mut self, s: &Settings, _models: &[Model], connected: bool) -> Result<Answer> {
+    pub fn activate(&mut self, s: &Settings, models: &[Model], connected: bool) -> Result<Answer> {
+        if self.agent_edit.is_some() {
+            return self.answer("", s, models);
+        }
         if self.field.is_some() {
             return Ok(Answer::Show);
         }
@@ -761,6 +1037,10 @@ impl Panel {
             return Ok(Answer::Show);
         };
         match &row.action {
+            Action::Agent(role) => {
+                self.agent_edit = Some(AgentEdit::new(role, s, models));
+                Ok(Answer::Show)
+            }
             Action::Open(page) => {
                 self.page = *page;
                 self.cursor = 0;
@@ -796,12 +1076,22 @@ impl Panel {
             self.nav(1, s, false);
             return Ok(Answer::Show);
         }
+        if self.agent_edit.is_some() && matches!(value, "esc" | "back") {
+            return Ok(self.back());
+        }
+        if let Some(edit) = &mut self.agent_edit {
+            let result = edit.answer(value)?;
+            if matches!(result, Answer::Command(_)) {
+                self.agent_edit = None;
+            }
+            return Ok(result);
+        }
         if let Some(key) = self.field {
             if value.is_empty() {
                 return Ok(Answer::Show);
             }
             let value = match key {
-                "agent" | "routing.coding" | "routing.routine" => match value {
+                "agent" | "routing.coding" | "routing.main" => match value {
                     "1" | "codex" => "codex".into(),
                     "2" | "claude" => "claude".into(),
                     "3" | "antigravity" | "agy" => "antigravity".into(),
@@ -821,7 +1111,7 @@ impl Panel {
                         anyhow::bail!("Choose a listed compaction provider.");
                     }
                 }
-                "model" | "routing.plugin-model" | "routing.routine-model" => {
+                "model" | "routing.plugin-model" | "routing.main-model" => {
                     let catalog = catalog_for_key(key, s, models);
                     resolve_model(value, &catalog).ok_or_else(|| {
                         anyhow::anyhow!(
@@ -1020,13 +1310,13 @@ fn extract_harness_request(
     if let Some(s) = settings {
         let role = wanted.trim_end_matches(" harness").trim_end_matches(" cli");
         if role == "plugin" || role == "plugins" {
-            return Some(Ok(("agent".into(), s.agent.clone())));
+            return Some(Ok(("session.harness".into(), s.plugin_target().0.into())));
         }
         if role == "coding" || role == "code" {
-            return Some(Ok(("agent".into(), s.routing.coding.clone())));
+            return Some(Ok(("session.harness".into(), s.routing.coding.clone())));
         }
-        if role == "everyday" || role == "routine" {
-            return Some(Ok(("agent".into(), s.routing.routine.clone())));
+        if role == "main" || role == "routine" {
+            return Some(Ok(("session.harness".into(), s.routing.main.clone())));
         }
     }
     let Some(id) = named_harness(&wanted) else {
@@ -1037,7 +1327,7 @@ fn extract_harness_request(
         }
         return None;
     };
-    Some(Ok(("agent".into(), id.into())))
+    Some(Ok(("session.harness".into(), id.into())))
 }
 pub fn voice_command(
     text: &str,
@@ -1053,7 +1343,7 @@ pub fn voice_command(
             let mut list = harness_models(&s.routing.coding, models);
             for extra in [
                 harness_models(&s.agent, models),
-                harness_models(&s.routing.routine, models),
+                harness_models(&s.routing.main, models),
             ] {
                 for m in extra {
                     if !list.iter().any(|x| x.id == m.id) {
@@ -1065,7 +1355,7 @@ pub fn voice_command(
         } else {
             models.to_vec()
         };
-        return Some(resolve_model(value, &catalog).map(|v|("model".into(),v)).ok_or_else(||anyhow::anyhow!("That model is not in the available list. Open /settings to select or refresh models.")));
+        return Some(resolve_model(value, &catalog).map(|v|("routing.main-model".into(),v)).ok_or_else(||anyhow::anyhow!("That model is not in the available list. Open /settings to select or refresh models.")));
     }
     if let Some(value) = extract_harness_request(&text, settings) {
         return Some(value);
@@ -1084,6 +1374,51 @@ pub fn voice_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn agent_wizard_is_atomic_and_supports_arrows_and_back() {
+        let s = Settings::default();
+        let mut panel = Panel::default();
+        panel.answer("3", &s, &[]).unwrap();
+        panel.answer("2", &s, &[]).unwrap();
+        assert!(panel
+            .display(&s, false, &[])
+            .contains("Coding agent  ·  Step 1 of 3"));
+        assert!(matches!(
+            panel.answer("claude", &s, &[]).unwrap(),
+            Answer::Show
+        ));
+        assert!(panel.display(&s, false, &[]).contains("Step 2 of 3"));
+        panel.answer("claude-sonnet-4-6", &s, &[]).unwrap();
+        assert!(panel.display(&s, false, &[]).contains("Reasoning level"));
+        panel.nav(1, &s, false);
+        let Answer::Command(command) = panel.activate(&s, &[], false).unwrap() else {
+            panic!("save only at the end")
+        };
+        assert_eq!(
+            command,
+            "/agent-settings coding claude claude-sonnet-4-6 high"
+        );
+        assert_eq!(s.routing.coding, "codex");
+        panel.answer("1", &s, &[]).unwrap();
+        panel.answer("antigravity", &s, &[]).unwrap();
+        panel.back();
+        panel.back();
+        assert!(panel.agent_edit.is_none());
+        assert_eq!(s.routing.main, "codex");
+    }
+    #[test]
+    fn plugin_wizard_follows_main_through_all_steps() {
+        let s = Settings::default();
+        let mut edit = AgentEdit::new("plugin", &s, &[]);
+        edit.answer("main").unwrap();
+        assert!(edit.display().contains("Follow main model"));
+        edit.answer("").unwrap();
+        assert!(edit.display().contains("Follow main reasoning"));
+        let Answer::Command(command) = edit.answer("").unwrap() else {
+            panic!("complete")
+        };
+        assert_eq!(command, "/agent-settings plugin main default default");
+    }
     #[test]
     fn voice_switches_only_known_models() {
         let models = vec![Model {
@@ -1152,12 +1487,12 @@ mod tests {
         let mut home = Panel::default();
         home.answer("3", &s, &[]).unwrap();
         let harnesses = home.display(&s, false, &[]);
-        assert!(harnesses.contains("CLIs on this machine"));
-        assert!(harnesses.contains("Mock"));
+        assert!(harnesses.contains("Main agent"));
+        assert!(!harnesses.contains("Everyday"));
         home.answer("enter", &s, &[]).unwrap();
         let picker = home.display(&s, false, &[]);
-        assert!(picker.contains("CLIs Accessor found on this machine"));
-        assert!(picker.contains("mock"));
+        assert!(picker.contains("Main harness"));
+        assert!(picker.contains("Mock"));
         let mut speech = Panel::default();
         speech.answer("2", &s, &[]).unwrap();
         let Answer::Show = speech.answer("6", &s, &[]).unwrap() else {
@@ -1173,19 +1508,19 @@ mod tests {
         assert!(speech.display(&s, false, &[]).contains("Canary 180M Flash"));
     }
     #[test]
-    fn everyday_antigravity_lists_gemini_not_codex_catalog() {
+    fn main_antigravity_lists_gemini_not_codex_catalog() {
         let s = Settings {
             routing: crate::config::Routing {
-                routine: "antigravity".into(),
+                main: "antigravity".into(),
                 ..crate::config::Routing::default()
             },
             ..Settings::default()
         };
-        let text = model_picker("routing.routine-model", &s, &[]);
-        assert!(text.contains("Everyday model for antigravity"));
+        let text = model_picker("routing.main-model", &s, &[]);
+        assert!(text.contains("Main model for antigravity"));
         assert!(text.contains("gemini-3.8-flash"));
         assert!(!text.contains("fixture-astra"));
-        let chosen = catalog_for_key("routing.routine-model", &s, &[]);
+        let chosen = catalog_for_key("routing.main-model", &s, &[]);
         assert_eq!(
             resolve_model("1", &chosen).as_deref(),
             Some("gemini-3.8-flash")

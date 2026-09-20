@@ -16,6 +16,7 @@ dependencies = [
  "fs2",
  "hound",
  "keyring",
+ "libc",
  "ort",
  "pulldown-cmark",
  "ratatui",
@@ -29,6 +30,7 @@ dependencies = [
  "tokio",
  "transcribe-rs",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -4,11 +4,16 @@ mod audio;
 mod cli;
 mod config;
 mod connectors;
+mod control;
 mod dashboard;
 mod echo;
 mod identity;
+mod limits;
 mod markdown;
+mod mcp;
+mod memory;
 mod organizer;
+mod process_tree;
 mod route;
 mod session;
 mod settings_ui;
@@ -19,7 +24,9 @@ mod ui;
 mod updates;
 mod usage;
 mod wake;
+mod worker;
 pub enum Input {
+    Control(control::Request),
     Configure {
         key: String,
         value: String,
@@ -27,7 +34,19 @@ pub enum Input {
     },
     Trigger(triggers::Event),
     Scheduled(organizer::Task),
+    Internal(String),
     Text(String),
+    WakeProbe {
+        text: String,
+        error: Option<String>,
+        epoch: u64,
+        decode_ms: u64,
+    },
+    GatedVoice {
+        text: String,
+        epoch: u64,
+        captured_at: std::time::Instant,
+    },
     Voice {
         text: String,
         epoch: u64,
@@ -35,6 +54,7 @@ pub enum Input {
     },
     Pcm {
         samples: Vec<f32>,
+        local_text: String,
         epoch: u64,
         captured_at: std::time::Instant,
     },

@@ -126,7 +126,22 @@ fn load_asr(assets: &Path, engine: &str) -> Result<Asr> {
 
 const LAZY_UNLOAD: Duration = Duration::from_secs(45);
 
+#[derive(Default)]
+pub struct Diagnostics {
+    frames: AtomicU64,
+    voiced: AtomicU64,
+    probes: AtomicU64,
+    skipped_clips: AtomicU64,
+}
+impl Diagnostics {
+    pub fn summary(&self) -> String {
+        format!("Capture frames: {}; voiced frames: {}; wake windows: {}; long clips bypassed during output: {}",self.frames.load(Ordering::Relaxed),self.voiced.load(Ordering::Relaxed),self.probes.load(Ordering::Relaxed),self.skipped_clips.load(Ordering::Relaxed))
+    }
+}
+
 pub struct MicFlags {
+    pub diagnostics: Arc<Diagnostics>,
+    pub interrupting: Arc<AtomicBool>,
     pub epoch: Arc<AtomicU64>,
     pub muted: Arc<AtomicBool>,
     pub awake: Arc<AtomicBool>,
@@ -307,6 +322,7 @@ struct Chunk {
     at: Instant,
 }
 struct Utterance {
+    started: Instant,
     samples: Vec<f32>,
     epoch: u64,
     at: Instant,
@@ -369,6 +385,43 @@ impl Segmenter {
     }
 }
 
+/// Independent of utterance-end detection: output cannot hold wake checks open.
+struct WakeWindow {
+    samples: VecDeque<f32>,
+    since_check: usize,
+    since_voice: usize,
+}
+impl Default for WakeWindow {
+    fn default() -> Self {
+        Self {
+            samples: VecDeque::new(),
+            since_check: 0,
+            since_voice: 38_400,
+        }
+    }
+}
+impl WakeWindow {
+    fn push(&mut self, frame: &[f32], speech: bool) -> Option<Vec<f32>> {
+        self.samples.extend(frame);
+        while self.samples.len() > 38_400 {
+            self.samples.pop_front();
+        }
+        self.since_check += frame.len();
+        self.since_voice = if speech {
+            0
+        } else {
+            self.since_voice.saturating_add(frame.len())
+        };
+        if self.since_check >= 9600 && self.samples.len() >= 9600 {
+            self.since_check = 0;
+            if self.since_voice < 16_000 {
+                return Some(self.samples.iter().copied().collect());
+            }
+        }
+        None
+    }
+}
+
 pub fn listen(
     assets: &Path,
     name: Option<&str>,
@@ -387,6 +440,8 @@ pub fn listen(
         Some(load_asr(assets, &engine_id)?)
     };
     let MicFlags {
+        diagnostics,
+        interrupting,
         epoch,
         muted,
         awake,
@@ -410,6 +465,10 @@ pub fn listen(
     // Keep only the latest completed utterance. During slow inference this lets
     // a deliberate command replace stale room noise or residual speaker echo.
     let speech_slot = Arc::new(Mutex::new(None::<Utterance>));
+    let probe_slot = Arc::new(Mutex::new(None::<Utterance>));
+    let dsp_probe = probe_slot.clone();
+    let dsp_interrupting = interrupting.clone();
+    let dsp_diagnostics = diagnostics.clone();
     let stop = Arc::new(AtomicBool::new(false));
     let lost = Arc::new(AtomicBool::new(false));
     let stream = match supported.sample_format() {
@@ -458,6 +517,7 @@ pub fn listen(
             let mut frames = VecDeque::new();
             let mut detector = earshot::Detector::default();
             let mut segments = Segmenter::new();
+            let mut wake_window = WakeWindow::default();
             let mut last_activity = Instant::now();
             let mut speech_run = 0_usize;
             let mut current_epoch = dsp_epoch.load(Ordering::SeqCst);
@@ -479,6 +539,7 @@ pub fn listen(
                     canceller.clear_capture();
                     frames.clear();
                     segments = Segmenter::new();
+                    wake_window = WakeWindow::default();
                     speech_run = 0;
                     dsp_warm.store(false, Ordering::SeqCst);
                     detector = earshot::Detector::default();
@@ -509,6 +570,26 @@ pub fn listen(
                     while frames.len() >= 256 {
                         let frame: Vec<f32> = frames.drain(..256).collect();
                         let speech = detector.predict_f32(&frame) >= 0.5;
+                        dsp_diagnostics.frames.fetch_add(1, Ordering::Relaxed);
+                        if speech {
+                            dsp_diagnostics.voiced.fetch_add(1, Ordering::Relaxed);
+                        }
+                        if dsp_interrupting.load(Ordering::SeqCst) {
+                            if let Some(samples) = wake_window.push(&frame, speech) {
+                                dsp_diagnostics.probes.fetch_add(1, Ordering::Relaxed);
+                                if let Ok(mut slot) = dsp_probe.lock() {
+                                    *slot = Some(Utterance {
+                                        started: Instant::now(),
+                                        at: Instant::now(),
+                                        samples,
+                                        epoch: current_epoch,
+                                    });
+                                }
+                            }
+                        } else {
+                            wake_window = WakeWindow::default();
+                        }
+
                         speech_run = if speech {
                             speech_run.saturating_add(frame.len())
                         } else {
@@ -525,7 +606,14 @@ pub fn listen(
                         }
                         if let Some(samples) = segments.push(&frame, speech) {
                             if let Ok(mut slot) = dsp_speech.lock() {
+                                let at = Instant::now();
+                                let started = at
+                                    .checked_sub(Duration::from_secs_f64(
+                                        samples.len() as f64 / 16_000.0,
+                                    ))
+                                    .unwrap_or(at);
                                 *slot = Some(Utterance {
+                                    started,
                                     samples,
                                     epoch: current_epoch,
                                     at: Instant::now(),
@@ -561,6 +649,35 @@ pub fn listen(
                 model = None;
                 loaded_engine = current_engine;
             }
+            let probe = probe_slot.lock().ok().and_then(|mut slot| slot.take());
+            if let Some(probe) = probe.filter(|p| {
+                interrupting.load(Ordering::SeqCst)
+                    && !muted.load(Ordering::SeqCst)
+                    && p.epoch == epoch.load(Ordering::SeqCst)
+                    && p.at.elapsed() < Duration::from_secs(2)
+            }) {
+                let Some(loaded) = ensure_asr(&mut model, &asr_assets, &loaded_engine, &output)
+                else {
+                    break;
+                };
+                let began = Instant::now();
+                let decoded = transcribe_asr(loaded, &probe.samples);
+                if interrupting.load(Ordering::SeqCst)
+                    && probe.epoch == epoch.load(Ordering::SeqCst)
+                {
+                    let (text, error) = match decoded {
+                        Ok(text) => (text, None),
+                        Err(e) => (String::new(), Some(format!("{e:#}"))),
+                    };
+                    let _ = output.try_send(crate::Input::WakeProbe {
+                        text,
+                        error,
+                        epoch: probe.epoch,
+                        decode_ms: began.elapsed().as_millis() as u64,
+                    });
+                }
+                last_asr = Instant::now();
+            }
             let u = speech_slot.lock().ok().and_then(|mut slot| slot.take());
             let Some(u) = u else {
                 lazy_asr_tick(
@@ -576,6 +693,12 @@ pub fn listen(
                 std::thread::sleep(Duration::from_millis(20));
                 continue;
             };
+            // While output/work is active only bounded wake windows are decoded.
+            // Speaker utterances must never occupy the recognizer for many seconds.
+            if interrupting.load(Ordering::SeqCst) {
+                diagnostics.skipped_clips.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
             if muted.load(Ordering::SeqCst)
                 || u.epoch != epoch.load(Ordering::SeqCst)
                 || u.at.elapsed() > Duration::from_secs(2)
@@ -589,11 +712,12 @@ pub fn listen(
                     break;
                 };
                 match transcribe_asr(loaded, &u.samples) {
-                    Ok(text) if heard_word(&text) => {
+                    Ok(text) if heard_transcript(&text) => {
                         let _ = output.try_send(crate::Input::Pcm {
                             samples: u.samples,
+                            local_text: text,
                             epoch: u.epoch,
-                            captured_at: u.at,
+                            captured_at: u.started,
                         });
                     }
                     Ok(_) => {}
@@ -618,7 +742,7 @@ pub fn listen(
                     let _ = output.try_send(crate::Input::Voice {
                         text,
                         epoch: u.epoch,
-                        captured_at: u.at,
+                        captured_at: u.started,
                     });
                 }
                 Ok(_) => {}
@@ -808,6 +932,7 @@ where
     let channels = config.channels as usize;
     let notes = notes.to_vec();
     let gain = 0.08 * volume.clamp(0.0, 1.5);
+    let reference = crate::echo::sender();
     Ok(device.build_output_stream(
         config,
         move |data: &mut [T], _| {
@@ -817,6 +942,7 @@ where
                 }
                 return;
             }
+            let mut rendered = Vec::with_capacity(data.len() / channels);
             for frame in data.chunks_mut(channels) {
                 let t = i as f32 / rate;
                 i += 1;
@@ -830,9 +956,17 @@ where
                         break;
                     }
                 }
+                rendered.push(sample);
                 for s in frame {
                     *s = T::from_sample(sample);
                 }
+            }
+            if let Some(tx) = &reference {
+                let _ = tx.try_send(crate::echo::Render {
+                    samples: rendered,
+                    rate: rate as u32,
+                    at: Instant::now(),
+                });
             }
         },
         |_| {},
@@ -853,6 +987,7 @@ where
     let mut phase = 0.0_f32;
     let rate = config.sample_rate.0 as f32;
     let channels = config.channels as usize;
+    let reference = crate::echo::sender();
     Ok(device.build_output_stream(
         config,
         move |data: &mut [T], _| {
@@ -862,13 +997,22 @@ where
                 }
                 return;
             }
+            let mut rendered = Vec::with_capacity(data.len() / channels);
             for frame in data.chunks_mut(channels) {
                 let t = i as f32 / rate;
                 i += 1;
                 let sample = think_sample(&mut phase, t, 1.0 / rate, volume);
+                rendered.push(sample);
                 for s in frame {
                     *s = T::from_sample(sample);
                 }
+            }
+            if let Some(tx) = &reference {
+                let _ = tx.try_send(crate::echo::Render {
+                    samples: rendered,
+                    rate: rate as u32,
+                    at: Instant::now(),
+                });
             }
         },
         |_| {},
@@ -889,9 +1033,11 @@ where
     let rate = config.sample_rate.0 as f32;
     let channels = config.channels as usize;
     let gain = 0.12 * volume.clamp(0.0, 1.5);
+    let reference = crate::echo::sender();
     Ok(device.build_output_stream(
         config,
         move |data: &mut [T], _| {
+            let mut rendered = Vec::with_capacity(data.len() / channels);
             for frame in data.chunks_mut(channels) {
                 let t = i as f32 / rate;
                 i += 1;
@@ -912,9 +1058,17 @@ where
                 } else {
                     0.0
                 };
+                rendered.push(sample);
                 for output in frame {
                     *output = T::from_sample(sample);
                 }
+            }
+            if let Some(tx) = &reference {
+                let _ = tx.try_send(crate::echo::Render {
+                    samples: rendered,
+                    rate: rate as u32,
+                    at: Instant::now(),
+                });
             }
         },
         |_| {},
@@ -940,10 +1094,11 @@ pub fn heard_word(text: &str) -> bool {
 }
 
 fn heard_transcript(text: &str) -> bool {
-    text.split(|c: char| !c.is_alphanumeric()).any(|word| {
-        word.chars().any(|c| c.is_numeric())
-            || (word.chars().any(|c| c.is_alphabetic()) && word.chars().count() >= 2)
-    })
+    heard_word(text)
+        || text.split(|c: char| !c.is_alphanumeric()).any(|word| {
+            word.chars().any(|c| c.is_numeric())
+                || (word.chars().any(|c| c.is_alphabetic()) && word.chars().count() >= 2)
+        })
 }
 
 fn system_rate(speed: f32) -> i32 {
@@ -1264,6 +1419,100 @@ impl Playback {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "Requires local Canary assets plus synthetic 16kHz WAVs in ACC_WAKE_TEST_WAV and ACC_OUTPUT_TEST_WAV"]
+    fn real_wake_recognition_with_thinking_audio_reference() {
+        let path = std::env::var("ACC_WAKE_TEST_WAV").expect("Provide a synthetic wake WAV");
+        let voice = transcribe_rs::audio::read_wav_samples(std::path::Path::new(&path)).unwrap();
+        let settings = crate::config::Settings::load().unwrap();
+        let mut model = load_asr(&settings.assets().unwrap(), "canary").unwrap();
+        let wake = crate::wake::WakeCode::new("29", &[]).unwrap();
+        let output_path =
+            std::env::var("ACC_OUTPUT_TEST_WAV").expect("Provide synthetic speaker WAV");
+        let output =
+            transcribe_rs::audio::read_wav_samples(std::path::Path::new(&output_path)).unwrap();
+        for speaker in [None, Some(output)] {
+            let mut aec = crate::echo::Canceller::new();
+            let mut delay = VecDeque::from(vec![0.0; 960]);
+            let mut detector = earshot::Detector::default();
+            let mut window = WakeWindow::default();
+            let mut phase = 0.0;
+            let mut captured = VecDeque::new();
+            let mut hits = 0;
+            for frame in 0..400 {
+                let render: Vec<f32> = (0..256)
+                    .map(|j| {
+                        if let Some(output) = &speaker {
+                            return output.get(frame * 256 + j).copied().unwrap_or(0.0);
+                        }
+                        think_sample(
+                            &mut phase,
+                            (frame * 256 + j) as f32 / 16000.0,
+                            1.0 / 16000.0,
+                            1.0,
+                        )
+                    })
+                    .collect();
+                delay.extend(render.iter().copied());
+                let mic: Vec<f32> = delay
+                    .drain(..256)
+                    .enumerate()
+                    .map(|(j, echo)| {
+                        let at = frame * 256 + j;
+                        echo * 0.6
+                            + if at >= 32_000 {
+                                voice.get(at - 32_000).copied().unwrap_or(0.0) * 0.6
+                            } else {
+                                0.0
+                            }
+                    })
+                    .collect();
+                aec.render(crate::echo::Render {
+                    samples: render,
+                    rate: 16000,
+                    at: Instant::now(),
+                });
+                aec.capture(&mic, &mut captured).unwrap();
+                while captured.len() >= 256 {
+                    let samples: Vec<f32> = captured.drain(..256).collect();
+                    let speech = detector.predict_f32(&samples) >= 0.5;
+                    if let Some(probe) = window.push(&samples, speech) {
+                        let text = transcribe_asr(&mut model, &probe).unwrap();
+                        if wake.in_probe(&text) {
+                            hits += 1;
+                        }
+                    }
+                }
+            }
+            assert!(
+                hits > 0,
+                "Wake phrase was lost in the active-output pipeline"
+            );
+        }
+    }
+    #[test]
+    fn wake_checks_do_not_wait_for_continuous_output_to_end() {
+        let mut window = WakeWindow::default();
+        let mut segment = Segmenter::new();
+        let frame = [0.1; 256];
+        let mut checks = 0;
+        for _ in 0..2000 {
+            assert!(segment.push(&frame, true).is_none());
+            if let Some(probe) = window.push(&frame, true) {
+                checks += 1;
+                assert!(probe.len() <= 38_400);
+            }
+        }
+        assert!(checks > 40);
+    }
+    #[test]
+    fn silence_never_starts_wake_decoding() {
+        let mut window = WakeWindow::default();
+        for _ in 0..2000 {
+            assert!(window.push(&[0.0; 256], false).is_none());
+        }
+        assert_eq!(window.samples.len(), 38_400);
+    }
     #[test]
     fn pause_emits_silence_and_resumes_without_skipping_audio() {
         let mut p = Playback {

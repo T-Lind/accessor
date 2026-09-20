@@ -20,8 +20,8 @@ Utterances longer than 15 seconds are still discarded on purpose (not executed t
 Ink-2 is **not a live stream**. The 120s idle timer is only sleep. After GREEN:
 
 1. Earshot VAD closes an utterance (with ~320ms preroll).
-2. The selected local STT model must hear a real word on that clip.
-3. Only then is that same buffered WAV posted to Cartesia Ink-2.
+2. The selected local STT model must hear speech or a numeric wake code on that clip. Wake-addressed controls stay local for fast interruption.
+3. Ordinary awake speech is then posted asynchronously to Cartesia Ink-2; failures fall back to the local transcript.
 
 Noise, silence, and unfinished speech never hit the cloud. Utterances over 15s are dropped.
 
@@ -29,65 +29,33 @@ Noise, silence, and unfinished speech never hit the cloud. Utterances over 15s a
 
 ## Harnesses
 
-Settings → **Harnesses**:
+The **Main agent** owns the conversation and defaults to Codex / gpt-5.6-luna / low reasoning. Coding and difficult analysis run in isolated workers, even when they use the same harness. Worker results return to main without copying their full tool logs.
 
-- **Plugin** — CLI that holds Gmail, Calendar, Docs, and other connectors. Used when the turn needs those apps.
-- **Coding** — repos, diffs, tests, refactors (typically Codex).
-- **Everyday** — general chat: time, planning, questions that are not code and not a plugin. Its model picker lists **that CLI's** models (Gemini if everyday is Antigravity).
-- **Router** — `off` (always everyday), `keywords`, or `jev`.
+Settings → **Harnesses** lists Main agent first, then Coding agent and Compaction agent. Each opens three pages: **harness → model → reasoning**. Arrow keys and Enter work on every page; Esc goes back. All three values save together on the final page. Old `routine` configuration fields migrate to `main` without losing preferences.
 
-`jev` is **TypeSafe Jev**: a System One *evaluator*, not a chat model. It returns typed choices/probabilities in ~100ms. Accessor asks plugin vs coding vs everyday. That selects the harness for that slot. It does not invent a free-form model id.
+**Plugins & connectors** is a preference passed to main, lower in the list. It defaults to **Use main agent**, following changes to main's harness, model and reasoning automatically. Simple connector work can run directly in main; a different plugin preference or complex task can use a worker. Selecting the same harness never creates a worker merely because a plugin is involved.
 
-If coding and everyday are the same CLI, Jev still runs: plugin turns go to the plugin harness, everything else stays on that shared CLI. Previously, matching coding==everyday skipped routing entirely and stuck on the plugin CLI.
+**Input relevance** defaults to Jev when an existing TypeSafe key is available, with a local fallback otherwise. Jev receives the utterance and bounded recent conversation, and assesses whether it is addressed to the assistant and warrants a response/action. Explicit wake addressing establishes the first condition but does not force a response: a contextual dismissal such as “never mind” normally needs none. “Never mind that, stop the alarm” still requests an action. Rejected speech is not added to conversation history. The classifier runs asynchronously with a two-second timeout; outages fall back to local filtering. The local filter removes obvious filler/noise, not semantic intent. No classifier is called for silence or a bare wake.
 
-- TypeSafe key (`TYPESAFE_API_KEY`, `/jev key` in the dashboard, `acc jev key`, or OS secret `typesafe`): required for Jev itself (`POST https://api.typesafe.ai/v1/systemone`). The key is never written to settings.json.
-- Vercel AI Gateway key (`AI_GATEWAY_API_KEY` or secret `ai-gateway`): **not** Jev. Used to compact Accessor-owned history with `routing.compaction-model` (Gemini Flash / GPT 5.6 Luna / Claude Haiku, etc.) when a new harness needs a handoff summary.
+A wake code interrupts output and active work, then opens listening. Intent is interpreted afterward. “Stop the alarm” reaches the main agent intact; the main agent uses `stop_alarm` and receives a receipt. Sleeping and typed Escape or `/cancel` remain immediate local controls. A bare wake provides at least eight seconds to begin speaking, stays silent, and holds automatic result delivery until a request or idle sleep. The usual conversation timeout remains 120 seconds.
 
-**Jev auto-select** (`routing.auto-model`): when a TypeSafe key is present, Accessor uses Jev even if the router dropdown is still on keywords. Without a key, keywords are used.
+The older `routing.router` / `routing.auto-model` settings still support legacy routing with the coordinator disabled; they are no longer part of the main settings flow.
 
-If Jev is not configured, **keywords** send email/calendar/docs to the plugin harness, code-like turns to coding, and the rest to everyday.
+Settings → Voice: **think warble**, **wake chime**, and **sleep chime** volumes (0 silent, 1 default). The warble follows unfinished work: it pauses during speech and resumes after progress speech, remaining active through tool calls until completion. Cancellation and pending approvals silence it. Status chrome — every box outline on the page — is **green** while the conversation is open, **blue** while the agent works, and **purple** while TTS is speaking. Activity scrolls with the **mouse wheel** as well as PgUp/PgDn.
 
-### Conversation history
+### Caching, compaction, and usage limits
 
-- **Same harness, model switch** (e.g. Codex Sol → Astra): the Codex *thread* stays. History continues. Codex auto-compacts when the context window fills. Accessor can also summarize its own rolling transcript with the compaction model (Gateway) when handing context to a **new** harness.
-- **Harness switch** (Codex → Antigravity): these are **different processes**. There is no shared token window. Accessor keeps **both** sessions warm in one run so each side remembers its own turns. The first prompt on a newly started harness may include a short handoff of recent User/Agent lines (compacted if long). The dashboard always shows **which harness and model** is live.
-- Accessor does not merge the two native token windows into one. Each CLI still only sees what it was sent.
+A warm process preserves a native conversation and avoids rebuilding it for every utterance. Provider prompt caching is separate: compatible requests can reuse computation for an unchanged input prefix. Keeping the same main harness/model and stable metaprompt helps; Accessor does not inject a changing timestamp into its system instructions. It cannot guarantee cache hits, expose a shared KV cache, or move cached state between vendors. A separate worker using the same provider/model may qualify for provider caching without sharing the main conversation, depending on the provider's routing and cache rules. Model changes, different tool definitions, changed prefixes, compaction, and expiration can reduce reuse. The CLIs own cache controls and billing; Accessor does not claim savings without usage telemetry. See [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching).
 
-Spoken identity (default on): spoken **letters** (`A. D.`) at most **once every 5 minutes**. Later replies in that window skip the prefix. TTS sees `X. S.` so it does not mash them into “Adee”. `X S` on screen = Codex Sol, `C F` = Claude Fable, `A F` = Antigravity Flash, `M D` = mock default. Toggle Display → “Say harness code first”.
+Compaction has two layers. Each CLI manages its native context; `/compact` (or the automatic threshold) separately summarizes Accessor-owned history through the selected Codex, Claude Code, Antigravity or Gateway provider, using its configured model and reasoning (Gateway effort support depends on the model). Explicit Local trim is available without inference. CLI compaction runs in an isolated process and cannot change main's model. It is asynchronous, preserves turns arriving while it runs, and leaves history intact on failure. Cancellation stops its process. Brief harness handoffs use a bounded local excerpt so switching does not block voice controls. Notes, schedules and run receipts persist independently.
 
-TTS sanitizes markdown/symbols (pipes become a comma, not “vertical bar”) and **starts speaking in sentence chunks**, synthesizing the next chunk while the current one plays.
+`/limits` reports observed provider failures and local backoff. Rate errors defer new work on that harness for five minutes; quota/usage exhaustion defers it for an hour. These are conservative **local retry delays**, not verified reset times or remaining subscription quotas. The errors and backoff persist in `limits.json`; scheduled work stays pending until eligible. Failed or uncertain actions are never automatically replayed. No paid fallback, credit purchase, or account switch occurs. Harness token/cost estimates in `/analytics` remain estimates.
 
-The **plugin harness** (`agent`) is the connector CLI. **Everyday** is general chat (router `off` uses it). **Coding** is engineering.
-
-`acc update` (or `/update` in the dashboard) runs each **found** harness's own updater: `codex update`, `claude update`, `agy update`. `/update check` and `acc update --check` only print `--version`. Accessor closes warm harness sessions first so Windows can replace the binary. Restart Accessor afterward. Mock is skipped.
-
-### Copying this machine to another
-
-`acc config locations` prints the folder to copy. On Windows that is typically `%APPDATA%\Accessor` (Roaming). It holds `config.json` plus optional `analytics.json`, `models.json`, `tts-cache/`, and `events/`. Secrets are **not** in that folder — they live in the OS credential store (Windows Credential Manager, service `Accessor`). Re-enter `acc tts key`, `acc jev key`, and any AI Gateway key on the new machine. Speech models live under the assets directory (`ACC_ASSETS` or `assets-dir` in config); copy that too, or just start `acc` on the new machine — it downloads ONNX Runtime and the selected local STT model automatically. Codex / Claude / agy installs and their plugin logins stay with those CLIs.
-
-Handoff: say “switch to Codex” (or “switch agent to claude”) to pin **this conversation** to that CLI. A running harness can also emit `ACCESSOR_SWITCH harness=codex` (optional `model=…`) or JSON `{"accessor_switch":{"harness":"codex"}}` after seeing the available CLI list in its instructions. That pins the live session; it does **not** rewrite the plugin/coding/everyday slots. Free-form agent claims do not change settings. Say “switch to plugin” to jump to the connector CLI.
-
-Saved **voice metaprompt** (`prompt`) is sent to Codex, Claude, and Antigravity. `/config set prompt default` restores the hands-free default. It persists in `config.json`.
-
-## Analytics, context, compaction
-
-`/analytics` shows **lifetime** totals and a **past 7 days** window: Jev calls, TTS, STT, harness turns, compaction, and estimated USD (Cartesia / Jev / Gateway list prices; harness tokens are unpriced). Events persist in `analytics.json` under Accessor’s home.
-
-`/context` shows approximate tokens on Accessor-owned history. `/compact` summarizes it now. Settings → Harnesses: pick a **compaction provider**, then a **model from that list**, and a **token threshold** (default ~4000). Auto-compact runs when the rolling transcript exceeds that. If an AI Gateway key is present, Gateway does the summary; otherwise Accessor keeps a local extractive trim.
-
-Antigravity (`agy`) is driven with `--input-format stream-json`: each turn is `{"event":"user","message":{"content":"..."}}`. Replies come from `event: result` → `result.response`. If no model is set, Accessor passes **`gemini-3.8-flash`**. Accessor pipes harness stderr into Activity (auth/login/errors) and treats a process exit while BLUE as a visible failure instead of hanging. Look for `agy.exe` under `%LOCALAPPDATA%\agy\bin` if it is not on PATH.
-
-Settings → Voice: **think warble**, **wake chime**, and **sleep chime** volumes (0 silent, 1 default). The warble plays while BLUE and stops when speech starts or you barge in. Status chrome — every box outline on the page — is **green** while the conversation is open, **blue** while the agent works, and **purple** while TTS is speaking. Activity scrolls with the **mouse wheel** as well as PgUp/PgDn.
-
-### Caching
-
-Harness processes stay warm in one run — that is the conversation cache. Prompt-cache headers do not transfer if you switch Codex ↔ Claude ↔ Antigravity, and Accessor does not speak those vendors’ APIs directly, so we do not fake a shared KV cache across providers. Short Cartesia/Kokoro clips (identity letters, repeated sentences) are stored under `tts-cache/` so the next identical chunk does not hit the network.
-
-Reasoning (`routing.reasoning`: default/low/medium/high) is passed to Codex as turn `effort`. Antigravity always passes `--effort` with `--model` (`default` maps to `low`; gemini-3.8-flash requires it). Claude Code and Antigravity receive `--model` when set. Say “use high reasoning” to change it; the next harness process picks it up.
+Codex receives per-turn reasoning. Claude Code and Antigravity receive `--effort` and `--model`. The main default effort is low; workers select low/medium/high explicitly. Claude/Antigravity cancellation terminates the current CLI process; the next main turn reconnects with an Accessor handoff. Worker cancellation and the 15-minute deadline stop the isolated worker and leave a receipt for scheduled work. Inspect incomplete external actions before retrying.
 
 ## Approvals
 
-Codex default is **`approvalsReviewer: auto_review`** with `approvalPolicy: on-request`. The Guardian/auto-review classifier handles sandbox escalations. Typed `/approve N` remains the human override. Claude and Antigravity use each CLI’s auto/accept policy when that harness is selected (`--permission-mode` / `--dangerously-skip-permissions` is **not** the default; we prefer the harness’s own auto-reviewer when it exists).
+Codex default is **`approvalsReviewer: auto_review`** with `approvalPolicy: on-request`. The Guardian/auto-review classifier handles sandbox escalations. Typed `/approve N` remains the human override. Claude uses its permission mode; Antigravity uses sandbox mode with plan/accept-edits according to workspace access. Accessor does not pass Antigravity’s skip-all-permissions flag. Worker approvals use typed `/worker-approve N` or `/worker-deny N`; voice cannot approve them.
 
 ## Settings
 
@@ -101,3 +69,9 @@ Interactive dashboard: **↑/↓** move, **Enter** opens a category or toggles, 
 4. At least one harness login: Codex (`acc agent`), optional `claude`, optional `agy`
 5. Optional: Cartesia key (TTS and Ink-2), TypeSafe or AI Gateway key (Jev / compaction)
 6. `acc -wakecode 29 speak`
+
+## Wake-once conversation
+
+Wake opens an idle follow-up window (120 seconds by default). During speech/work, interruption requires the wake code. A rolling 2.4-second local recognition window checks every ~600 ms without waiting for utterance completion; inference time is additional. Say the wake code, pause, then give the request. Rolling probe text is never submitted as a prompt. `/audio` exposes check/hit/echo-rejection counts and decoding time. Sleep closes active listening and keeps the local wake detector; separate mute/unmute state is removed. AEC uses speech, thinking warble, alarm and chime playback reference audio, with residual text filtering and epoch checks. This reduces echo loops but does not identify the human speaker. Physical hardware testing is still needed.
+
+Live MCP controls use a session-bound loopback capability and acknowledge only after the session applies sleep or stop_alarm. Detected Antigravity registration is checked on startup; Codex/Claude receive per-session MCP settings. Barge-in decoding skips long completed speaker clips, and stale wake mentions in old replies no longer veto interruption throughout subsequent speech. `/audio` exposes capture, VAD, windows, inference errors and the latest transient probe recognition.

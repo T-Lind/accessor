@@ -188,8 +188,12 @@ pub async fn voices() -> Result<()> {
 pub struct Job {
     pub task: tokio::task::JoinHandle<Result<()>>,
     stop: Arc<AtomicBool>,
+    playing: Arc<AtomicBool>,
 }
 impl Job {
+    pub fn is_playing(&self) -> bool {
+        self.playing.load(Ordering::SeqCst)
+    }
     pub fn cancel(&self) {
         self.stop.store(true, Ordering::SeqCst);
         self.task.abort();
@@ -205,6 +209,8 @@ pub fn start(text: String, settings: Tts) -> Job {
     let paused = Arc::new(AtomicBool::new(false));
     let pause = paused.clone();
     let flag = stop.clone();
+    let playing = Arc::new(AtomicBool::new(false));
+    let playback = playing.clone();
     let task = tokio::spawn(async move {
         let parts = speak_chunks(&text);
         if parts.is_empty() || settings.provider == "off" {
@@ -227,12 +233,22 @@ pub fn start(text: String, settings: Tts) -> Job {
             }
             let pause = pause.clone();
             let flag = flag.clone();
-            tokio::task::spawn_blocking(move || crate::audio::play_wav(&wav, &flag, pause))
-                .await??;
+            let playback = playback.clone();
+            tokio::task::spawn_blocking(move || {
+                playback.store(true, Ordering::SeqCst);
+                let result = crate::audio::play_wav(&wav, &flag, pause);
+                playback.store(false, Ordering::SeqCst);
+                result
+            })
+            .await??;
         }
         Ok(())
     });
-    Job { task, stop }
+    Job {
+        task,
+        stop,
+        playing,
+    }
 }
 pub fn local_python(s: &config::Settings) -> Result<std::path::PathBuf> {
     Ok(s.assets()?.join("runtime/kokoro").join(if cfg!(windows) {

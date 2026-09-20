@@ -23,6 +23,22 @@ fn tokens(text: &str) -> Vec<(usize, usize, String)> {
 }
 
 impl WakeCode {
+    /// Rolling playback checks may contain speaker words before the user's code.
+    /// This detection is only allowed to stop output, never to submit a request.
+    pub fn in_probe(&self, text: &str) -> bool {
+        let words = tokens(text);
+        (0..words.len()).any(|skip| {
+            let previous_number = skip > 0
+                && (words[skip - 1].2.bytes().all(|b| b.is_ascii_digit())
+                    || [
+                        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+                        "nine", "ten", "twenty", "thirty", "forty", "fifty", "sixty", "seventy",
+                        "eighty", "ninety", "hundred", "thousand",
+                    ]
+                    .contains(&words[skip - 1].2.as_str()));
+            !previous_number && self.strip_at(text, &words, skip).is_some()
+        })
+    }
     pub fn new(code: &str, aliases: &[String]) -> Result<Self> {
         ensure!(
             !code.is_empty() && code.len() <= 12 && code.bytes().all(|c| c.is_ascii_digit()),
@@ -164,6 +180,20 @@ mod tests {
             assert_eq!(w.strip(s), Some("List files."), "{s}");
         }
         assert_eq!(w.strip("Hey 29"), Some(""));
+    }
+    #[test]
+    fn rolling_wake_can_follow_speaker_words_without_accepting_larger_numbers() {
+        let w = WakeCode::new("29", &[]).unwrap();
+        assert!(w.in_probe("here is the answer twenty nine"));
+        assert!(w.in_probe("talking 29 please"));
+        for text in [
+            "129",
+            "one hundred twenty nine",
+            "29.5",
+            "twenty nine hundred",
+        ] {
+            assert!(!w.in_probe(text), "{text}");
+        }
     }
     #[test]
     fn leading_zero_and_alias() {

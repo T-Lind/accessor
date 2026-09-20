@@ -6,8 +6,6 @@ pub enum Action {
     Ignore,
     Open,
     Prompt(String),
-    Mute,
-    Unmute,
     Disconnect,
     Cancel,
     Stop,
@@ -18,6 +16,7 @@ pub struct Session {
     active: bool,
     last: Instant,
     timeout: Duration,
+    grace_until: Option<Instant>,
 }
 impl Session {
     pub fn new(wake: WakeCode, timeout: Duration) -> Self {
@@ -26,16 +25,24 @@ impl Session {
             active: false,
             last: Instant::now(),
             timeout,
+            grace_until: None,
         }
     }
     pub fn active(&self) -> bool {
         self.active
     }
+    pub fn wake_in_probe(&self, text: &str) -> bool {
+        self.wake.in_probe(text)
+    }
     pub fn addressed(&self, text: &str) -> bool {
         self.wake.strip(text).is_some()
     }
+    pub fn replaces_work(&self, text: &str) -> bool {
+        stop_replacement(self.wake.strip(text).unwrap_or(text)).is_some()
+    }
     pub fn close(&mut self) {
         self.active = false;
+        self.grace_until = None;
     }
     pub fn touch(&mut self, now: Instant) {
         if self.active {
@@ -43,7 +50,11 @@ impl Session {
         }
     }
     pub fn expire(&mut self, now: Instant) -> bool {
-        if self.active && !self.timeout.is_zero() && now.duration_since(self.last) >= self.timeout {
+        if self.active
+            && self.grace_until.is_none_or(|until| now >= until)
+            && !self.timeout.is_zero()
+            && now.duration_since(self.last) >= self.timeout
+        {
             self.close();
             true
         } else {
@@ -65,19 +76,7 @@ impl Session {
             self.close();
             return Action::Disconnect;
         }
-        if let Some(replacement) = stop_replacement(text) {
-            self.active = false;
-            return Action::Prompt(replacement.into());
-        }
         match control.as_str() {
-            "mute" => {
-                self.close();
-                return Action::Mute;
-            }
-            "unmute" => {
-                self.close();
-                return Action::Unmute;
-            }
             "stop" => {
                 self.close();
                 return Action::Stop;
@@ -85,25 +84,17 @@ impl Session {
             "cancel the task" | "cancel task" => return Action::Cancel,
             _ => {}
         }
+        if let Some(replacement) = stop_replacement(text) {
+            self.active = true;
+            return Action::Prompt(replacement.into());
+        }
         if text.is_empty() {
             self.active = true;
+            self.grace_until = Some(now + Duration::from_secs(8));
             Action::Open
         } else {
-            self.active = false;
+            self.active = true;
             Action::Prompt(text.into())
-        }
-    }
-
-    /// While privacy-muted, keep the wake detector local and accept only the
-    /// exact unmute or stop control. No other phrase may open a session.
-    pub fn hear_while_muted(&mut self, text: &str, now: Instant) -> Action {
-        self.close();
-        let action = self.hear(text, now);
-        self.close();
-        if matches!(action, Action::Unmute | Action::Stop) {
-            action
-        } else {
-            Action::Ignore
         }
     }
 }
@@ -111,8 +102,7 @@ impl Session {
 fn stop_replacement(text: &str) -> Option<&str> {
     let text = text.trim_start();
     let rest = text.get(4..)?;
-    if !text.get(..4)?.eq_ignore_ascii_case("stop")
-        || rest.chars().next().is_some_and(char::is_alphanumeric)
+    if !text.get(..4)?.eq_ignore_ascii_case("stop") || !rest.starts_with([',', '.', ';', ':', '!'])
     {
         return None;
     }
@@ -131,6 +121,32 @@ fn is_sleep(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn semantic_requests_reach_the_agent_intact() {
+        let now = Instant::now();
+        let mut s = Session::new(WakeCode::new("29", &[]).unwrap(), Duration::from_secs(120));
+        assert_eq!(s.hear("stop the alarm", now), Action::Ignore);
+        for text in [
+            "stop the alarm",
+            "never mind",
+            "never mind that, stop the alarm",
+            "stop playing music",
+        ] {
+            assert_eq!(
+                s.hear(&format!("29 {text}"), now),
+                Action::Prompt(text.into())
+            );
+            assert!(!s.replaces_work(text));
+        }
+    }
+    #[test]
+    fn bare_wake_allows_time_to_begin_speaking() {
+        let now = Instant::now();
+        let mut s = Session::new(WakeCode::new("29", &[]).unwrap(), Duration::from_secs(1));
+        assert_eq!(s.hear("29", now), Action::Open);
+        assert!(!s.expire(now + Duration::from_secs(7)));
+        assert!(s.expire(now + Duration::from_secs(8)));
+    }
     #[test]
     fn stop_sleep_and_disabled_timeout() {
         let now = Instant::now();
@@ -163,26 +179,26 @@ mod tests {
         assert!(s.expire(now + Duration::from_secs(12)));
     }
     #[test]
-    fn bare_wake_opens_exactly_one_followup() {
+    fn bare_wake_opens_followup_conversation() {
         let now = Instant::now();
         let mut s = Session::new(WakeCode::new("29", &[]).unwrap(), Duration::from_secs(30));
         assert_eq!(s.hear("hello", now), Action::Ignore);
         assert_eq!(s.hear("29", now), Action::Open);
         assert_eq!(s.hear("hello", now), Action::Prompt("hello".into()));
-        assert!(!s.active());
-        assert_eq!(s.hear("hello", now), Action::Ignore);
+        assert!(s.active());
+        assert_eq!(s.hear("hello", now), Action::Prompt("hello".into()));
     }
     #[test]
     fn addressed_and_disconnect() {
         let now = Instant::now();
         let mut s = Session::new(WakeCode::new("29", &[]).unwrap(), Duration::from_secs(30));
         assert_eq!(s.hear("29 hello", now), Action::Prompt("hello".into()));
-        assert!(!s.active());
-        assert_eq!(s.hear("hello", now), Action::Ignore);
+        assert!(s.active());
+        assert_eq!(s.hear("hello", now), Action::Prompt("hello".into()));
         assert_eq!(s.hear("29", now), Action::Open);
         assert!(s.active());
         assert_eq!(s.hear("followup", now), Action::Prompt("followup".into()));
-        assert!(!s.active());
+        assert!(s.active());
         assert_eq!(s.hear("29 disconnect", now), Action::Disconnect);
         assert_eq!(s.hear("cancel the task", now), Action::Ignore);
         assert!(s.addressed("29 help"));
@@ -193,8 +209,8 @@ mod tests {
         let now = Instant::now();
         let mut s = Session::new(WakeCode::new("29", &[]).unwrap(), Duration::from_secs(30));
         assert_eq!(s.hear("Hey 29, hello", now), Action::Prompt("hello".into()));
-        assert!(!s.active());
-        assert_eq!(s.hear("please go back to sleep", now), Action::Ignore);
+        assert!(s.active());
+        assert_eq!(s.hear("please go back to sleep", now), Action::Disconnect);
         assert_eq!(s.hear("29 go back to sleep", now), Action::Disconnect);
         assert!(!s.active());
         assert_eq!(s.hear("still talking", now), Action::Ignore);
@@ -202,24 +218,16 @@ mod tests {
     }
 
     #[test]
-    fn mute_controls_are_exact_and_local() {
+    fn mute_words_are_normal_agent_requests_not_a_second_state() {
         let now = Instant::now();
-        let mut s = Session::new(WakeCode::new("29", &[]).unwrap(), Duration::from_secs(30));
-        assert_eq!(s.hear("29 mute", now), Action::Mute);
-        assert!(!s.active());
-        assert_eq!(s.hear("unmute", now), Action::Ignore);
-        assert_eq!(s.hear("29 unmute", now), Action::Unmute);
-        assert!(!s.active());
+        let mut s = Session::new(WakeCode::new("29", &[]).unwrap(), Duration::from_secs(120));
         assert_eq!(
-            s.hear("29 mute the television", now),
-            Action::Prompt("mute the television".into())
+            s.hear("29 please mute", now),
+            Action::Prompt("please mute".into())
         );
-
-        assert_eq!(s.hear_while_muted("29 hello", now), Action::Ignore);
-        assert!(!s.active());
-        assert_eq!(s.hear_while_muted("unmute", now), Action::Ignore);
-        assert_eq!(s.hear_while_muted("29 unmute", now), Action::Unmute);
-        assert_eq!(s.hear_while_muted("29 stop", now), Action::Stop);
-        assert!(!s.active());
+        assert!(s.active());
+        assert_eq!(s.hear("unmute", now), Action::Prompt("unmute".into()));
+        assert_eq!(s.hear("go to sleep", now), Action::Disconnect);
+        assert_eq!(s.hear("29", now), Action::Open);
     }
 }

@@ -15,6 +15,9 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/devices", "List microphones"),
     ("/connectors", "Show agent connections"),
     ("/analytics", "Lifetime and past-week cost/call breakdown"),
+    ("/limits", "Observed provider limits and retry delays"),
+    ("/worker-approve", "Approve a worker request by number"),
+    ("/worker-deny", "Decline a worker request by number"),
     ("/context", "Show approximate conversation tokens"),
     ("/compact", "Summarize Accessor-owned history now"),
     ("/update", "Check harness CLIs and apply updates"),
@@ -25,8 +28,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/stop", "Cancel and sleep"),
     ("/sleep", "Close voice access"),
     ("/cancel", "Cancel current work"),
-    ("/mute", "Mute microphone input"),
-    ("/unmute", "Resume microphone input"),
+    ("/audio", "Wake detection diagnostics (no recordings)"),
+    ("/memory", "Inspect shared facts and preferences"),
     ("/approve", "Approve one request by number"),
     ("/deny", "Deny one request by number"),
     ("/quit", "Exit Accessor"),
@@ -50,7 +53,8 @@ pub fn matching(input: &str) -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 pub fn summary(s: &Settings) -> String {
-    format!("Wake code: {}\nWake mode: code required for every voice request\nSleep after: {} idle seconds (0 = never)\nSpoken replies: {}\nVoice provider: {}\nSpeaking speed: {:.2}×\nKokoro voice: {}\nChat view: {}\nPlugin harness: {} · model: {}\nCoding / everyday: {} / {}\nRouter: {}\nApprovals: {}\nLocal STT: {}\nConversation STT: {}\nCompaction: {} · {} @ ~{} tokens\nSettings: {}\nHome folder: {}\nCopy this setup: acc config locations (or /config locations)\nChange any setting: /config set KEY VALUE\nSee docs/PLATFORM.md",s.wake_code,s.idle_seconds,s.speak,s.tts.provider,s.tts.speed,s.tts.local_voice,s.chat,s.agent,s.model.as_deref().unwrap_or("default"),s.routing.coding,s.routing.routine,s.routing.router,s.approvals.reviewer,s.stt.engine,s.stt.conversation,s.routing.compaction_harness,s.routing.compaction_model,s.routing.compact_tokens,crate::config::path().map(|p|p.display().to_string()).unwrap_or_default(),crate::config::home().map(|p|p.display().to_string()).unwrap_or_default())
+    let (plugin, plugin_model, plugin_effort) = s.plugin_target();
+    format!("Wake code: {}\nWake once, then follow up for {} idle seconds (0 = never sleep)\nMain harness: {} · {} · {}\nCoding agent: {} · {} · {}\nCompaction agent: {} · {} · {} @ ~{} tokens\nPlugins & connectors: {} · {} · {}{}\nInput relevance: {}\nSpoken replies: {} · {} · {:.2}×\nLocal STT: {} · Conversation STT: {}\nApprovals: {}\nSettings: {}\nUse /settings for harness → model → reasoning.",s.wake_code,s.idle_seconds,s.routing.main,s.routing.main_model.as_deref().unwrap_or(crate::config::light_model(&s.routing.main)),s.routing.reasoning,s.routing.coding,s.model.as_deref().unwrap_or(crate::config::worker_model(&s.routing.coding)),s.routing.coding_reasoning,s.routing.compaction_harness,s.routing.compaction_model,s.routing.compaction_reasoning,s.routing.compact_tokens,plugin,plugin_model,plugin_effort,if s.routing.plugin_use_main {" (follows main)"} else {""},s.routing.input_gate,s.speak,s.tts.provider,s.tts.speed,s.stt.engine,s.stt.conversation,s.approvals.reviewer,crate::config::path().map(|p|p.display().to_string()).unwrap_or_default())
 }
 pub fn tts_help(s: &Settings) -> String {
     format!("Voice provider: {}\nSpeed: {:.2}× (0.6–1.5)\n/tts provider system|kokoro|cartesia|off\n/tts voice VOICE_ID        Set the selected provider's voice\n/tts speed 1.1            Speaking speed for local and Cartesia voices\n/tts test [sample text]    Hear a sample\n/tts voices               List neural voices\n/tts key                  Enter Cartesia key in a hidden field\nKokoro installation: python scripts/setup_tts.py",s.tts.provider,s.tts.speed)

@@ -107,6 +107,12 @@ fn contains_phrase(haystack: &str, needle: &str) -> bool {
     haystack.contains(&format!(" {needle} "))
 }
 impl TextGuard {
+    pub fn recent_matches(&self, playing: bool, predicate: impl Fn(&str) -> bool) -> bool {
+        self.recent.iter().enumerate().any(|(i, (text, at))| {
+            ((playing && i + 1 == self.recent.len()) || at.elapsed() < Duration::from_secs(2))
+                && predicate(text)
+        })
+    }
     pub fn new() -> Self {
         Self {
             recent: VecDeque::new(),
@@ -128,8 +134,8 @@ impl TextGuard {
         if text.is_empty() {
             return false;
         }
-        self.recent.iter().any(|(spoken, at)| {
-            (playing || at.elapsed() < Duration::from_secs(2))
+        self.recent.iter().enumerate().any(|(i, (spoken, at))| {
+            ((playing && i + 1 == self.recent.len()) || at.elapsed() < Duration::from_secs(2))
                 && (contains_phrase(spoken, &text) || {
                     let tokens: Vec<_> = text.split_whitespace().collect();
                     tokens.len() >= 4
@@ -155,6 +161,18 @@ mod tests {
         assert!(guard.matches("similar names", true));
         assert!(!guard.matches("29 stop", true));
         assert!(!guard.matches("Actually, search for Gemma instead", true));
+    }
+    #[test]
+    fn old_wake_mentions_do_not_disable_interruptions_during_new_speech() {
+        let mut guard = TextGuard::new();
+        guard.add("Say twenty nine to interrupt");
+        guard.recent.back_mut().unwrap().1 = Instant::now() - Duration::from_secs(10);
+        guard.add("Here is the answer to your question");
+        assert!(!guard.recent_matches(true, |text| text.contains("twenty nine")));
+        assert!(!guard.matches("twenty nine", true));
+        guard.add("twenty nine");
+        assert!(guard.recent_matches(true, |text| text.contains("twenty nine")));
+        assert!(guard.matches("twenty nine", true));
     }
     #[test]
     fn synthetic_delayed_echo_is_reduced() {

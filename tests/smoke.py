@@ -14,8 +14,8 @@ ROOT = Path(__file__).resolve().parent.parent
 BINARY = ROOT / "target" / "release" / ("acc.exe" if os.name == "nt" else "acc")
 
 class App:
-    def __init__(self, *extra):
-        self.process = subprocess.Popen([str(BINARY), "run", "--wake-code", "29", "--text", *extra], cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8")
+    def __init__(self, *extra, env=None):
+        self.process = subprocess.Popen([str(BINARY), "run", "--wake-code", "29", "--text", *extra], cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", env=env)
         self.lines = queue.Queue()
         self.seen = []
         def read():
@@ -59,7 +59,10 @@ class SmokeTests(unittest.TestCase):
     def setUpClass(cls):
         cls.temp = tempfile.TemporaryDirectory(prefix="accessor-test-")
         cls.old_home = os.environ.get("ACC_HOME")
+        cls.old_mcp = os.environ.get("ACC_MCP_REGISTRY")
+        os.environ["ACC_MCP_REGISTRY"] = str(Path(cls.temp.name) / "agy-mcp.json")
         os.environ["ACC_HOME"] = str(Path(cls.temp.name) / "settings")
+        subprocess.run([str(BINARY), "config", "set", "routing.coordinator", "false"], check=True, capture_output=True)
         cls.shim = Path(cls.temp.name) / ("fake.cmd" if os.name == "nt" else "fake")
         fixture = ROOT / "tests" / "fake_codex.py"
         if os.name == "nt":
@@ -74,6 +77,10 @@ class SmokeTests(unittest.TestCase):
             os.environ.pop("ACC_HOME", None)
         else:
             os.environ["ACC_HOME"] = cls.old_home
+        if cls.old_mcp is None:
+            os.environ.pop("ACC_MCP_REGISTRY", None)
+        else:
+            os.environ["ACC_MCP_REGISTRY"] = cls.old_mcp
         cls.temp.cleanup()
 
     def app(self, *args):
@@ -102,7 +109,7 @@ class SmokeTests(unittest.TestCase):
         app.send("29 followup must wait")
         app.expect("Barge-ins are off")
         app.send("/cancel")
-        app.expect("interrupted")
+        app.expect("| idle")
         app.send("/settings barge-in true")
         app.expect("Saved barge-in: true")
 
@@ -114,7 +121,7 @@ class SmokeTests(unittest.TestCase):
         app.expect("SPEAKING:")
         self.assertFalse(any("Agent: " in line for line in app.seen))
         app.send("/cancel")
-        app.expect("interrupted")
+        app.expect("| idle")
 
     def test_progress_speech_can_be_disabled(self):
         app=self.app("--agent","codex","--codex-bin",str(self.shim),"--speak","--tts","off")
@@ -124,10 +131,9 @@ class SmokeTests(unittest.TestCase):
         app.expect("▸ hold")
         time.sleep(.2)
         app.send("/status")
-        app.expect("WHITE: waiting for wake code | agent working")
+        app.expect("GREEN: conversation open | agent working")
         self.assertNotIn("SPEAKING:", "".join(app.seen))
         app.send("/cancel")
-        app.expect("interrupted")
         app.expect("| idle")
         app.send("/settings speak-progress true")
         app.expect("Saved speak-progress: true")
@@ -137,8 +143,7 @@ class SmokeTests(unittest.TestCase):
         app.send("29 hold")
         app.expect("▸ hold")
         app.send("29 switch agent to mock")
-        app.expect("Interrupting current work")
-        app.expect("Saved agent: mock")
+        app.expect("Pinned this conversation")
         app.send("29 hello after switching")
         app.expect("hello after switching")
         app.expect("| idle")
@@ -152,10 +157,14 @@ class SmokeTests(unittest.TestCase):
         app.expect("Loaded 2 available Codex models")
         app.send("3")
         app.expect("HARNESSES")
-        app.send("4")
-        app.expect("Fixture Astra")
         app.send("1")
-        app.expect("Saved model: fixture-astra")
+        app.expect("Step 1 of 3")
+        app.send("codex")
+        app.expect("Fixture Astra")
+        app.send("fixture-astra")
+        app.expect("Reasoning level")
+        app.send("low")
+        app.expect("Saved main agent: codex")
         app.send("0")
         app.send("0")
         app.expect("Settings closed")
@@ -163,7 +172,7 @@ class SmokeTests(unittest.TestCase):
         app.expect("model=fixture-astra")
         app.expect("| idle")
         app.send("29 switch model to Sol")
-        app.expect("Saved model: fixture-sol")
+        app.expect("Saved routing.main-model: fixture-sol")
         app.send("29 which Rust model")
         app.expect("model=fixture-sol")
         app.expect("| idle")
@@ -172,15 +181,15 @@ class SmokeTests(unittest.TestCase):
         app.send("/settings model default")
         app.expect("Saved model: default")
 
-    def test_wake_policy_is_mandatory(self):
+    def test_wake_opens_followup_conversation(self):
         app=self.app("--agent","mock")
         app.send("29 hello")
         app.expect("Mock agent received: hello")
         app.expect("| idle")
-        app.send("private ignored followup")
+        app.send("followup without wake")
+        app.expect("Mock agent received: followup without wake")
         app.send("29 followup")
         app.expect("Mock agent received: followup")
-        self.assertNotIn("private ignored", "".join(app.seen))
         app.send("/settings addressed false")
         app.expect("Unknown setting")
 
@@ -203,29 +212,27 @@ class SmokeTests(unittest.TestCase):
         app.expect("WHITE:")
         self.assertNotIn("more private", "".join(app.seen))
 
-    def test_mandatory_wake_and_mute(self):
+    def test_wake_sleep_without_separate_mute_state(self):
         app = self.app("--agent", "mock")
         app.send("29")
         app.expect("GREEN:")
         app.send("hello after open")
         app.expect("Mock agent received: hello after open")
-        app.send("29 hello")
-        app.expect("Mock agent received: hello")
         app.expect("| idle")
         app.send("/mute")
-        app.expect("MUTED")
-        app.send("29 must be ignored")
-        app.send("/unmute")
+        app.expect("Separate mute mode")
+        app.send("/sleep")
         app.expect("WHITE:")
+        app.send("must be ignored")
         app.send("29 works")
         app.expect("Mock agent received: works")
-        self.assertNotIn("must be ignored", "".join(app.seen))
+        self.assertNotIn("Mock agent received: must be ignored", "".join(app.seen))
 
     def test_session_expires(self):
         app = self.app("--agent", "mock", "--idle-seconds", "1")
         app.send("29")
         app.expect("GREEN:")
-        app.expect("WHITE:", timeout=3)
+        app.expect("WHITE:", timeout=10)
         app.send("expired request")
         app.send("29 fresh request")
         app.expect("Mock agent received: fresh request")
@@ -242,9 +249,9 @@ class SmokeTests(unittest.TestCase):
         app.expect("▸ hold")
         time.sleep(1.4)
         app.send("/status")
-        app.expect("WHITE: waiting for wake code | agent working")
+        app.expect("GREEN: conversation open | agent working")
         app.send("/cancel")
-        app.expect("interrupted")
+        app.expect("| idle")
         app.expect("| idle")
         app.send("29 follow up after long work")
         app.expect("fixture: follow up after long work")
@@ -255,7 +262,6 @@ class SmokeTests(unittest.TestCase):
         app.expect("▸ hold")
         app.send("29 stop")
         app.expect("Stopped. Waiting for wake code.")
-        app.expect("interrupted")
         app.expect("| idle")
         app.send("ambient after stop")
         app.send("29 new request")
@@ -355,7 +361,7 @@ class SmokeTests(unittest.TestCase):
         app.send("29 hold")
         app.expect("BLUE:")
         app.send("/cancel")
-        app.expect("interrupted")
+        app.expect("| idle")
 
     def test_hey_wake_and_go_back_to_sleep(self):
         app = self.app("--agent", "mock")
@@ -381,13 +387,13 @@ class SmokeTests(unittest.TestCase):
         app.expect("▸ hold")
         self.assertNotIn("Holding task", "".join(app.seen))
         app.send("/cancel")
-        app.expect("interrupted")
+        app.expect("| idle")
         app.send("/settings chat transcript")
         app.expect("Saved chat: transcript")
         app.send("29 hold")
         app.expect("Holding task")
         app.send("/cancel")
-        app.expect("interrupted")
+        app.expect("| idle")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
