@@ -108,7 +108,7 @@ The activity pane shows user lines, formatted agent replies (bold, links), and l
 
 Each harness keeps its own native conversation alive. When routing moves to another harness and later returns, Accessor supplies the user-and-agent turns that harness missed. Together, its native history plus that synchronized delta represent the full Accessor conversation without resending every turn repeatedly.
 
-Canary runs on completed speech segments, after about 640 ms of silence. Utterances longer than 15 seconds are discarded. Split long requests into shorter turns. Canary uses a low-latency two-thread CPU pool (faster than four hyperthreads on the tested laptop); Whisper uses all available threads with a low-beam decoder. Both use a latest-utterance buffer and stale-audio rejection.
+Local models decode completed speech segments after one second of silence; long speech is delivered in overlapping 30-second chunks. Canary uses a two-thread CPU pool; Whisper uses available threads with a low-beam decoder. Completed clips queue in order; explicit cancellation or sleep invalidates old capture. Optional Cartesia streaming overlaps upload with capture and local recognition.
 
 ## Test transcription separately
 
@@ -130,7 +130,7 @@ acc tts test
 
 - **System**: Windows System.Speech, macOS `say`, Linux `espeak-ng`. No model download; quality depends on installed voices.
 - **Kokoro**: local neural speech, with an optional persistent Python/ONNX worker. No API key or network requests during synthesis. The model loads on the first request and stays loaded for later replies; CPU inference uses two threads with spinning disabled.
-- **Cartesia**: cloud speech with a key saved in the OS credential store. Only reply text is sent to Cartesia; microphone transcription remains local. `CARTESIA_API_KEY` can supply the credential instead. API version 2026-08-14 is pinned; the default model is sonic-3.
+- **Cartesia**: cloud speech with a key saved in the OS credential store. This output setting sends reply text to Cartesia. Microphone audio is sent only if after-wake STT is separately set to Cartesia. `CARTESIA_API_KEY` can supply the credential instead. API version 2026-08-14 is pinned; the default model is sonic-3.
 - **Off**: display replies without speech.
 
 Install local neural speech:
@@ -273,3 +273,18 @@ Use `/memory` in the console to inspect shared facts. `acc memory list`, `acc me
 Memory search first filters global/current-project entries and ranks keyword matches locally. `acc memory search "query" --rerank` or MCP `rerank:true` optionally sends the query and at most 20 candidates to Jev using the configured TypeSafe credential. It has a three-second timeout and falls back to local ranking. Reranking orders candidates; it cannot grant permissions or change scope. It is not embedding-based semantic retrieval, so a keyword-free paraphrase can still miss a fact.
 
 `session_control` MCP applies sleep and ringing-alarm stop through an authenticated loopback bridge to the launching Accessor session, and exposes live status. `organizer_control` also accepts sleep/stop_alarm. A receipt is returned after the UI applies the action. Session capabilities are supplied to main sessions, not isolated workers or compaction jobs; standalone memory MCP connections report that no live session is attached. Native tool permissions still apply. The old reply directives remain compatibility fallbacks. A successful MCP action must not also be emitted as a duplicate directive. Shared memory persists independently of CLI compaction and Accessor's handoff summaries.
+
+## Speech decisions, streaming, and latency
+
+An ignored awake input now appears in Activity as `Ignored (reason): words`, including Jev's addressed/actionable scores when available. `Heard: ... (checking relevance)` confirms that transcription succeeded before the decision arrives. The status line distinguishes hearing speech, local/cloud transcription, and relevance checking. Rejected words never enter agent history, shared memory, or analytics. Sleeping ambient speech stays hidden; `/stt-test` explicitly shows everything.
+
+Cartesia streaming is optional and off by default. Select Cartesia for **After wake STT**, then enable **Speech → Cartesia streaming**, or run:
+
+```sh
+acc config set stt.conversation cartesia
+acc config set stt.streaming true
+```
+
+Streaming uploads detected awake speech in roughly 100 ms PCM packets while you talk, including pre-roll. It starts before local words or Jev relevance are known, so subsequently ignored speech can reach Cartesia. Sleep and speaker playback use local wake detection. Accessor still owns the one-second silence endpoint: it finalizes the WebSocket and submits only the complete final transcript. Interim text never triggers actions. The complete local clip/transcript is retained as fallback; overload, disconnects, or missing finals cannot submit a partial cloud request. Wake-addressed local controls bypass waiting for the cloud result. Turning streaming off restores the finished-clip local word check before upload. See [Cartesia's manual streaming protocol](https://docs.cartesia.ai/api-reference/stt/websocket).
+
+`/analytics` compares this run, the past day/week, and lifetime; lists provider calls and estimated costs; and shows accepted/ignored input counts, fallback/cache counts, and median/P95 timings for recognition queues, local/cloud recognition, relevance checks, and synthesis. Historical STT counts may include duplicates from older versions; new transcriptions are counted once per actual local/cloud pass. Analytics writes are batched outside the speech/UI path, and HTTP connections are reused. Costs are built-in estimates, not live quota balances or invoices, and may omit cancelled/failed calls. No speedup is promised for a particular microphone, model, or network; the measured stages show where time is going.

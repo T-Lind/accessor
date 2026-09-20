@@ -147,6 +147,15 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                 Action::Cycle("stt.conversation", STT_MODES),
             ),
             row(
+                "Cartesia streaming",
+                if s.stt.streaming {
+                    "on · uploads awake speech as you talk"
+                } else {
+                    "off · local word check before upload"
+                },
+                Action::Toggle("stt.streaming"),
+            ),
+            row(
                 "Compute saving",
                 if s.stt.lazy {
                     "load local STT on speech, free when asleep"
@@ -303,6 +312,7 @@ fn hint(action: &Action) -> &'static str {
         Action::Toggle("speak-progress") => {
             "Read tool/progress lines while the agent works, not just the final answer."
         }
+        Action::Toggle("stt.streaming") => "Only when Cartesia is selected: send detected awake speech as you talk, before its words or relevance are known. Sleep and speaker playback stay local. Off uses the local word check first.",
         Action::Toggle("stt.lazy") => {
             "Keep the mic and VAD running, but load the selected local STT only when speech starts and free it after sleep."
         }
@@ -314,7 +324,7 @@ fn hint(action: &Action) -> &'static str {
             "In legacy routing (coordinator off), Jev uses recent conversation and the previous route to select plugin, coding, or main—and therefore that role's model."
         }
         Action::Cycle("stt.conversation", _) => {
-            "Wake is always on-device with the selected local model. After GREEN, Ink-2 only runs on a finished VAD clip if that model heard a real word — never a live stream."
+            "Wake detection stays on-device. Cartesia after-wake transcription uses finished clips by default; enable Cartesia streaming to upload speech as you talk."
         }
         Action::Cycle("chat", _) => {
             "Activity shows tools plus replies. Transcript shows everything. Off hides commentary."
@@ -610,6 +620,13 @@ fn current_value<'a>(key: &str, s: &'a Settings) -> &'a str {
         "approvals.reviewer" => s.approvals.reviewer.as_str(),
         "stt.conversation" => s.stt.conversation.as_str(),
         "stt.engine" => s.stt.engine.as_str(),
+        "stt.streaming" => {
+            if s.stt.streaming {
+                "true"
+            } else {
+                "false"
+            }
+        }
         "stt.lazy" => {
             if s.stt.lazy {
                 "true"

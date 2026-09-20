@@ -213,6 +213,7 @@ pub async fn run(mut args: Run) -> Result<()> {
     let awake = Arc::new(AtomicBool::new(false));
     let cloud_stt = Arc::new(AtomicBool::new(settings.stt.conversation == "cartesia"));
     let lazy_stt = Arc::new(AtomicBool::new(settings.stt.lazy));
+    let streaming_stt = Arc::new(AtomicBool::new(settings.stt.streaming));
     let stt_engine = Arc::new(Mutex::new(settings.stt.engine.clone()));
     let (input_tx, mut input_rx) = mpsc::channel(16);
     let control_bridge = crate::control::Bridge::start(input_tx.clone()).await?;
@@ -234,6 +235,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                 .or(settings.microphone.as_deref()),
             input_tx.clone(),
             audio::MicFlags {
+                streaming: streaming_stt.clone(),
                 speech_state: speech_state.clone(),
                 diagnostics: audio_diagnostics.clone(),
                 interrupting: interrupting.clone(),
@@ -313,12 +315,18 @@ pub async fn run(mut args: Run) -> Result<()> {
         env!("CARGO_PKG_VERSION"),
         if args.text {
             "typed transcript mode (microphone off)"
+        } else if settings.stt.conversation == "cartesia" {
+            if settings.stt.streaming {
+                "microphone on; Cartesia streaming after wake"
+            } else {
+                "microphone on; Cartesia after-wake transcription"
+            }
         } else {
             "microphone on; transcription stays local"
         }
     ));
     ui.message("Type / for commands, /settings to configure, /tts to choose a voice, or a message to talk to the agent.");
-    ui.message("Approvals only accept typed commands. Ambient transcripts are neither displayed nor saved (except explicit STT test mode).");
+    ui.message("Approvals only accept typed commands. Ignored awake input appears in Activity with its reason; it is not added to agent history or saved in analytics. Sleeping ambient speech stays hidden.");
     ui.status(&banner(
         BannerState {
             active: session.active(),
@@ -370,7 +378,7 @@ pub async fn run(mut args: Run) -> Result<()> {
             Ordering::SeqCst,
         );
 
-        ui.status(&banner(
+        let status = banner(
             BannerState {
                 active: session.active(),
                 busy: busy || worker.is_some(),
@@ -382,7 +390,19 @@ pub async fn run(mut args: Run) -> Result<()> {
                 mic_unavailable,
             },
             &identity_status(&active_harness, active_model.as_deref()),
-        ));
+        );
+        let phase = if gate_job.is_some() {
+            Some("checking relevance")
+        } else if cloud_job.is_some() {
+            Some("transcribing with Cartesia")
+        } else {
+            speech_state.phase()
+        };
+        ui.status(&if let Some(phase) = phase.filter(|_| session.active()) {
+            status.replacen(" | ", &format!(" · {phase} | "), 1)
+        } else {
+            status
+        });
         ui.draw()?;
         tokio::select! {
             biased;
@@ -399,6 +419,12 @@ pub async fn run(mut args: Run) -> Result<()> {
                 // Completion events acknowledge each stage before the next captured clip.
                 if matches!(&input,Input::CloudVoice{epoch:e,..} if *e==epoch.load(Ordering::SeqCst)) {cloud_job=None;}
                 if matches!(&input,Input::GatedVoice{epoch:e,..} if *e==epoch.load(Ordering::SeqCst)) {gate_job=None;}
+                if let Input::GatedVoice{decision,text,epoch:e,..}=&input {
+                    if *e==epoch.load(Ordering::SeqCst) {
+                        if !decision.accepted {ui.ignored(text,&decision.reason);continue;}
+                        if decision.reason.contains("unavailable") {ui.message(&decision.reason);}
+                    }
+                }
                 let is_gated=matches!(&input,Input::GatedVoice{..});
                 let voice_capture=match &input {Input::Voice{epoch,captured_at,..}|Input::GatedVoice{epoch,captured_at,..}|Input::CloudVoice{epoch,captured_at,..}=>(*epoch,*captured_at),_=>(epoch.load(Ordering::SeqCst),Instant::now())};
                 let is_event=matches!(&input,Input::Trigger(_));
@@ -471,19 +497,19 @@ pub async fn run(mut args: Run) -> Result<()> {
                     }
                     Input::Voice { text, epoch: captured_epoch, .. } | Input::GatedVoice { text, epoch: captured_epoch, .. } | Input::CloudVoice { text, epoch: captured_epoch, .. } => {
                         if muted.load(Ordering::SeqCst) || captured_epoch != epoch.load(Ordering::SeqCst) { continue; }
-                        if text.trim().is_empty() {continue;}
+                        if text.trim().is_empty() {if session.active() {ui.ignored(&text,"transcription produced no usable words");}continue;}
                         let captured_during_output = false;
                         let addressed=session.addressed(&text);
 
-                        crate::usage::record_stt("canary", 0.0);
+
                         (text, false, addressed, captured_during_output, None)
                     }
-                    Input::Pcm { samples, local_text, epoch: captured_epoch, captured_at } => {
+                    Input::Pcm { streamed, samples, local_text, epoch: captured_epoch, captured_at } => {
                         if muted.load(Ordering::SeqCst) || captured_epoch != epoch.load(Ordering::SeqCst) { continue; }
                         if mic_unavailable { continue; }
                         let captured_during_output = false;
                         let local_control = session.addressed(&local_text);
-                        if local_control || wake_listening {
+                        if local_control {
 
                             let addressed=session.addressed(&local_text);
                             (local_text, false, addressed, captured_during_output, None)
@@ -491,15 +517,23 @@ pub async fn run(mut args: Run) -> Result<()> {
                             if captured_during_output { continue; }
                             let tx=input_tx.clone();
                             cloud_job=Some(tokio::spawn(async move {
-                                let text=match speech::cartesia_stt(&samples).await {
+                                let start=Instant::now();
+                                let was_streamed=streamed.is_some();
+                                let result=if let Some(streamed)=streamed {
+                                    crate::usage::record_diagnostic("Streaming STT clip");
+                                    streamed.text().await
+                                } else {speech::cartesia_stt(&samples).await};
+                                let text=match result {
                                     Ok(text)=>{crate::usage::record_stt("cartesia",samples.len() as f64/16_000.0);text},
-                                    Err(_)=>local_text,
+                                    Err(_)=>{crate::usage::record_diagnostic("Cloud STT fallback");let _=tx.send(Input::Error("Cartesia transcription unavailable; using local transcript and kept listening".into())).await;local_text},
                                 };
+                                crate::usage::record_latency(if was_streamed {"Cloud result wait"} else {"Cloud transcription"},start.elapsed());
                                 let _=tx.send(Input::CloudVoice {text,epoch:captured_epoch,captured_at}).await;
                             }));
                             continue;
                         }
                     }
+                    Input::IgnoredVoice{text,reason,epoch:e}=>{if e==epoch.load(Ordering::SeqCst) && session.active() {ui.ignored(&text,&reason);}continue;},
                     Input::Text(text) => (text, true, false, false, None),
                 };
                 if pending_stt.is_some() && text.trim()=="/cancel" {
@@ -661,6 +695,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                         settings=candidate;
                                         cloud_stt.store(settings.stt.conversation=="cartesia", Ordering::SeqCst);
                                         lazy_stt.store(settings.stt.lazy, Ordering::SeqCst);
+                                        streaming_stt.store(settings.stt.streaming, Ordering::SeqCst);
                                         if key=="speak" {speak=settings.speak;}
                                         if key=="chat" {ui.set_chat(&settings.chat);}
                                         if key=="wake-code" || key=="idle-seconds" {session=Session::new(wake::WakeCode::new(&settings.wake_code,&args.wake_alias)?,Duration::from_secs(settings.idle_seconds));epoch.fetch_add(1,Ordering::SeqCst);}
@@ -889,15 +924,15 @@ pub async fn run(mut args: Run) -> Result<()> {
                             if let Some(job)=cloud_job.take() {job.abort();}
                         }
                         if !typed && !is_automatic && !is_gated {
-                            if settings.routing.input_gate!="off" && !crate::route::meaningful_input(&text) {continue;}
+                            if settings.routing.input_gate!="off" && !crate::route::meaningful_input(&text) {ui.ignored(&text,"local filter: filler or non-speech");continue;}
                             if settings.routing.input_gate=="jev" && crate::route::jev_available() {
                                 let tx=input_tx.clone();let history=transcript.iter().cloned().collect::<Vec<_>>();
                                 let captured_epoch=epoch.load(Ordering::SeqCst);
                                 let addressed=spoken_addressed || wake_listening;
-                                wake_listening=true;
+                                ui.message(format!("Heard: {} (checking relevance)",safe(&raw_voice)));
                                 gate_job=Some(tokio::spawn(async move {
-                                    let relevant=crate::route::relevant_input(&text,&history,addressed).await;
-                                    let _=tx.send(Input::GatedVoice{text:if relevant {raw_voice} else {String::new()},epoch:captured_epoch,captured_at:voice_capture.1}).await;
+                                    let decision=crate::route::relevant_input(&text,&history,addressed).await;
+                                    let _=tx.send(Input::GatedVoice{decision,text:raw_voice,epoch:captured_epoch,captured_at:voice_capture.1}).await;
                                 }));continue;
                             }
                         }
@@ -906,7 +941,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                         let wake_followup = wake_listening;
                         wake_listening = false;
                         if !typed && !is_automatic && !spoken_addressed && !wake_followup && !was_active && spoken_word_count(&text) < 2 {
-                            ui.message("Ignored a one-word transcript; say “29” first or use a longer phrase.");
+                            ui.ignored(&text,"one-word transcript outside an established follow-up; say 29 first");
                             continue;
                         }
                         if pending_stt.is_some() {
@@ -930,7 +965,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                             }
                         }
                         if !is_automatic {
-                            if (busy || worker.is_some() || speaker.is_some()) && !settings.barge_in && (!typed || args.text) {ui.message("Barge-ins are off. Use /cancel or change /settings.");continue;}
+                            if (busy || worker.is_some() || speaker.is_some()) && !settings.barge_in && (!typed || args.text) {ui.ignored(&text,"Barge-ins are off. Use /cancel or change /settings.");continue;}
                             if let Some(command)=crate::settings_ui::voice_command(&text,&models, Some(&settings)) {
                                 speech_queue.clear();speaker=None;think=None;echo_guard.finish();silence_reply=true;
                                 match command {
@@ -941,6 +976,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                             }
                             speech_queue.clear();speaker=None;think=None;echo_guard.finish();muted.store(panel.is_some(),Ordering::SeqCst);
                         }
+                        if !typed && !is_automatic {crate::usage::record_diagnostic("Voice accepted");}
                         if busy {
                             ui.chat(Kind::User, &text);
                             transcript.push_back(("User".into(),text.clone()));

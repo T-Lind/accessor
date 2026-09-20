@@ -2,6 +2,7 @@
 use crate::config;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     sync::{Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -15,6 +16,7 @@ const GATEWAY_IN_PER_M: f64 = 0.15;
 const GATEWAY_OUT_PER_M: f64 = 0.60;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Totals {
     pub tts_calls: u64,
     pub tts_chars: u64,
@@ -23,6 +25,7 @@ pub struct Totals {
     pub compact_calls: u64,
     pub jev_calls: u64,
     pub usd: f64,
+    pub diagnostics: BTreeMap<String, u64>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -40,6 +43,8 @@ struct Store {
     lifetime: Totals,
     #[serde(default)]
     events: Vec<Event>,
+    #[serde(skip)]
+    session: Vec<Event>,
 }
 
 fn now() -> u64 {
@@ -60,6 +65,7 @@ fn load() -> Store {
         .unwrap_or_else(|| Store {
             lifetime: Totals::default(),
             events: Vec::new(),
+            session: Vec::new(),
         })
 }
 
@@ -69,8 +75,8 @@ fn save(store: &Store) {
     }
 }
 
+static STORE: OnceLock<Mutex<Store>> = OnceLock::new();
 fn store() -> &'static Mutex<Store> {
-    static STORE: OnceLock<Mutex<Store>> = OnceLock::new();
     STORE.get_or_init(|| Mutex::new(load()))
 }
 
@@ -85,30 +91,75 @@ fn bump(kind: &str, totals: &mut Totals) {
     }
 }
 
+fn accumulate(event: &Event, totals: &mut Totals) {
+    bump(&event.kind, totals);
+    if event.kind == "tts" {
+        totals.tts_chars += event.units.max(0.0) as u64;
+    }
+    if event.kind == "diagnostic" {
+        *totals.diagnostics.entry(event.label.clone()).or_default() += 1;
+    }
+    totals.usd += event.usd;
+}
+
 fn record(kind: &str, label: &str, units: f64, usd: f64) {
     let Ok(mut store) = store().lock() else {
         return;
     };
     let ts = now();
-    bump(kind, &mut store.lifetime);
-    if kind == "tts" {
-        store.lifetime.tts_chars += units.max(0.0) as u64;
-    }
-    store.lifetime.usd += usd;
-    store.events.push(Event {
+    let event = Event {
         ts,
         kind: kind.into(),
         label: label.into(),
         units,
         usd,
-    });
-    let cutoff = ts.saturating_sub(WEEK * 4);
-    store.events.retain(|e| e.ts >= cutoff);
+    };
+    accumulate(&event, &mut store.lifetime);
+    store.session.push(event.clone());
+    if store.session.len() > MAX_EVENTS {
+        store.session.remove(0);
+    }
+    store.events.push(event);
+    store.events.retain(|e| e.ts >= ts.saturating_sub(WEEK * 4));
     if store.events.len() > MAX_EVENTS {
         let extra = store.events.len() - MAX_EVENTS;
         store.events.drain(..extra);
     }
-    save(&store);
+    drop(store);
+    // Avoid a disk write on the recognition/UI path for each timing sample.
+    static WRITER: OnceLock<std::sync::mpsc::SyncSender<()>> = OnceLock::new();
+    let tx = WRITER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            while rx.recv().is_ok() {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                while rx.try_recv().is_ok() {}
+                flush();
+            }
+        });
+        tx
+    });
+    let _ = tx.try_send(());
+}
+
+pub fn flush() {
+    static WRITE_LOCK: Mutex<()> = Mutex::new(());
+    let Ok(_write) = WRITE_LOCK.lock() else {
+        return;
+    };
+    let snapshot = STORE
+        .get()
+        .and_then(|store| store.lock().ok().map(|s| s.clone()));
+    if let Some(snapshot) = snapshot {
+        save(&snapshot);
+    }
+}
+
+pub fn record_latency(stage: &str, elapsed: std::time::Duration) {
+    record("latency", stage, elapsed.as_secs_f64() * 1000.0, 0.0);
+}
+pub fn record_diagnostic(label: &str) {
+    record("diagnostic", label, 1.0, 0.0);
 }
 
 pub fn approx_tokens(text: &str) -> usize {
@@ -154,11 +205,7 @@ pub fn record_jev(ok: bool) {
 fn week_totals(events: &[Event], since: u64) -> Totals {
     let mut t = Totals::default();
     for e in events.iter().filter(|e| e.ts >= since) {
-        bump(&e.kind, &mut t);
-        t.usd += e.usd;
-        if e.kind == "tts" {
-            t.tts_chars += e.units.max(0.0) as u64;
-        }
+        accumulate(e, &mut t);
     }
     t
 }
@@ -173,36 +220,114 @@ fn bar(value: f64, max: f64) -> String {
     format!("{}{}", "█".repeat(fill), "░".repeat(width - fill))
 }
 
-fn section(title: &str, t: &Totals) -> String {
-    let rows = [
-        ("Jev", t.jev_calls as f64),
-        ("TTS", t.tts_calls as f64),
-        ("STT", t.stt_calls as f64),
-        ("Harness", t.harness_turns as f64),
-        ("Compact", t.compact_calls as f64),
-    ];
-    let max = rows.iter().map(|(_, n)| *n).fold(0.0, f64::max);
-    let mut out = format!("{title}\n  estimated ${:.4}\n", t.usd);
-    for (name, n) in rows {
-        out.push_str(&format!("  {name:<8} {} {n:.0}\n", bar(n, max)));
+fn percentile(values: &mut [f64], percent: usize) -> f64 {
+    values.sort_by(f64::total_cmp);
+    if values.is_empty() {
+        return 0.0;
     }
-    out.push_str(&format!(
-        "  TTS chars {} · Jev {} · turns {}\n",
-        t.tts_chars, t.jev_calls, t.harness_turns
-    ));
-    out
+    values[(values.len() * percent)
+        .div_ceil(100)
+        .saturating_sub(1)
+        .min(values.len() - 1)]
 }
 
+fn render_report(store: &Store, at: u64) -> String {
+    let week_events: Vec<_> = store
+        .events
+        .iter()
+        .filter(|e| e.ts >= at.saturating_sub(WEEK))
+        .cloned()
+        .collect();
+    let week = week_totals(&week_events, 0);
+    let today = week_totals(&store.events, at.saturating_sub(24 * 3600));
+    let session = week_totals(&store.session, 0);
+    let mut out=String::from("ACCESSOR ANALYTICS\nUsage, speech decisions and latency\n\nWindow           Est. cost    Agent turns   STT calls   TTS calls\n");
+    for (name, t) in [
+        ("Lifetime", &store.lifetime),
+        ("Past 7 days", &week),
+        ("Past 24 hours", &today),
+        ("This run", &session),
+    ] {
+        out.push_str(&format!(
+            "{name:<16} ${:<11.4} {:<13} {:<11} {}\n",
+            t.usd, t.harness_turns, t.stt_calls, t.tts_calls
+        ));
+    }
+    out.push_str("\nServices · past 7 days\n");
+    let mut services: BTreeMap<(String, String), (usize, f64)> = BTreeMap::new();
+    for e in &week_events {
+        if ["tts", "stt", "harness", "compact", "jev"].contains(&e.kind.as_str()) {
+            let row = services
+                .entry((e.kind.clone(), e.label.clone()))
+                .or_default();
+            row.0 += 1;
+            row.1 += e.usd;
+        }
+    }
+    let maximum = services.values().map(|v| v.0).max().unwrap_or(0) as f64;
+    for (kind, title) in [
+        ("jev", "Jev"),
+        ("stt", "STT"),
+        ("tts", "TTS"),
+        ("harness", "Harness"),
+        ("compact", "Compaction"),
+    ] {
+        let mut found = false;
+        for ((service, label), (calls, usd)) in &services {
+            if service == kind {
+                found = true;
+                out.push_str(&format!(
+                    "{title:<11} {label:<20} {} {calls:>5}  ${usd:.4}\n",
+                    bar(*calls as f64, maximum)
+                ));
+            }
+        }
+        if !found {
+            out.push_str(&format!("{title:<11} no calls recorded\n"));
+        }
+    }
+    out.push_str("\nSpeech health · this run / past 7 days\n");
+    for label in [
+        "Voice accepted",
+        "Voice ignored",
+        "No words recognized",
+        "Cloud STT fallback",
+        "gate fallback",
+        "TTS cache hit",
+        "Streaming STT clip",
+    ] {
+        out.push_str(&format!(
+            "{label:<25} {:>6} / {}\n",
+            session.diagnostics.get(label).unwrap_or(&0),
+            week.diagnostics.get(label).unwrap_or(&0)
+        ));
+    }
+    out.push_str("\nLatency · past 7 days (measured; ms)\nStage                      Samples     Median        P95\n");
+    let mut timings: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
+    for e in &week_events {
+        if e.kind == "latency" && e.units.is_finite() {
+            timings.entry(&e.label).or_default().push(e.units);
+        }
+    }
+    if timings.is_empty() {
+        out.push_str("No timing samples yet. Speak a request to start measuring.\n");
+    }
+    for (stage, mut values) in timings {
+        let median = percentile(&mut values, 50);
+        let p95 = percentile(&mut values, 95);
+        out.push_str(&format!(
+            "{stage:<27}{:>7} {median:>10.0} {p95:>10.0}\n",
+            values.len()
+        ));
+    }
+    out.push_str("\nCosts use built-in estimates, not invoices or live account quotas.\nHarness tokens are approximate input only and unpriced; legacy STT totals may include duplicate counts.\nRecent details retain up to 8,000 events / 28 days; busy periods may be incomplete.\nIgnored words appear only in Activity. Analytics stores counts and timings, never transcript text.\n");
+    out
+}
 pub fn report() -> String {
     let Ok(store) = store().lock() else {
         return "Analytics unavailable.".into();
     };
-    let week = week_totals(&store.events, now().saturating_sub(WEEK));
-    format!(
-        "Accessor analytics (estimates; Cartesia/Jev/Gateway list prices, harness tokens unpriced)\n\n{}{}",
-        section("Lifetime", &store.lifetime),
-        section("Past 7 days", &week)
-    )
+    render_report(&store, now())
 }
 
 #[cfg(test)]
@@ -239,6 +364,41 @@ mod tests {
         assert_eq!(week.tts_calls, 1);
         assert!(week.usd < 0.01);
     }
+    #[test]
+    fn report_has_latency_health_and_migrates_old_totals() {
+        let mut store: Store =
+            serde_json::from_str(r#"{"lifetime":{"stt_calls":7},"events":[]}"#).unwrap();
+        let at = 2_000_000;
+        for milliseconds in [10.0, 20.0, 100.0] {
+            store.events.push(Event {
+                ts: at,
+                kind: "latency".into(),
+                label: "Relevance check".into(),
+                units: milliseconds,
+                usd: 0.0,
+            });
+        }
+        let event = Event {
+            ts: at,
+            kind: "diagnostic".into(),
+            label: "Voice ignored".into(),
+            units: 1.0,
+            usd: 0.0,
+        };
+        store.events.push(event.clone());
+        store.session.push(event.clone());
+        accumulate(&event, &mut store.lifetime);
+        let report = render_report(&store, at);
+        assert!(report.contains("Voice ignored"));
+        assert!(report.contains("Relevance check"));
+        assert!(report.contains("P95"));
+        assert_eq!(store.lifetime.stt_calls, 7);
+        assert_eq!(percentile(&mut [100.0, 10.0, 20.0], 50), 20.0);
+        assert_eq!(percentile(&mut [100.0, 10.0, 20.0], 95), 100.0);
+        let saved = serde_json::to_value(&store).unwrap();
+        assert!(saved.get("session").is_none());
+    }
+
     #[test]
     fn tokens_are_rough_char_quarters() {
         assert_eq!(approx_tokens("abcd"), 1);

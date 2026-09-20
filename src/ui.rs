@@ -137,6 +137,17 @@ impl Ui {
         self.dirty = true;
         Ok(())
     }
+    pub fn ignored(&mut self, text: &str, reason: &str) {
+        crate::usage::record_diagnostic("Voice ignored");
+        self.message(format!(
+            "Ignored ({reason}): {}",
+            if text.trim().is_empty() {
+                "[no words recognized]"
+            } else {
+                text
+            }
+        ));
+    }
     pub fn message(&mut self, text: impl AsRef<str>) {
         self.push(Kind::System, text.as_ref());
     }

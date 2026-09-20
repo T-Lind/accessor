@@ -71,19 +71,13 @@ pub fn speak_chunks(text: &str) -> Vec<String> {
 pub fn request(text: &str, settings: &Tts) -> Value {
     json!({"model_id":settings.model,"transcript":text,"voice":{"mode":"id","id":settings.voice},"language":"en","generation_config":{"speed":settings.speed.clamp(0.6,1.5)},"output_format":{"container":"raw","encoding":"pcm_s16le","sample_rate":16000}})
 }
-fn client() -> Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?)
-}
 pub async fn synthesize(text: &str, settings: &Tts) -> Result<Vec<u8>> {
     ensure!(
         !settings.voice.is_empty(),
         "Choose a Cartesia voice with acc tts setup"
     );
     let key = config::secret("cartesia", "CARTESIA_API_KEY")?;
-    let mut response = client()?
+    let mut response = crate::http::client()?
         .post("https://api.cartesia.ai/tts/bytes")
         .bearer_auth(key)
         .header("Cartesia-Version", "2026-08-14")
@@ -124,7 +118,7 @@ pub async fn cartesia_stt(samples: &[f32]) -> Result<String> {
         writer.finalize()?;
     }
     let wav = cursor.into_inner();
-    let client = client()?;
+    let client = crate::http::client()?;
     for model in ["ink-2", "ink-whisper"] {
         let part = reqwest::multipart::Part::bytes(wav.clone())
             .file_name("speech.wav")
@@ -135,6 +129,7 @@ pub async fn cartesia_stt(samples: &[f32]) -> Result<String> {
             .part("file", part);
         let response = client
             .post("https://api.cartesia.ai/stt")
+            .timeout(Duration::from_secs(8))
             .bearer_auth(&key)
             .header("Cartesia-Version", "2026-08-14")
             .multipart(form)
@@ -156,7 +151,7 @@ pub async fn cartesia_stt(samples: &[f32]) -> Result<String> {
 }
 pub async fn voices() -> Result<()> {
     let key = config::secret("cartesia", "CARTESIA_API_KEY")?;
-    let response = client()?
+    let response = crate::http::client()?
         .get("https://api.cartesia.ai/voices")
         .query(&[("limit", "100")])
         .header("Cartesia-Version", "2026-08-14")
@@ -391,8 +386,10 @@ fn tts_cache_put(text: &str, settings: &Tts, bytes: &[u8]) {
 }
 pub async fn render(text: &str, settings: &Tts) -> Result<Vec<u8>> {
     if let Some(bytes) = tts_cache_get(text, settings) {
+        crate::usage::record_diagnostic("TTS cache hit");
         return Ok(bytes);
     }
+    let began = std::time::Instant::now();
     let bytes = if settings.provider == "system" {
         crate::audio::synthesize_system(text, settings.speed).await?
     } else if settings.provider == "kokoro" {
@@ -404,6 +401,7 @@ pub async fn render(text: &str, settings: &Tts) -> Result<Vec<u8>> {
     } else {
         synthesize(text, settings).await?
     };
+    crate::usage::record_latency("Speech synthesis", began.elapsed());
     tts_cache_put(text, settings, &bytes);
     Ok(bytes)
 }

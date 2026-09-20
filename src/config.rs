@@ -80,6 +80,7 @@ impl Default for Routing {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Stt {
+    pub streaming: bool,
     pub conversation: String,
     pub lazy: bool,
     #[serde(default = "default_stt_engine")]
@@ -89,6 +90,7 @@ impl Default for Stt {
     fn default() -> Self {
         Self {
             conversation: "local".into(),
+            streaming: false,
             lazy: false,
             engine: "canary".into(),
         }
@@ -484,6 +486,7 @@ impl Settings {
                     .into();
             }
             "stt.lazy" => self.stt.lazy = value.parse()?,
+            "stt.streaming" => self.stt.streaming = value.parse()?,
             "approvals.reviewer" => self.approvals.reviewer = value.to_lowercase(),
             "microphone" => self.microphone = Some(value.into()),
             "codex-bin" => self.codex_bin = Some(PathBuf::from(value).canonicalize()?),

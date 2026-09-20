@@ -7,6 +7,7 @@ mod connectors;
 mod control;
 mod dashboard;
 mod echo;
+mod http;
 mod identity;
 mod limits;
 mod markdown;
@@ -19,6 +20,7 @@ mod session;
 mod settings_ui;
 mod speech;
 mod stt_models;
+mod stt_stream;
 mod triggers;
 mod ui;
 mod updates;
@@ -47,7 +49,13 @@ pub enum Input {
         epoch: u64,
         captured_at: std::time::Instant,
     },
+    IgnoredVoice {
+        text: String,
+        reason: String,
+        epoch: u64,
+    },
     GatedVoice {
+        decision: route::InputDecision,
         text: String,
         epoch: u64,
         captured_at: std::time::Instant,
@@ -58,6 +66,7 @@ pub enum Input {
         captured_at: std::time::Instant,
     },
     Pcm {
+        streamed: Option<stt_stream::Transcript>,
         samples: Vec<f32>,
         local_text: String,
         epoch: u64,
@@ -71,5 +80,7 @@ pub enum Input {
 }
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    cli::entry().await
+    let result = cli::entry().await;
+    usage::flush();
+    result
 }

@@ -6,7 +6,7 @@ Accessor is a local voice shell around **harnesses** (Codex, Claude Code, Antigr
 
 `Audio buffer overflow; restart Accessor before issuing more commands` means the microphone callback filled a bounded queue faster than the DSP thread could drain it (CPU spike, a long burst, or a stall). That used to **kill capture**. Accessor now drops the overrun, resets the segmenter, and keeps listening. One occurrence is noisy, not fatal. Persistent repeats mean the machine cannot keep up — shorter turns, a quieter room, or fewer other CPU-heavy jobs.
 
-Utterances longer than 15 seconds are still discarded on purpose (not executed truncated).
+Long speech is retained in overlapping 30-second chunks. Completed clips queue in order.
 
 ## Wake vs conversation STT
 
@@ -17,15 +17,11 @@ Utterances longer than 15 seconds are still discarded on purpose (not executed t
 
 `/tts provider cartesia` is **spoken output** (Sonic). `/stt provider cartesia` (aliases: `ink-2`, `external`) is **after-wake transcription**. `/stt engine parakeet` (or Speech → Local STT model) selects the on-device model. Wake spotting cannot use Ink-2.
 
-Ink-2 is **not a live stream**. The 120s idle timer is only sleep. After GREEN:
+Cartesia has two modes after GREEN. The default waits for the locally segmented utterance and a local word check, then uploads the clip; failures fall back to that local transcript. Optional `stt.streaming=true` uploads detected awake audio in ~100 ms chunks while the user speaks, before words/relevance are known. It is active only when `stt.conversation=cartesia`, and is exposed under Speech → Cartesia streaming. Local endpointing sends `finalize`; only final transcript deltas acknowledged by `flush_done` become a prompt. Interim/partial results never trigger actions. Local transcription runs alongside the upload for wake controls and fallback. Wake-addressed commands do not wait for cloud results. Streaming is cancelled when capture is suppressed, the session sleeps, or speaker playback starts. Full local clips remain available after errors or overload; no automatic cloud retry replays a partial transcript.
 
-1. Earshot VAD closes an utterance (with ~320ms preroll).
-2. The selected local STT model must hear speech or a numeric wake code on that clip. Wake-addressed controls stay local for fast interruption.
-3. Ordinary awake speech is then posted asynchronously to Cartesia Ink-2; failures fall back to the local transcript.
+Both modes retain 320 ms pre-roll, use a one-second silence endpoint, and chunk long utterances at 30 seconds with overlap. Noise can be mistaken for voice, especially in streaming mode; there is no claim that a VAD proves human intent. Only local wake detection runs during sleep/output. A rejected awake transcript appears in Activity with its reason, but is excluded from agent history and persisted analytics.
 
-Noise, silence, and unfinished speech never hit the cloud. Utterances over 15s are dropped.
-
-**Compute saving** (`stt.lazy`, default off): the microphone and Earshot VAD always run, and the segmenter already keeps **320ms of audio before the spike**. The local STT session is the expensive part (Canary ~180MB; Parakeet INT8 ~640MB encoder). When this is on, weights load on the first ~160ms of voiced audio (usually while you are still talking) and drop ~45s after you go back to WHITE. First wake after unload can add a fraction of a second if the phrase is shorter than the load. ONNX Runtime itself stays in process; only the selected STT sessions are freed. The Ink-2 word-gate still needs that local model for that one clip.
+**Compute saving** (`stt.lazy`, default off): the microphone and Earshot VAD always run, and the segmenter already keeps **320ms of audio before the spike**. The local STT session is the expensive part (Canary ~180MB; Parakeet INT8 ~640MB encoder). When this is on, weights load on the first ~160ms of voiced audio (usually while you are still talking) and drop ~45s after you go back to WHITE. First wake after unload can add a fraction of a second if the phrase is shorter than the load. ONNX Runtime itself stays in process; only the selected STT sessions are freed. Both Cartesia modes retain local transcription for controls and fallback.
 
 ## Harnesses
 

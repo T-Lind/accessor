@@ -66,6 +66,22 @@ class RuntimeTests(unittest.TestCase):
         app.expect("fixture: and include Chicago please")
         self.assertNotIn("Agent: interrupted", "".join(app.seen))
 
+    def test_streaming_is_opt_in_and_does_not_select_cloud_implicitly(self):
+        self.config("stt.streaming", "true")
+        settings = json.loads((self.home / "settings" / "config.json").read_text(encoding="utf-8"))
+        self.assertTrue(settings["stt"]["streaming"])
+        self.assertEqual(settings["stt"]["conversation"], "local")
+        app = self.app()
+        app.send("29 private analytics sentinel")
+        app.expect("fixture: private analytics sentinel")
+        app.send("/analytics")
+        app.expect("Speech health")
+        app.expect("Latency")
+        app.close()
+        saved = json.loads((self.home / "settings" / "analytics.json").read_text(encoding="utf-8"))
+        self.assertNotIn("session", saved)
+        self.assertNotIn("private analytics sentinel", json.dumps(saved))
+
     def test_alarm_stop_is_an_agent_control_on_every_harness(self):
         for harness in ("codex", "claude", "antigravity"):
             with self.subTest(harness=harness):

@@ -147,6 +147,15 @@ pub struct SpeechState {
     playback: AtomicBool,
 }
 impl SpeechState {
+    pub fn phase(&self) -> Option<&'static str> {
+        if self.active.load(Ordering::SeqCst) {
+            Some("hearing speech")
+        } else if self.pending.load(Ordering::SeqCst) > 0 {
+            Some("transcribing speech")
+        } else {
+            None
+        }
+    }
     pub fn summary(&self) -> String {
         format!(
             "Speech detected: {}; clips awaiting recognition: {}; input processing: {}",
@@ -180,6 +189,7 @@ impl Drop for PendingSpeech {
     }
 }
 pub struct MicFlags {
+    pub streaming: Arc<AtomicBool>,
     pub speech_state: Arc<SpeechState>,
     pub diagnostics: Arc<Diagnostics>,
     pub interrupting: Arc<AtomicBool>,
@@ -363,6 +373,7 @@ struct Chunk {
     at: Instant,
 }
 struct Utterance {
+    streamed: Option<crate::stt_stream::Transcript>,
     during_output: bool,
     _pending: Option<PendingSpeech>,
     started: Instant,
@@ -491,7 +502,9 @@ pub fn listen(
     } else {
         Some(load_asr(assets, &engine_id)?)
     };
+    let runtime = tokio::runtime::Handle::current();
     let MicFlags {
+        streaming,
         speech_state,
         diagnostics,
         interrupting,
@@ -562,6 +575,8 @@ pub fn listen(
     let dsp_warm = warm.clone();
     let dsp_speech = speech_slot.clone();
     let dsp_state = speech_state.clone();
+    let dsp_awake = awake.clone();
+    let dsp_cloud = cloud_stt.clone();
     let reference = crate::echo::connect();
     std::thread::spawn(move || {
         let result = (|| -> Result<()> {
@@ -571,6 +586,7 @@ pub fn listen(
             let mut frames = VecDeque::new();
             let mut detector = earshot::Detector::default();
             let mut segments = Segmenter::new();
+            let mut cloud_live: Option<crate::stt_stream::Live> = None;
             let mut wake_window = WakeWindow::default();
             let mut last_activity = Instant::now();
             let mut speech_run = 0_usize;
@@ -595,6 +611,7 @@ pub fn listen(
                     canceller.clear_capture();
                     frames.clear();
                     segments = Segmenter::new();
+                    cloud_live = None;
                     wake_window = WakeWindow::default();
                     speech_run = 0;
                     last_voice = None;
@@ -632,6 +649,7 @@ pub fn listen(
                             || dsp_state.playback.load(Ordering::SeqCst);
                         if output_active != was_output {
                             segments = Segmenter::new();
+                            cloud_live = None;
                             was_output = output_active;
                             last_voice = None;
                         }
@@ -653,6 +671,7 @@ pub fn listen(
                                 dsp_diagnostics.probes.fetch_add(1, Ordering::Relaxed);
                                 if let Ok(mut slot) = dsp_probe.lock() {
                                     *slot = Some(Utterance {
+                                        streamed: None,
                                         during_output: true,
                                         _pending: None,
                                         started: Instant::now(),
@@ -680,7 +699,19 @@ pub fn listen(
                             });
                             last_activity = Instant::now();
                         }
-                        if let Some(samples) = segments.push(&frame, speech) {
+                        let completed = segments.push(&frame, speech);
+                        let may_stream = !output_active
+                            && dsp_awake.load(Ordering::SeqCst)
+                            && dsp_cloud.load(Ordering::SeqCst)
+                            && streaming.load(Ordering::SeqCst);
+                        if !may_stream {
+                            cloud_live = None;
+                        }
+                        if may_stream && cloud_live.is_none() && segments.voiced >= 1536 {
+                            cloud_live = Some(crate::stt_stream::Live::start(&runtime));
+                        }
+                        if let Some(samples) = completed {
+                            let streamed = cloud_live.take().map(|live| live.finish(&samples));
                             if let Ok(mut slot) = dsp_speech.lock() {
                                 let at = Instant::now();
                                 let started = at
@@ -689,6 +720,7 @@ pub fn listen(
                                     ))
                                     .unwrap_or(at);
                                 let item = Utterance {
+                                    streamed,
                                     started,
                                     samples,
                                     epoch: current_epoch,
@@ -703,6 +735,8 @@ pub fn listen(
                                     let _=dsp_output.try_send(crate::Input::Error("Speech queue filled; some audio could not be retained. Accessor kept listening; please pause while it catches up.".into()));
                                 }
                             }
+                        } else if let Some(live) = &mut cloud_live {
+                            live.update(&segments.current, false);
                         }
                     }
                 }
@@ -786,42 +820,48 @@ pub fn listen(
                 diagnostics.skipped_clips.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
-            if muted.load(Ordering::SeqCst)
-                || u.epoch != epoch.load(Ordering::SeqCst)
-                || u.at.elapsed() > Duration::from_secs(300)
-            {
+            if muted.load(Ordering::SeqCst) || u.epoch != epoch.load(Ordering::SeqCst) {
                 continue;
             }
             last_asr = Instant::now();
+            crate::usage::record_latency("Recognition queue", u.at.elapsed());
             if asr_cloud.load(Ordering::SeqCst) && asr_awake.load(Ordering::SeqCst) {
                 let Some(loaded) = ensure_asr(&mut model, &asr_assets, &loaded_engine, &output)
                 else {
                     break;
                 };
-                match transcribe_asr(loaded, &u.samples) {
-                    Ok(text) if heard_transcript(&text) => {
-                        speech_state.processing(true);
-                        let _ = output.blocking_send(crate::Input::Pcm {
-                            samples: u.samples,
-                            local_text: text,
-                            epoch: u.epoch,
-                            captured_at: u.started,
-                        });
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        let _ = output.try_send(crate::Input::Error(format!(
-                            "Local gate for Ink-2 failed: {e}"
-                        )));
-                        break;
-                    }
+                let began = Instant::now();
+                let decoded = transcribe_asr(loaded, &u.samples);
+                crate::usage::record_stt(&loaded_engine, u.samples.len() as f64 / 16_000.0);
+                crate::usage::record_latency("Local transcription", began.elapsed());
+                let text = decoded.unwrap_or_default();
+                if heard_transcript(&text) || u.streamed.is_some() {
+                    speech_state.processing(true);
+                    let _ = output.blocking_send(crate::Input::Pcm {
+                        streamed: u.streamed,
+                        samples: u.samples,
+                        local_text: text,
+                        epoch: u.epoch,
+                        captured_at: u.started,
+                    });
+                } else {
+                    crate::usage::record_diagnostic("No words recognized");
+                    let _ = output.blocking_send(crate::Input::IgnoredVoice {
+                        text,
+                        reason: "local transcription produced no usable words".into(),
+                        epoch: u.epoch,
+                    });
                 }
                 continue;
             }
             let Some(loaded) = ensure_asr(&mut model, &asr_assets, &loaded_engine, &output) else {
                 break;
             };
-            match transcribe_asr(loaded, &u.samples) {
+            let began = Instant::now();
+            let decoded = transcribe_asr(loaded, &u.samples);
+            crate::usage::record_stt(&loaded_engine, u.samples.len() as f64 / 16_000.0);
+            crate::usage::record_latency("Local transcription", began.elapsed());
+            match decoded {
                 Ok(text)
                     if heard_transcript(&text)
                         && u.epoch == epoch.load(Ordering::SeqCst)
@@ -834,7 +874,16 @@ pub fn listen(
                         captured_at: u.started,
                     });
                 }
-                Ok(_) => {}
+                Ok(text) => {
+                    if asr_awake.load(Ordering::SeqCst) {
+                        crate::usage::record_diagnostic("No words recognized");
+                        let _ = output.blocking_send(crate::Input::IgnoredVoice {
+                            text,
+                            reason: "local transcription produced no usable words".into(),
+                            epoch: u.epoch,
+                        });
+                    }
+                }
                 Err(e) => {
                     let _ =
                         output.try_send(crate::Input::Error(format!("Transcription failed: {e}")));
