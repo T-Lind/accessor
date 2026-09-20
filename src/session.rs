@@ -28,6 +28,9 @@ impl Session {
             grace_until: None,
         }
     }
+    pub fn set_timeout(&mut self, timeout: Duration) {
+        self.timeout = timeout;
+    }
     pub fn active(&self) -> bool {
         self.active
     }

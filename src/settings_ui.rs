@@ -104,6 +104,11 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                 &format!("{:.0}%", s.sounds.sleep * 100.0),
                 Action::Edit("sounds.sleep"),
             ),
+            row(
+                "Alarm",
+                &format!("{:.0}%", s.sounds.alarm * 100.0),
+                Action::Edit("sounds.alarm"),
+            ),
             row("Back", "categories", Action::Open(Page::Home)),
         ],
         Page::Speech => vec![
@@ -163,6 +168,11 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                     "keep local STT in RAM"
                 },
                 Action::Toggle("stt.lazy"),
+            ),
+            row(
+                "Speech volume",
+                &format!("{:.0}%", s.tts.volume * 100.0),
+                Action::Edit("tts.volume"),
             ),
             row("Test voice", "play a sample", Action::Run("/tts test")),
             row("List voices", "", Action::Run("/tts voices")),
@@ -975,7 +985,7 @@ impl Panel {
                 "tts.provider" => "system, kokoro, cartesia, or off. Esc returns.".into(),
                 "tts.local-voice" | "tts.voice" => "Voice ID. Esc returns.".into(),
                 "tts.speed" => "Speed 0.6–1.5. Esc returns.".into(),
-                "sounds.think" | "sounds.wake" | "sounds.sleep" => {
+                "sounds.think" | "sounds.wake" | "sounds.sleep" | "sounds.alarm" | "tts.volume" => {
                     "Volume 0–1.5 (or 0–150%). 0 is silent, 1 is default. Esc returns.".into()
                 }
                 "stt.engine" => engine_picker(s),

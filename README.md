@@ -268,7 +268,7 @@ Accessor stores stable facts and preferences in `memory.json` alongside its sett
 
 Use `/memory` in the console to inspect shared facts. `acc memory list`, `acc memory search "query"`, `acc memory save key "fact" --source "user statement"`, and `acc memory forget key --revision N` inspect and maintain the store from any shell. Add `--scope global` for a personal preference. Corrections require the revision returned by search; new keys use revision 0. File locks and atomic replacement protect concurrent writers. Forget clears text/source and retains a key tombstone, which blocks old agents from recreating that key. It does not erase copies in provider history, backups, native memories, or previously compacted context. Do not mirror Accessor facts into those stores.
 
-`acc mcp` serves memory search/save/forget and durable note/timer/schedule controls over stdio. Codex and Claude launched by Accessor receive a session-specific MCP connection; existing connectors remain available. Startup detects available harnesses and checks Antigravity registration automatically; `acc mcp-install` is also available for manual repair. Connections open when each harness starts. Registration preserves unrelated entries and refuses name collisions. Accessor passes the active workspace to Antigravity's server. Native harness tool permissions still apply. Main and worker prompts include the same memory policy; compaction prompts do not instruct memory retrieval or saving.
+`acc mcp` serves memory, organizer, live session/settings controls, and subscription usage over stdio. Codex and Claude launched by Accessor receive a session-specific MCP connection; existing connectors remain available. Startup detects available harnesses and checks Antigravity registration automatically; `acc mcp-install` is also available for manual repair. Connections open when each harness starts. Registration preserves unrelated entries and refuses name collisions. Accessor passes the active workspace to Antigravity's server. Native harness tool permissions still apply. Main and worker prompts include the same memory policy; compaction prompts do not instruct memory retrieval or saving.
 
 Memory search first filters global/current-project entries and ranks keyword matches locally. `acc memory search "query" --rerank` or MCP `rerank:true` optionally sends the query and at most 20 candidates to Jev using the configured TypeSafe credential. It has a three-second timeout and falls back to local ranking. Reranking orders candidates; it cannot grant permissions or change scope. It is not embedding-based semantic retrieval, so a keyword-free paraphrase can still miss a fact.
 
@@ -276,7 +276,7 @@ Memory search first filters global/current-project entries and ranks keyword mat
 
 ## Speech decisions, streaming, and latency
 
-An ignored awake input now appears in Activity as `Ignored (reason): words`, including Jev's addressed/actionable scores when available. `Heard: ... (checking relevance)` confirms that transcription succeeded before the decision arrives. The status line distinguishes hearing speech, local/cloud transcription, and relevance checking. Rejected words never enter agent history, shared memory, or analytics. Sleeping ambient speech stays hidden; `/stt-test` explicitly shows everything.
+An ignored awake input now appears in Activity as `Ignored (reason): words`, including Jev's addressed/actionable scores when available. Accepted input appears only once as `You`; there is no extra `Heard` line. The status line distinguishes hearing speech, local/cloud transcription, and relevance checking. Rejected words never enter agent history, shared memory, or analytics. Sleeping ambient speech stays hidden; `/stt-test` explicitly shows everything.
 
 Cartesia streaming is optional and off by default. Select Cartesia for **After wake STT**, then enable **Speech → Cartesia streaming**, or run:
 
@@ -288,3 +288,44 @@ acc config set stt.streaming true
 Streaming uploads detected awake speech in roughly 100 ms PCM packets while you talk, including pre-roll. It starts before local words or Jev relevance are known, so subsequently ignored speech can reach Cartesia. Sleep and speaker playback use local wake detection. Accessor still owns the one-second silence endpoint: it finalizes the WebSocket and submits only the complete final transcript. Interim text never triggers actions. The complete local clip/transcript is retained as fallback; overload, disconnects, or missing finals cannot submit a partial cloud request. Wake-addressed local controls bypass waiting for the cloud result. Turning streaming off restores the finished-clip local word check before upload. See [Cartesia's manual streaming protocol](https://docs.cartesia.ai/api-reference/stt/websocket).
 
 `/analytics` compares this run, the past day/week, and lifetime; lists provider calls and estimated costs; and shows accepted/ignored input counts, fallback/cache counts, and median/P95 timings for recognition queues, local/cloud recognition, relevance checks, and synthesis. Historical STT counts may include duplicates from older versions; new transcriptions are counted once per actual local/cloud pass. Analytics writes are batched outside the speech/UI path, and HTTP connections are reused. Costs are built-in estimates, not live quota balances or invoices, and may omit cancelled/failed calls. No speedup is promised for a particular microphone, model, or network; the measured stages show where time is going.
+
+
+### Subscription usage
+
+`/usage` opens a report with consumed-quota bars, percentage used/remaining, absolute reset times and countdowns for **Codex, Claude Code and Antigravity**. It queries all three concurrently, with a 15-second deadline per provider; it sends no model prompt. `acc usage --json` returns the same normalized observations for scripts. `acc usage --cached` avoids network queries. MCP `usage_status` returns cached readings by default; pass `{"refresh":true}` to refresh.
+
+- **Codex:** App Server `account/rateLimits/read`, preferring `rateLimitsByLimitId` over the legacy bucket. Live account limit updates are also captured. Each primary/secondary window is labeled by its actual duration.
+- **Claude Code:** the installed CLI supports a structured `get_usage` control request. This is an **experimental** interface and may change. Accessor requests initialization and usage only, without a model turn or persisted conversation. A non-subscription session can report plan limits unavailable. Unsupported versions or failed queries preserve the prior sample with a visible stale warning. As a fallback, pipe the native status-line JSON into `acc usage --ingest claude`; `rate_limits` may appear only after the first API response. Accessor does not replace your status-line configuration.
+- **Antigravity:** standalone `agy -p /usage`, whose tab-separated report includes model groups, remaining percentages and reset timestamps. It is not sent as a prompt inside an active stream-JSON conversation. Status-line `quota` JSON can also be captured with `acc usage --ingest antigravity`.
+
+Unknown values are **unavailable**, not zero. Observations older than five minutes, past their reset, or retained after a failed refresh are labeled **STALE**. A past reset never silently refills a bar. Only quota fields are stored in `quota-codex.json`, `quota-claude.json`, and `quota-antigravity.json`; raw status-line payloads, transcripts, paths and credentials are not saved. These are observations of the account signed into each CLI and may include use outside Accessor. They remain distinct from `/analytics` cost estimates and `/limits` retry delays.
+
+Interfaces: [Codex App Server](https://learn.chatgpt.com/docs/app-server), [Claude status-line fields](https://code.claude.com/docs/en/statusline), [published Claude SDK experimental usage types](https://app.unpkg.com/@anthropic-ai/claude-agent-sdk@0.3.193/files/sdk.d.ts), [Antigravity headless commands](https://antigravity.google/docs/cli/headless/), [Antigravity status line](https://antigravity.google/docs/cli/statusline/).
+
+### Settings through MCP
+
+An agent can call `settings_read`, then `settings_update` with a `changes` object. For example:
+
+```json
+{"changes":{"tts.speed":1.2,"tts.volume":0.7,"sounds.think":0.3,"sounds.alarm":0.8}}
+```
+
+Supported preferences include speech provider/voice/model/speed/volume, spoken replies/progress, wake/sleep/think/alarm volumes, barge-in, idle timeout, display mode, after-wake STT/streaming/relevance, and main/coding/plugin harness/model/reasoning. Speed accepts 0.6–1.5; volumes accept 0–1.5 (0 is silent, 1 is normal). Speech gain is applied at playback, before echo-reference submission, so cached voices use the selected volume too.
+
+Main uses `routing.main`, `routing.main-model`, `routing.reasoning`; coding uses `routing.coding`, `model`, `routing.coding-reasoning`; plugin preferences use `agent`, `routing.plugin-model`, `routing.plugin-reasoning`, and `routing.plugin-use-main`. Set the last one to true to inherit main. Change harness and model together, or set a model to `default`; available harnesses are included in `settings_read`. Reasoning values are default/low/medium/high. This selects a connector preference; it does not install plugins or connect/authorize accounts.
+
+A patch is validated before any field is saved. Main's attached connection receives a receipt after applying the patch. Voice changes affect subsequent playback; harness/model/reasoning changes affect the next turn and leave the current caller running. A standalone or worker MCP connection saves preferences for the next launch, explicitly reporting that running sessions are unchanged. Credentials, executable paths, arbitrary prompts and approval policy are outside this tool's scope. No live connection failure silently falls back to an offline save.
+
+Agents should discover and use Accessor's MCP memory tools rather than shelling out to `acc memory` from a read-only sandbox. Codex's server catalog is checked after connection; failures are surfaced in Activity. The CLI memory command is still available for direct human use. A denied shell write does not establish that MCP memory is broken.
+
+### Which speech paths stream today?
+
+| Provider offered by Accessor | Current Accessor behavior |
+| --- | --- |
+| Cartesia Ink-2 STT | Optional live PCM WebSocket upload while awake; only finalized transcripts go to the agent. |
+| Canary / Parakeet TDT / Whisper STT | Local decoding of completed utterance chunks, plus rolling local wake checks. No incremental transcript stream. |
+| Cartesia TTS | Sentence-sized synthesis with the next chunk prefetched; each chunk is buffered before playback. The provider supports WebSocket audio streaming, but Accessor does not yet use it for TTS. |
+| Kokoro TTS | Persistent local worker, sentence-sized synthesis and prefetch; completed WAV chunks before playback. |
+| System TTS | OS synthesis into a completed WAV chunk before playback. |
+
+Only Cartesia STT currently has a true live audio stream in Accessor. Sentence chunking/prefetch improves TTS latency but is distinct from playing incoming audio packets. A future TTS stream must keep cancellation, the speech capture hold, and echo-reference timing intact. See [Cartesia TTS WebSocket](https://docs.cartesia.ai/api-reference/tts/websocket).

@@ -447,6 +447,27 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 let stopped=alarm.take().is_some();ui.message(if stopped {"MCP: alarm stopped."}else{"MCP: no alarm is ringing."});
                                 serde_json::json!({"stopped":stopped,"receipt":if stopped {"Alarm stopped"}else{"No alarm is ringing"}})
                             },
+                            crate::control::Action::SettingsRead=>crate::settings_api::read(&settings),
+                            crate::control::Action::SettingsUpdate{changes}=>{
+                                match crate::settings_api::save(&settings,&changes) {
+                                    Err(e)=>serde_json::json!({"error":format!("{e:#}")}),
+                                    Ok(next)=>{
+                                        settings=next;
+                                        speak=settings.speak;
+                                        cloud_stt.store(settings.stt.conversation=="cartesia",Ordering::SeqCst);
+                                        streaming_stt.store(settings.stt.streaming,Ordering::SeqCst);
+                                        ui.set_chat(&settings.chat);
+                                        if !speak {speech_queue.clear();speaker=None;echo_guard.finish();}
+                                        if changes.get("sounds.think").is_some() {think=None;}
+                                        if changes.get("idle-seconds").is_some() {session.set_timeout(Duration::from_secs(settings.idle_seconds));}
+                                        if changes.get("routing.main").is_some() || changes.get("routing.main-model").is_some() {session_pin=None;}
+                                        muted.store(panel.is_some() || pending_secret.is_some() || wizard.is_some() || (speaker.is_some() && !settings.barge_in),Ordering::SeqCst);
+                                        let keys=changes.as_object().unwrap().keys().cloned().collect::<Vec<_>>().join(", ");
+                                        ui.message(format!("MCP: settings saved ({keys}). Voice changes apply to next playback; agent changes to the next turn."));
+                                        serde_json::json!({"receipt":"Saved and applied to this Accessor session. Voice changes affect next playback; harness/model/reasoning changes affect next turn. Running work is unchanged.","settings":crate::settings_api::read(&settings)})
+                                    }
+                                }
+                            },
                             crate::control::Action::Status=>serde_json::json!({"awake":session.active(),"busy":busy || worker.is_some(),"speaking":speaker.is_some(),"alarm_ringing":alarm.is_some(),"barge_in":settings.barge_in,"wake_checks":wake_checks,"wake_hits":wake_hits,"wake_echoes":wake_echoes,"wake_decode_ms":wake_decode_ms,"audio":audio_diagnostics.summary(),"speech":speech_state.summary(),"capture_paused":muted.load(Ordering::SeqCst),"wake_errors":wake_errors}),
                         };
                         let _=request.reply.send(result);continue;
@@ -929,7 +950,6 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 let tx=input_tx.clone();let history=transcript.iter().cloned().collect::<Vec<_>>();
                                 let captured_epoch=epoch.load(Ordering::SeqCst);
                                 let addressed=spoken_addressed || wake_listening;
-                                ui.message(format!("Heard: {} (checking relevance)",safe(&raw_voice)));
                                 gate_job=Some(tokio::spawn(async move {
                                     let decision=crate::route::relevant_input(&text,&history,addressed).await;
                                     let _=tx.send(Input::GatedVoice{decision,text:raw_voice,epoch:captured_epoch,captured_at:voice_capture.1}).await;
@@ -1027,7 +1047,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 compaction=Some(CompactionJob::start(transcript.iter().cloned().collect(),&settings,args.codex_bin.as_ref()));
                             }
                         }
-                        let instructions=format!("{}\n\n{}",settings.prompt,crate::route::handoff_guide(&settings,&models));
+                        let instructions=format!("{}\n\n{}\nMain reasoning preference: {}",settings.prompt,crate::route::handoff_guide(&settings,&models),settings.routing.reasoning);
                         let restart=agents.get(&target.harness).is_some_and(|live|
                             live.instructions!=instructions || live.task.is_finished() || (target.harness!="codex" && live.model!=target.model));
                         if restart {
@@ -1323,7 +1343,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                         Ok(items)=>{organizer_error_warned=false;for item in items {match item {
                             crate::organizer::Due::Alarm(item)=>{
                                 alarm=None;
-                                match audio::alarm(settings.sounds.wake) {
+                                match audio::alarm(settings.sounds.alarm) {
                                     Ok(cue)=>{alarm=Some(cue);ui.message(format!("[ALARM {}: {}] Say 29 stop the alarm.",item.id,item.label));}
                                     Err(e)=>ui.message(format!("Alarm {} could not play: {e:#}",item.id)),
                                 }

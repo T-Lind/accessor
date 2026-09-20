@@ -21,6 +21,16 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
+    /// Subscription quota bars and resets; no model request is generated.
+    Usage {
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        cached: bool,
+        /// Read status-line JSON from stdin (claude, antigravity, codex).
+        #[arg(long)]
+        ingest: Option<String>,
+    },
     /// Serve shared memory and durable organizer tools over local MCP stdio.
     Mcp {
         #[arg(long)]
@@ -344,6 +354,27 @@ fn normalized(mut args: Vec<OsString>) -> Vec<OsString> {
 pub async fn entry() -> Result<()> {
     let cli = Cli::parse_from(normalized(std::env::args_os().collect()));
     match cli.command {
+        Commands::Usage {
+            json,
+            cached,
+            ingest,
+        } => {
+            if let Some(harness) = ingest {
+                use std::io::Read;
+                let mut bytes = Vec::new();
+                std::io::stdin().take(1_048_577).read_to_end(&mut bytes)?;
+                ensure!(bytes.len() <= 1_048_576, "Status-line payload too large");
+                crate::quota::ingest(&harness, &serde_json::from_slice(&bytes)?)?;
+                return Ok(());
+            }
+            let snapshot = crate::quota::snapshot(!cached).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&snapshot)?);
+            } else {
+                println!("{}", crate::quota::report(&snapshot));
+            }
+            Ok(())
+        }
         Commands::Mcp { workspace } => {
             crate::mcp::serve(
                 &workspace

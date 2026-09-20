@@ -1423,8 +1423,16 @@ pub fn decode_wav(bytes: &[u8]) -> Result<(u32, Vec<f32>)> {
     Ok((sample_rate, samples))
 }
 
-pub fn play_wav(bytes: &[u8], stop: &AtomicBool, paused: Arc<AtomicBool>) -> Result<()> {
-    let (sample_rate, samples) = decode_wav(bytes)?;
+pub fn play_wav(
+    bytes: &[u8],
+    stop: &AtomicBool,
+    paused: Arc<AtomicBool>,
+    volume: f32,
+) -> Result<()> {
+    let (sample_rate, mut samples) = decode_wav(bytes)?;
+    for sample in &mut samples {
+        *sample = (*sample * volume.clamp(0.0, 1.5)).clamp(-1.0, 1.0);
+    }
     let device = cpal::default_host()
         .default_output_device()
         .context("No output device")?;

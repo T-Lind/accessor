@@ -24,6 +24,10 @@ for line in sys.stdin:
         send({"id": msg["id"], "result": {"thread": {"id": "thread-1"}}})
     elif method == "model/list":
         send({"id": msg["id"], "result": {"data": [{"id":"fixture-astra","model":"fixture-astra","displayName":"Fixture Astra"},{"id":"fixture-sol","model":"fixture-sol","displayName":"Fixture Sol"}], "nextCursor":None}})
+    elif method == "account/rateLimits/read":
+        send({"id":msg["id"],"result":{"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":27,"windowDurationMins":300,"resetsAt":2000000000},"secondary":{"usedPercent":39,"windowDurationMins":10080,"resetsAt":2000100000}}}}})
+    elif method == "mcpServerStatus/list":
+        send({"id":msg["id"],"result":{"data":[{"name":"accessor","tools":{"memory_save":{}},"toolsError":None}]}})
     elif method == "turn/start":
         send({"id": msg["id"], "result": {"turn": {"id": "turn-1"}}})
         send({"method": "turn/started", "params": {"turn": {"id": "turn-1"}}})

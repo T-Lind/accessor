@@ -241,7 +241,7 @@ pub fn start(text: String, settings: Tts, capture: Arc<crate::audio::SpeechState
             tokio::task::spawn_blocking(move || {
                 capture.playback(true);
                 playback.store(true, Ordering::SeqCst);
-                let result = crate::audio::play_wav(&wav, &flag, pause);
+                let result = crate::audio::play_wav(&wav, &flag, pause, settings.volume);
                 playback.store(false, Ordering::SeqCst);
                 capture.playback(false);
                 result

@@ -15,6 +15,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/devices", "List microphones"),
     ("/connectors", "Show agent connections"),
     ("/analytics", "Lifetime and past-week cost/call breakdown"),
+    ("/usage", "Subscription quota bars and reset times"),
     ("/limits", "Observed provider limits and retry delays"),
     ("/worker-approve", "Approve a worker request by number"),
     ("/worker-deny", "Decline a worker request by number"),
@@ -137,6 +138,7 @@ pub fn parse(text: &str, s: &Settings) -> Result<Option<LocalCommand>> {
             LocalCommand::Utility(vec!["connectors".into(), "status".into()])
         }
         ["/analytics"] => LocalCommand::Analytics,
+        ["/usage"] => LocalCommand::Utility(vec!["usage".into()]),
         ["/context"] => LocalCommand::Context,
         ["/compact"] => LocalCommand::Compact,
         ["/update"] => LocalCommand::Update { check: false },

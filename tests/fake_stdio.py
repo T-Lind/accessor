@@ -4,6 +4,21 @@ import sys
 from control_fixtures import control_reply
 
 kind = sys.argv[1]
+if "--print-timeout" in sys.argv and "/usage" in sys.argv:
+    assert kind == "antigravity"
+    print("Gemini Models\tWeekly Limit Remaining\t81%\t2033-05-18T03:33:20Z", flush=True)
+    sys.exit(0)
+if "--no-session-persistence" in sys.argv:
+    assert kind == "claude"
+    for line in sys.stdin:
+        request = json.loads(line)
+        assert request["type"] == "control_request"  # No model turn allowed.
+        result = {} if request["request"]["subtype"] == "initialize" else {
+            "rate_limits_available": True,
+            "rate_limits": {"five_hour": {"utilization":42,"resets_at":"2033-05-18T03:33:20Z"}, "seven_day":None},
+        }
+        print(json.dumps({"type":"control_response","response":{"subtype":"success","request_id":request["request_id"],"response":result}}),flush=True)
+    sys.exit(0)
 assert "--effort" in sys.argv, sys.argv
 assert "--model" in sys.argv, sys.argv
 assert "--dangerously-skip-permissions" not in sys.argv

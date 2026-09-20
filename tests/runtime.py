@@ -57,6 +57,21 @@ class RuntimeTests(unittest.TestCase):
         app.expect("fixture: first part of the request")
         app.expect("Additional user speech: and the second part")
 
+    def test_subscription_quota_queries_all_harnesses_without_model_turns(self):
+        self.config("codex-bin",str(self.codex))
+        result=self.cli("usage","--json")
+        rows=json.loads(result.stdout)["providers"]
+        self.assertEqual([p["harness"] for p in rows],["codex","claude","antigravity"])
+        self.assertTrue(all(p["available"] and not p["stale"] for p in rows),rows)
+        self.assertEqual(rows[0]["buckets"][0]["remaining_percent"],73)
+        self.assertEqual(rows[1]["buckets"][0]["remaining_percent"],58)
+        self.assertEqual(rows[2]["buckets"][0]["remaining_percent"],81)
+        app=self.app()
+        app.send("/usage")
+        app.expect("SUBSCRIPTION USAGE")
+        app.expect("73% left")
+        app.expect("Resets:")
+
     def test_continuation_while_thinking_needs_no_wake_code(self):
         app = self.app()
         app.send("29 hold")
@@ -100,11 +115,11 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(len(sessions), 1)
         attached = dict(self.env, ACC_CONTROL_ENDPOINT=sessions[0].read_text(encoding="utf-8"))
 
-        def control(action):
+        def control(action, tool="session_control", arguments=None):
             frames = [
                 {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25"}},
                 {"jsonrpc": "2.0", "method": "notifications/initialized"},
-                {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "session_control", "arguments": {"action": action}}},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": tool, "arguments": arguments if arguments is not None else {"action": action}}},
             ]
             result = subprocess.run([str(BINARY), "mcp"], input="".join(json.dumps(f)+"\n" for f in frames),
                                     cwd=ROOT, env=attached, capture_output=True, text=True, encoding="utf-8", timeout=10)
@@ -114,6 +129,10 @@ class RuntimeTests(unittest.TestCase):
             return json.loads(reply["content"][0]["text"])
 
         self.assertTrue(control("status")["awake"])
+        changed=control(None,"settings_update",{"changes":{"tts.speed":1.2,"routing.reasoning":"high","sounds.think":0}})
+        self.assertIn("next turn",changed["receipt"])
+        self.assertEqual(control(None,"settings_read",{})["values"]["routing.reasoning"],"high")
+        self.assertTrue(control("status")["busy"])  # Updating settings never aborts its caller.
         self.assertFalse(control("sleep")["awake"])
         app.expect("MCP: asleep")
         self.assertFalse(control("status")["awake"])

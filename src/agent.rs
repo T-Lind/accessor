@@ -224,6 +224,12 @@ async fn codex(
                         continue;
                     }
                     match method {
+                        "account/rateLimits/updated" => crate::quota::observe("codex",&msg["params"]),
+                        "mcpServer/startupStatus/updated" => {
+                            if msg["params"]["server"]=="accessor" && msg["params"]["status"]=="failed" {
+                                events.send(Event::Note("Accessor MCP failed to start; shared memory and controls are unavailable. Restart Accessor and check its executable/configuration.".into())).await?;
+                            }
+                        }
                         "turn/started" => {
                             turn = msg["params"]["turn"]["id"].as_str().map(str::to_owned);
                             turn_starting = false;
@@ -275,7 +281,14 @@ async fn codex(
                     } else if id == 2 {
                         thread = msg["result"]["thread"]["id"].as_str().map(str::to_owned);
                         if thread.is_none() { bail!("Codex did not return a thread id"); }
+                        if options.shared_memory {write(&mut stdin,json!({"id":3,"method":"mcpServerStatus/list","params":{"limit":100}})).await?;}
                         events.send(Event::Ready).await?;
+                    } else if id==3 {
+                        if let Some(server)=msg["result"]["data"].as_array().and_then(|rows|rows.iter().find(|r|r["name"]=="accessor")) {
+                            if !server["tools"].is_object() || server["toolsError"].is_string() || server["tools"]["memory_save"].is_null() {
+                                events.send(Event::Note("Accessor MCP memory tools are unavailable. Restart Accessor and inspect the native MCP status; a shell write is not a substitute.".into())).await?;
+                            }
+                        }
                     } else if requests.remove(&id) == Some("turn/start") {
                         turn = msg["result"]["turn"]["id"].as_str().map(str::to_owned);
                         turn_starting = false;
@@ -672,6 +685,7 @@ async fn stdio_agent(
                     }
                     continue;
                 };
+                crate::quota::observe(if name=="Claude Code" {"claude"}else{"antigravity"}, &msg);
                 match parse_stream_line(&msg) {
                     StreamLine::Skip => {}
                     StreamLine::Tool(text) => events.send(Event::Tool(text)).await?,
