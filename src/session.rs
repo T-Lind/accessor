@@ -72,13 +72,13 @@ impl Session {
         }
         let text = prefix.unwrap_or(text).trim();
         self.last = now;
-        let control = text
-            .trim_matches(|c: char| c.is_ascii_punctuation())
-            .to_lowercase();
-        if is_sleep(&control) {
+        if is_sleep(text) {
             self.close();
             return Action::Disconnect;
         }
+        let control = text
+            .trim_matches(|c: char| c.is_ascii_punctuation())
+            .to_lowercase();
         match control.as_str() {
             "stop" => {
                 self.close();
@@ -114,11 +114,84 @@ fn stop_replacement(text: &str) -> Option<&str> {
 }
 
 fn is_sleep(text: &str) -> bool {
-    matches!(
-        text,
-        "disconnect" | "sleep" | "go to sleep" | "go back to sleep" | "good night" | "goodnight"
-    ) || text.ends_with(" go to sleep")
-        || text.ends_with(" go back to sleep")
+    let clean = text.trim().to_lowercase();
+    let words: Vec<&str> = clean
+        .split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .filter(|w| !w.is_empty())
+        .collect();
+
+    if words.is_empty() {
+        return false;
+    }
+
+    if matches!(
+        clean.trim_matches(|c: char| !c.is_alphabetic()),
+        "disconnect"
+            | "sleep"
+            | "go to sleep"
+            | "go back to sleep"
+            | "good night"
+            | "goodnight"
+            | "stop listening"
+            | "go to bed"
+    ) {
+        return true;
+    }
+
+    // Do not treat as sleep if it looks like a question or coding instruction
+    if words.iter().any(|w| {
+        matches!(
+            *w,
+            "how"
+                | "why"
+                | "what"
+                | "write"
+                | "explain"
+                | "code"
+                | "function"
+                | "script"
+                | "thread"
+        )
+    }) {
+        return false;
+    }
+
+    let sleep_patterns: &[&[&str]] = &[
+        &["go", "to", "sleep"],
+        &["go", "back", "to", "sleep"],
+        &["stop", "listening"],
+        &["go", "to", "bed"],
+        &["disconnect"],
+        &["good", "night"],
+        &["goodnight"],
+    ];
+
+    let allowed_trailing: &[&str] = &[
+        "now", "please", "then", "thanks", "thank", "you", "ok", "okay", "for", "bye", "goodbye",
+        "goodnight", "night",
+    ];
+
+    for pattern in sleep_patterns {
+        if let Some(pos) = words.windows(pattern.len()).position(|window| window == *pattern) {
+            let after = &words[pos + pattern.len()..];
+            if after.iter().all(|w| allowed_trailing.contains(w)) {
+                return true;
+            }
+        }
+    }
+
+    if let Some(pos) = words.iter().position(|w| *w == "sleep") {
+        let before = &words[..pos];
+        let after = &words[pos + 1..];
+        let allowed_before = &["please", "you", "can", "now", "just", "time", "to", "and"];
+        if before.iter().all(|w| allowed_before.contains(w))
+            && after.iter().all(|w| allowed_trailing.contains(w))
+        {
+            return true;
+        }
+    }
+
+    false
 }
 
 #[cfg(test)]
@@ -232,5 +305,33 @@ mod tests {
         assert_eq!(s.hear("unmute", now), Action::Prompt("unmute".into()));
         assert_eq!(s.hear("go to sleep", now), Action::Disconnect);
         assert_eq!(s.hear("29", now), Action::Open);
+    }
+
+    #[test]
+    fn conversational_sleep_commands_disconnect() {
+        let now = Instant::now();
+        let mut s = Session::new(WakeCode::new("29", &[]).unwrap(), Duration::from_secs(120));
+        assert_eq!(s.hear("29", now), Action::Open);
+        assert!(s.active());
+        assert_eq!(
+            s.hear("just um, that's fine, go to sleep", now),
+            Action::Disconnect
+        );
+        assert!(!s.active());
+
+        assert_eq!(s.hear("29", now), Action::Open);
+        assert_eq!(
+            s.hear("that's all, go to sleep now", now),
+            Action::Disconnect
+        );
+
+        assert_eq!(s.hear("29", now), Action::Open);
+        assert_eq!(s.hear("stop listening", now), Action::Disconnect);
+
+        assert_eq!(s.hear("29", now), Action::Open);
+        assert_eq!(
+            s.hear("how do I make a thread go to sleep in rust?", now),
+            Action::Prompt("how do I make a thread go to sleep in rust?".into())
+        );
     }
 }
