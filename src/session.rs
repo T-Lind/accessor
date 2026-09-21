@@ -181,12 +181,26 @@ fn is_sleep(text: &str) -> bool {
     ];
 
     let allowed_trailing: &[&str] = &[
-        "now", "please", "then", "thanks", "thank", "you", "ok", "okay", "for", "bye", "goodbye",
-        "goodnight", "night",
+        "now",
+        "please",
+        "then",
+        "thanks",
+        "thank",
+        "you",
+        "ok",
+        "okay",
+        "for",
+        "bye",
+        "goodbye",
+        "goodnight",
+        "night",
     ];
 
     for pattern in sleep_patterns {
-        if let Some(pos) = words.windows(pattern.len()).position(|window| window == *pattern) {
+        if let Some(pos) = words
+            .windows(pattern.len())
+            .position(|window| window == *pattern)
+        {
             let after = &words[pos + pattern.len()..];
             if after.iter().all(|w| allowed_trailing.contains(w)) {
                 return true;

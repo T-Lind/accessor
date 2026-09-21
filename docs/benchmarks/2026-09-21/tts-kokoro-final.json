@@ -1,0 +1,30 @@
+{
+  "note": "No disk/memory audio cache, no playback. First run includes connection/worker startup. First byte is network arrival, not audible playback.",
+  "provider": "kokoro",
+  "runs": [
+    {
+      "audio_seconds": 2.6886666666666668,
+      "first_byte_ms": null,
+      "real_time_factor": 4.981071162906025,
+      "total_ms": 13392.44
+    },
+    {
+      "audio_seconds": 2.6886666666666668,
+      "first_byte_ms": null,
+      "real_time_factor": 1.4517827175799651,
+      "total_ms": 3903.3598
+    },
+    {
+      "audio_seconds": 2.6886666666666668,
+      "first_byte_ms": null,
+      "real_time_factor": 1.0600852219191668,
+      "total_ms": 2850.2158
+    },
+    {
+      "audio_seconds": 2.6886666666666668,
+      "first_byte_ms": null,
+      "real_time_factor": 1.0262898462682866,
+      "total_ms": 2759.3513000000003
+    }
+  ]
+}

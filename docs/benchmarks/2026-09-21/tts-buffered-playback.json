@@ -1,0 +1,19 @@
+{
+  "note": "Plays synthetic test text. Software playback flag timing, not an acoustic measurement; includes device/connection startup. Audio cache cleared each run.",
+  "provider": "cartesia",
+  "runs": [
+    {
+      "complete_ms": 4666.7444,
+      "playback_started_ms": 978.9717999999999
+    },
+    {
+      "complete_ms": 3326.4163999999996,
+      "playback_started_ms": 841.7937
+    },
+    {
+      "complete_ms": 2980.0896999999995,
+      "playback_started_ms": 720.0313
+    }
+  ],
+  "streaming": false
+}

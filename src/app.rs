@@ -97,7 +97,11 @@ fn banner(state: BannerState, identity: &str) -> String {
 }
 
 pub async fn run(mut args: Run) -> Result<()> {
+    let _instance = crate::auth::Instance::acquire()?;
     let mut settings = config::Settings::load()?;
+    let mut access = crate::auth::Lock::load()?;
+    let mut lock_requested = access.locked();
+    let mut password_entry: Option<crate::auth::Entry> = None;
     if let Some(backend) = args.agent {
         let name = if backend == Backend::Mock {
             "mock"
@@ -215,6 +219,7 @@ pub async fn run(mut args: Run) -> Result<()> {
     let lazy_stt = Arc::new(AtomicBool::new(settings.stt.lazy));
     let streaming_stt = Arc::new(AtomicBool::new(settings.stt.streaming));
     let stt_engine = Arc::new(Mutex::new(settings.stt.engine.clone()));
+    let endpoint_ms = Arc::new(AtomicU64::new(settings.stt.endpoint_ms));
     let (input_tx, mut input_rx) = mpsc::channel(16);
     let control_bridge = crate::control::Bridge::start(input_tx.clone()).await?;
     let found = config::harness_offers(&settings, args.codex_bin.as_ref());
@@ -235,6 +240,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                 .or(settings.microphone.as_deref()),
             input_tx.clone(),
             audio::MicFlags {
+                endpoint_ms: endpoint_ms.clone(),
                 streaming: streaming_stt.clone(),
                 speech_state: speech_state.clone(),
                 diagnostics: audio_diagnostics.clone(),
@@ -327,25 +333,131 @@ pub async fn run(mut args: Run) -> Result<()> {
     ));
     ui.message("Type / for commands, /settings to configure, /tts to choose a voice, or a message to talk to the agent.");
     ui.message("Approvals only accept typed commands. Ignored awake input appears in Activity with its reason; it is not added to agent history or saved in analytics. Sleeping ambient speech stays hidden.");
-    ui.status(&banner(
-        BannerState {
-            active: session.active(),
-            busy,
-            alarm: false,
-            approval,
-            speaking: speaker.is_some(),
-            settings_open: false,
-            setup: false,
-            mic_unavailable,
-        },
-        &identity_status(&active_harness, active_model.as_deref()),
-    ));
+    ui.status(&if access.locked() {
+        "LOCKED · local unlock only · /unlock".into()
+    } else {
+        banner(
+            BannerState {
+                active: session.active(),
+                busy,
+                alarm: false,
+                approval,
+                speaking: speaker.is_some(),
+                settings_open: false,
+                setup: false,
+                mic_unavailable,
+            },
+            &identity_status(&active_harness, active_model.as_deref()),
+        )
+    });
     let mut wizard: Option<crate::dashboard::Wizard> = None;
     let mut pending_secret: Option<&'static str> = None;
     let mut utility: Option<tokio::task::JoinHandle<Result<String>>> = None;
     let mut speech_queue = VecDeque::<String>::new();
     let mut wake_listening = false;
     loop {
+        endpoint_ms.store(settings.stt.endpoint_ms, Ordering::Relaxed);
+        if lock_requested || access.expired(settings.security.lock_seconds, Instant::now()) {
+            let discard_pending = epoch.load(Ordering::SeqCst) != 0;
+            lock_requested = false;
+            access.lock();
+            // Revoke access before cancelling anything that can still produce output.
+            awake.store(false, Ordering::SeqCst);
+            cloud_stt.store(false, Ordering::SeqCst);
+            streaming_stt.store(false, Ordering::SeqCst);
+            epoch.fetch_add(1, Ordering::SeqCst);
+            session.close();
+            wake_listening = false;
+            for (_, live) in agents.drain() {
+                live.task.abort();
+            }
+            agent_tx = None;
+            connected = false;
+            busy = false;
+            approval = false;
+            worker = None;
+            worker_approval = false;
+            speaker = None;
+            speech_queue.clear();
+            think = None;
+            alarm = None;
+            speech::clear_memory_cache();
+            echo_guard.finish();
+            silence_reply = true;
+            cancelled_turn = false;
+            cancel_started = None;
+            if let Some(job) = compaction.take() {
+                job.task.abort();
+            }
+            if let Some(job) = utility.take() {
+                job.abort();
+            }
+            if let Some(job) = model_lookup.take() {
+                job.abort();
+            }
+            if let Some(job) = stt_download.take() {
+                job.abort();
+            }
+            pending_prompt = None;
+            pending_setting = None;
+            pending_handoff = None;
+            pending_stt = None;
+            feedback.clear();
+            panel = None;
+            wizard = None;
+            pending_secret = None;
+            password_entry = None;
+            last_wake_probe.clear();
+            // Previously claimed work is interrupted, never silently replayed after unlock.
+            for task in waiting_tasks.drain(..) {
+                crate::organizer::finish_run(
+                    &task.id,
+                    "interrupted by lock; inspect before retrying",
+                )?;
+            }
+            for event in [current_event.take(), waiting_event.take()]
+                .into_iter()
+                .flatten()
+            {
+                if let Some(queue) = &event_queue {
+                    queue.finish(&event, false)?;
+                }
+            }
+            if discard_pending {
+                loop {
+                    let Ok(input) = input_rx.try_recv() else {
+                        break;
+                    };
+                    match input {
+                        Input::Eof => eof = args.text,
+                        Input::Control(request) => {
+                            let _ = request
+                                .reply
+                                .send(serde_json::json!({"error":"Accessor is locked"}));
+                        }
+                        Input::Scheduled(task) => {
+                            crate::organizer::finish_run(
+                                &task.id,
+                                "interrupted by lock; inspect before retrying",
+                            )?;
+                        }
+                        Input::Trigger(event) => {
+                            if let Some(queue) = &event_queue {
+                                queue.finish(&event, false)?;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            ui.clear_private();
+            ui.secret(false);
+            if cues {
+                let _ = audio::sleep_chime(settings.sounds.sleep);
+            }
+            muted.store(!settings.security.spoken_unlock, Ordering::SeqCst);
+            ui.message("Locked. Work and playback stopped; scheduled tasks and events wait. Use /unlock or say your wake code, unlock, then your passphrase. Prior external actions cannot be undone.");
+        }
         let current_voice_epoch = epoch.load(Ordering::SeqCst);
         if voice_epoch != current_voice_epoch {
             voice_epoch = current_voice_epoch;
@@ -363,9 +475,17 @@ pub async fn run(mut args: Run) -> Result<()> {
                 || gate_job.is_some()
                 || cloud_job.is_some(),
         );
-        awake.store(session.active(), Ordering::SeqCst);
+        awake.store(!access.locked() && session.active(), Ordering::SeqCst);
+        if password_entry.is_some() {
+            muted.store(true, Ordering::SeqCst);
+        }
+        if access.locked() {
+            cloud_stt.store(false, Ordering::SeqCst);
+            streaming_stt.store(false, Ordering::SeqCst);
+        }
         interrupting.store(
-            settings.barge_in
+            !access.locked()
+                && settings.barge_in
                 && !mic_unavailable
                 && panel.is_none()
                 && pending_secret.is_none()
@@ -398,7 +518,9 @@ pub async fn run(mut args: Run) -> Result<()> {
         } else {
             speech_state.phase()
         };
-        ui.status(&if let Some(phase) = phase.filter(|_| session.active()) {
+        ui.status(&if access.locked() {
+            "LOCKED · local unlock only · /unlock".into()
+        } else if let Some(phase) = phase.filter(|_| session.active()) {
             status.replacen(" | ", &format!(" · {phase} | "), 1)
         } else {
             status
@@ -411,6 +533,113 @@ pub async fn run(mut args: Run) -> Result<()> {
                 if gate_job.is_none() && cloud_job.is_none() && !voice_inbox.is_empty() {voice_inbox.pop_front()} else {input_rx.recv().await}
             }, if !eof || !input_rx.is_empty() || !voice_inbox.is_empty() => {
                 let Some(input) = input else { break; };
+                // The authorization gate precedes every diagnostic, cloud call, command,
+                // queue and transcript path. Only locally decoded speech can unlock.
+                let auth_wake = wake::WakeCode::new(&settings.wake_code, &args.wake_alias)?;
+                let auth_text = match &input {
+                    Input::Text(text) => Some((text.as_str(), true)),
+                    Input::Voice { text, epoch: e, .. } if *e == epoch.load(Ordering::SeqCst) && !muted.load(Ordering::SeqCst) => Some((text.as_str(), false)),
+                    Input::Pcm { local_text, epoch: e, .. } if *e == epoch.load(Ordering::SeqCst) && !muted.load(Ordering::SeqCst) => Some((local_text.as_str(), false)),
+                    _ => None,
+                };
+                if let Some((text, typed)) = auth_text {
+                    if typed && text.trim() == "/quit" { break; }
+                    if typed && text.trim() == "/lock" {
+                        if access.enabled() { lock_requested = true; } else { ui.message("Set a passphrase with /password before locking."); }
+                        continue;
+                    }
+                    if typed && password_entry.is_some() {
+                        let entry = password_entry.take().unwrap();
+                        let phrase = zeroize::Zeroizing::new(text.to_owned());
+                        if text.trim() == "/cancel" {
+                            ui.message("Password entry cancelled.");
+                        } else {
+                            match entry {
+                                crate::auth::Entry::Unlock => match access.verify(&phrase) {
+                                    Ok(true) => {
+                                        epoch.fetch_add(1, Ordering::SeqCst);
+                                        cloud_stt.store(settings.stt.conversation == "cartesia", Ordering::SeqCst);
+                                        streaming_stt.store(settings.stt.streaming, Ordering::SeqCst);
+                                        if cues { let _ = audio::chime(settings.sounds.wake); }
+                                        ui.message("Unlocked. Waiting for your wake code.");
+                                    },
+                                    Ok(false) => ui.message("Incorrect passphrase. Use /unlock to try again after the cooldown."),
+                                    Err(e) => ui.message(format!("Could not unlock: {e:#}")),
+                                },
+                                crate::auth::Entry::New => {
+                                    password_entry = Some(crate::auth::Entry::Confirm(phrase));
+                                    ui.message("Repeat the passphrase. Esc cancels.");
+                                },
+                                crate::auth::Entry::Confirm(first) => {
+                                    if crate::auth::normalize(&first) != crate::auth::normalize(&phrase) { ui.message("Passphrases differ; use /password to start again."); }
+                                    else { match access.enroll(&phrase) {
+                                        Ok(()) => { lock_requested = true; ui.message("Password saved. Locking now."); },
+                                        Err(e) => ui.message(format!("Password not saved: {e:#}")),
+                                    }}
+                                },
+                            }
+                        }
+                        ui.secret(password_entry.is_some());
+                        muted.store(password_entry.is_some() || (access.locked() && !settings.security.spoken_unlock), Ordering::SeqCst);
+                        epoch.fetch_add(1, Ordering::SeqCst);
+                        continue;
+                    }
+                    if typed && text.trim() == "/unlock" {
+                        if !access.locked() { ui.message("Already unlocked."); }
+                        else {
+                            password_entry = Some(crate::auth::Entry::Unlock); ui.secret(true);
+                            muted.store(true, Ordering::SeqCst); epoch.fetch_add(1, Ordering::SeqCst);
+                            ui.message("Enter passphrase, then Enter. Esc cancels. Use the dashboard for masked entry; plain terminals may echo input.");
+                        }
+                        continue;
+                    }
+                    if (typed && text.trim() == "/lock") || crate::auth::spoken_lock(&auth_wake, text)
+                        || ((!typed || args.text) && session.active() && crate::auth::normalize(text) == "lock") {
+                        if access.enabled() { lock_requested = true; } else { ui.message("Set a passphrase with /password before locking."); }
+                        continue;
+                    }
+                    if let Some(phrase) = crate::auth::spoken_unlock(&auth_wake, text) {
+                        if !access.locked() { ui.message("Already unlocked."); }
+                        else if settings.security.spoken_unlock && (!typed || args.text) {
+                            match access.verify(phrase) {
+                                Ok(true) => {
+                                    epoch.fetch_add(1, Ordering::SeqCst);
+                                    cloud_stt.store(settings.stt.conversation == "cartesia", Ordering::SeqCst);
+                                    streaming_stt.store(settings.stt.streaming, Ordering::SeqCst);
+                                    if cues { let _ = audio::chime(settings.sounds.wake); }
+                                    ui.message("Unlocked. Waiting for your wake code.");
+                                },
+                                Ok(false) => ui.message("Incorrect passphrase. Wait before trying again."),
+                                Err(e) => ui.message(format!("Could not unlock: {e:#}")),
+                            }
+                        } else { ui.message("Use /unlock for masked keyboard entry."); }
+                        continue;
+                    }
+                    if typed && !access.locked() && matches!(text.trim(), "/password" | "/password remove") {
+                        if text.trim() == "/password remove" { access.remove()?; ui.message("Password removed."); }
+                        else {
+                            panel = None; pending_secret = None; wizard = None; ui.settings(None); session.close();
+                            password_entry = Some(crate::auth::Entry::New); ui.secret(true);
+                            muted.store(true, Ordering::SeqCst); epoch.fetch_add(1, Ordering::SeqCst);
+                            ui.message("Enter at least three words and 12 characters; four unrelated words recommended. Case and punctuation are ignored. Spoken unlock stays local but can be overheard/replayed. Esc cancels.");
+                        }
+                        continue;
+                    }
+                }
+                if access.locked() {
+                    match input {
+                        Input::Control(request) => {
+                            let result = if matches!(request.action, crate::control::Action::Status) { serde_json::json!({"locked":true,"awake":false,"busy":false}) } else { serde_json::json!({"error":"Accessor is locked"}) };
+                            let _ = request.reply.send(result);
+                        },
+                        Input::Eof => { if args.text { eof = true; } },
+                        Input::Text(_) => ui.message("Locked. Use /unlock; other commands require your passphrase."),
+                        Input::Scheduled(task) => { waiting_tasks.push_back(task); },
+                        Input::Trigger(event) => { waiting_event = Some(event); },
+                        _ => {},
+                    }
+                    continue;
+                }
                 if matches!(&input, Input::Voice{..}|Input::Pcm{..}|Input::CloudVoice{..}|Input::GatedVoice{..}) {speech_state.processing(true);}
                 if matches!(&input,Input::Voice{..}|Input::Pcm{..}) && (gate_job.is_some() || cloud_job.is_some()) {
                     if voice_inbox.len()<64 {voice_inbox.push_back(input);} else {ui.message("Speech processing is overloaded; please pause. Some speech could not be queued.");}
@@ -513,6 +742,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                         if error.is_some() {wake_errors+=1;continue;}
                         if !session.wake_in_probe(&text) {continue;}
                         if echo_guard.matches(&text,speaker.is_some()) || echo_guard.recent_matches(speaker.is_some(),|spoken|session.wake_in_probe(spoken)) {wake_echoes+=1;continue;}
+                        if access.enabled() && crate::auth::spoken_lock(&auth_wake, &text) { lock_requested = true; continue; }
                         wake_hits+=1;
                         (settings.wake_code.clone(),false,true,true,None)
                     }
@@ -742,7 +972,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                         }
                                         if spoken_setting && speak {speech_queue.push_back(format!("Selected {key}: {value}."));}
                                         if let Some(menu)=&panel {ui.settings(Some(menu.display(&settings,connected,&models)));}
-                                        if ["microphone","assets-dir","codex-bin"].contains(&key.as_str()) {ui.message("Restart Accessor to apply this device/path change.");}
+                                        if ["microphone","assets-dir","codex-bin","stt.threads","stt.spin"].contains(&key.as_str()) {ui.message("Restart Accessor to apply this device/runtime change.");}
                                     }
                                     Err(e)=>ui.message(format!("Setting not changed: {e:#}")),
                                 }
@@ -763,6 +993,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 ui.message("Checking...");utility=Some(crate::dashboard::utility(command));
                             }
                             LocalCommand::Native=>{
+                                if access.enabled() { ui.message("The native agent CLI is outside Accessor's lock. Use acc connectors setup separately, then return here."); continue; }
                                 if busy || speaker.is_some() {ui.message("Cancel or finish the current task/playback before opening Codex.");continue;}
                                 if !ui.interactive() {ui.message("Run acc connectors setup in an interactive terminal.");continue;}
                                 muted.store(true,Ordering::SeqCst);epoch.fetch_add(1,Ordering::SeqCst);
@@ -1024,7 +1255,13 @@ pub async fn run(mut args: Run) -> Result<()> {
                             }
                         } else {
                             let history: Vec<_> = transcript.iter().cloned().collect();
-                            crate::route::choose(&text, &history, last_route.as_ref(), &settings).await
+                            let choice = crate::route::choose(&text, &history, last_route.as_ref(), &settings);
+                            if let Some(remaining) = access.remaining(settings.security.lock_seconds) {
+                                match tokio::time::timeout(remaining, choice).await {
+                                    Ok(target) => target,
+                                    Err(_) => { lock_requested = true; continue; }
+                                }
+                            } else { choice.await }
                         };
                         if let Some(message)=limits.blocked(&target.harness) {
                             ui.message(message);
@@ -1111,6 +1348,7 @@ pub async fn run(mut args: Run) -> Result<()> {
 
             }
             Some((harness, event)) = events.recv() => {
+                if access.locked() { continue; }
                 if harness.starts_with("worker:") {
                     let Some(w)=worker.as_mut().filter(|w|w.id==harness) else {continue;};
                     match event {
@@ -1314,6 +1552,11 @@ pub async fn run(mut args: Run) -> Result<()> {
 
             }
             _ = tick.tick() => {
+                if access.locked() {
+                    if let Some(text) = ui.input()? { let _ = input_tx.try_send(Input::Text(text)); }
+                    if eof { break; }
+                    continue;
+                }
                 let capture_holding = speech_state.holding() || !input_rx.is_empty();
                 if busy && cancel_started.is_some_and(|at|at.elapsed()>=Duration::from_secs(2)) {
                     if let Some(live)=agents.remove(&active_harness) {live.task.abort();}

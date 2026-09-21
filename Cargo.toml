@@ -37,6 +37,8 @@ pulldown-cmark = "0.13"
 sonora = "=0.2.0"
 tempfile = "3"
 sha2 = "0.10"
+argon2 = "0.5"
+zeroize = "1"
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", features = ["sink"] }
 

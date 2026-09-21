@@ -72,11 +72,16 @@ pub fn request(text: &str, settings: &Tts) -> Value {
     json!({"model_id":settings.model,"transcript":text,"voice":{"mode":"id","id":settings.voice},"language":"en","generation_config":{"speed":settings.speed.clamp(0.6,1.5)},"output_format":{"container":"raw","encoding":"pcm_s16le","sample_rate":16000}})
 }
 pub async fn synthesize(text: &str, settings: &Tts) -> Result<Vec<u8>> {
+    Ok(synthesize_measured(text, settings).await?.0)
+}
+async fn synthesize_measured(text: &str, settings: &Tts) -> Result<(Vec<u8>, f64)> {
     ensure!(
         !settings.voice.is_empty(),
         "Choose a Cartesia voice with acc tts setup"
     );
     let key = config::secret("cartesia", "CARTESIA_API_KEY")?;
+    let began = std::time::Instant::now();
+    let mut first_byte_ms = None;
     let mut response = crate::http::client()?
         .post("https://api.cartesia.ai/tts/bytes")
         .bearer_auth(key)
@@ -87,17 +92,141 @@ pub async fn synthesize(text: &str, settings: &Tts) -> Result<Vec<u8>> {
     ensure!(response.status().is_success(),"Cartesia returned HTTP {}. Check your key, voice, model, and account credit using acc tts setup.",response.status());
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await? {
+        if !chunk.is_empty() && first_byte_ms.is_none() {
+            first_byte_ms = Some(began.elapsed().as_secs_f64() * 1000.0);
+        }
         ensure!(
             bytes.len() + chunk.len() <= 32 * 1024 * 1024,
             "Cartesia audio exceeded the 32 MiB limit"
         );
         bytes.extend_from_slice(&chunk);
     }
-    if bytes.starts_with(b"RIFF") {
-        Ok(bytes)
+    let wav = if bytes.starts_with(b"RIFF") {
+        bytes
     } else {
-        crate::audio::wrap_pcm16_mono(&bytes, 16_000)
+        crate::audio::wrap_pcm16_mono(&bytes, 16_000)?
+    };
+    Ok((
+        wav,
+        first_byte_ms.unwrap_or(began.elapsed().as_secs_f64() * 1000.0),
+    ))
+}
+
+#[derive(Default)]
+struct PcmDecoder {
+    pending: Option<u8>,
+}
+impl PcmDecoder {
+    fn decode(&mut self, bytes: &[u8]) -> Vec<f32> {
+        let mut samples = Vec::with_capacity(bytes.len().div_ceil(2));
+        for &byte in bytes {
+            if let Some(low) = self.pending.take() {
+                samples.push(i16::from_le_bytes([low, byte]) as f32 / 32768.0);
+            } else {
+                self.pending = Some(byte);
+            }
+        }
+        samples
     }
+}
+
+async fn stream_cartesia(
+    text: &str,
+    settings: &Tts,
+    capture: Arc<crate::audio::SpeechState>,
+    playing: Arc<AtomicBool>,
+) -> Result<()> {
+    let key = config::secret("cartesia", "CARTESIA_API_KEY")?;
+    let began = std::time::Instant::now();
+    let mut response = crate::http::client()?
+        .post("https://api.cartesia.ai/tts/bytes")
+        .bearer_auth(key)
+        .header("Cartesia-Version", "2026-08-14")
+        .json(&request(text, settings))
+        .send()
+        .await?;
+    ensure!(
+        response.status().is_success(),
+        "Cartesia returned HTTP {}",
+        response.status()
+    );
+    let (sender, receiver) = tokio::sync::mpsc::channel(16);
+    let player = crate::stream_playback::Player::start(receiver, capture, playing, settings.volume);
+    let mut decoder = PcmDecoder::default();
+    let mut received = 0;
+    while let Some(bytes) = response.chunk().await? {
+        if bytes.is_empty() {
+            continue;
+        }
+        if received == 0 {
+            crate::usage::record_latency("TTS first audio received", began.elapsed());
+        }
+        received += bytes.len();
+        ensure!(
+            received <= 32 * 1024 * 1024,
+            "Cartesia audio exceeded 32 MiB"
+        );
+        for packet in decoder.decode(&bytes).chunks(1600) {
+            sender
+                .send(packet.to_vec())
+                .await
+                .context("Streaming speaker stopped")?;
+        }
+    }
+    ensure!(
+        decoder.pending.is_none() && received > 0,
+        "Cartesia returned incomplete PCM audio"
+    );
+    crate::usage::record_tts("cartesia", text.chars().count());
+    drop(sender);
+    player.finish().await
+}
+
+pub async fn benchmark(text: &str, settings: &Tts, runs: usize) -> Result<Value> {
+    let mut rows = Vec::new();
+    for _ in 0..runs {
+        let start = std::time::Instant::now();
+        let (wav, first_byte_ms) = if settings.provider == "cartesia" {
+            let (wav, ms) = synthesize_measured(text, settings).await?;
+            (wav, Some(ms))
+        } else {
+            (render_uncached(text, settings).await?, None)
+        };
+        let total_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let (rate, samples) = crate::audio::decode_wav(&wav)?;
+        let seconds = samples.len() as f64 / rate as f64;
+        crate::usage::record_tts(&settings.provider, text.chars().count());
+        rows.push(serde_json::json!({"total_ms":total_ms,"first_byte_ms":first_byte_ms,"audio_seconds":seconds,"real_time_factor":total_ms/(seconds*1000.0)}));
+    }
+    Ok(
+        serde_json::json!({"provider":settings.provider,"runs":rows,"note":"No disk/memory audio cache, no playback. First run includes connection/worker startup. First byte is network arrival, not audible playback."}),
+    )
+}
+
+pub async fn benchmark_playback(text: &str, settings: &Tts, runs: usize) -> Result<Value> {
+    let mut rows = Vec::new();
+    for _ in 0..runs {
+        clear_memory_cache();
+        let start = std::time::Instant::now();
+        let mut job = self::start(
+            text.into(),
+            settings.clone(),
+            Arc::new(crate::audio::SpeechState::default()),
+        );
+        let mut playback_ms = None;
+        while !job.task.is_finished() {
+            if playback_ms.is_none() && job.is_playing() {
+                playback_ms = Some(start.elapsed().as_secs_f64() * 1000.0);
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        (&mut job.task).await??;
+        rows.push(serde_json::json!({"playback_started_ms":playback_ms,"complete_ms":start.elapsed().as_secs_f64()*1000.0}));
+    }
+    Ok(
+        serde_json::json!({"provider":settings.provider,"streaming":settings.streaming,"runs":rows,
+        "note":"Plays synthetic test text. Software playback flag timing, not an acoustic measurement; includes device/connection startup. Audio cache cleared each run."}),
+    )
 }
 pub async fn cartesia_stt(samples: &[f32]) -> Result<String> {
     let key = config::secret("cartesia", "CARTESIA_API_KEY")?;
@@ -199,6 +328,22 @@ impl Drop for Job {
         self.cancel();
     }
 }
+// JoinHandle drop alone detaches work. Keep synthesis tied to the speech job so
+// lock/cancel also stops in-flight HTTP requests and local synthesis workers.
+struct Synthesis(tokio::task::JoinHandle<Result<Vec<u8>>>);
+impl Synthesis {
+    fn start(text: String, settings: Tts) -> Self {
+        Self(tokio::spawn(async move { render(&text, &settings).await }))
+    }
+    async fn finish(mut self) -> Result<Vec<u8>> {
+        (&mut self.0).await?
+    }
+}
+impl Drop for Synthesis {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
 pub fn start(text: String, settings: Tts, capture: Arc<crate::audio::SpeechState>) -> Job {
     let stop = Arc::new(AtomicBool::new(false));
     let paused = Arc::new(AtomicBool::new(false));
@@ -211,20 +356,29 @@ pub fn start(text: String, settings: Tts, capture: Arc<crate::audio::SpeechState
         if parts.is_empty() || settings.provider == "off" {
             return Ok(());
         }
+        if settings.provider == "cartesia" && settings.streaming {
+            for part in parts {
+                if flag.load(Ordering::SeqCst) {
+                    break;
+                }
+                stream_cartesia(&part, &settings, capture.clone(), playback.clone()).await?;
+            }
+            return Ok(());
+        }
         let mut upcoming = {
             let part = parts[0].clone();
             let cfg = settings.clone();
-            Some(tokio::spawn(async move { render(&part, &cfg).await }))
+            Some(Synthesis::start(part, cfg))
         };
         for i in 0..parts.len() {
             if flag.load(Ordering::SeqCst) {
                 break;
             }
-            let wav = upcoming.take().unwrap().await??;
+            let wav = upcoming.take().unwrap().finish().await?;
             if i + 1 < parts.len() {
                 let next = parts[i + 1].clone();
                 let cfg = settings.clone();
-                upcoming = Some(tokio::spawn(async move { render(&next, &cfg).await }));
+                upcoming = Some(Synthesis::start(next, cfg));
             }
             // Synthesis may finish after the user has started another phrase.
             // Wait through capture, recognition and relevance checking before playback.
@@ -352,58 +506,93 @@ fn tts_cache_key(text: &str, settings: &Tts) -> Option<String> {
     text.hash(&mut hasher);
     Some(format!("{:016x}.wav", hasher.finish()))
 }
+type AudioCache = std::collections::VecDeque<(String, Vec<u8>)>;
+static AUDIO_CACHE: std::sync::Mutex<AudioCache> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+static CACHE_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub fn clear_memory_cache() {
+    if let Ok(mut cache) = AUDIO_CACHE.lock() {
+        CACHE_EPOCH.fetch_add(1, Ordering::SeqCst);
+        cache.clear();
+    }
+}
+pub fn clear_disk_cache() -> Result<usize> {
+    let directory = config::home()?.join("tts-cache");
+    let mut removed = 0;
+    if directory.is_dir() {
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            // Only the old generated hexadecimal WAV names, never arbitrary user files.
+            let path = entry.path();
+            if entry.file_type()?.is_file()
+                && path.extension().is_some_and(|v| v == "wav")
+                && path
+                    .file_stem()
+                    .and_then(|v| v.to_str())
+                    .is_some_and(|v| v.len() == 16 && v.chars().all(|c| c.is_ascii_hexdigit()))
+            {
+                std::fs::remove_file(path)?;
+                removed += 1;
+            }
+        }
+    }
+    Ok(removed)
+}
 fn tts_cache_get(text: &str, settings: &Tts) -> Option<Vec<u8>> {
     let name = tts_cache_key(text, settings)?;
-    let path = config::home().ok()?.join("tts-cache").join(name);
-    let bytes = std::fs::read(path).ok()?;
-    if bytes.len() < 16 {
-        return None;
-    }
-    Some(bytes)
+    AUDIO_CACHE
+        .lock()
+        .ok()?
+        .iter()
+        .find(|(key, _)| *key == name)
+        .map(|(_, bytes)| bytes.clone())
 }
-fn tts_cache_put(text: &str, settings: &Tts, bytes: &[u8]) {
+fn tts_cache_put(text: &str, settings: &Tts, bytes: &[u8], epoch: u64) {
     crate::usage::record_tts(&settings.provider, text.chars().count());
     let Some(name) = tts_cache_key(text, settings) else {
         return;
     };
-    let Ok(dir) = config::home().map(|h| h.join("tts-cache")) else {
+    const MAX_BYTES: usize = 8 * 1024 * 1024;
+    if bytes.len() > MAX_BYTES {
         return;
-    };
-    let _ = std::fs::create_dir_all(&dir);
-    let _ = std::fs::write(dir.join(name), bytes);
-    if let Ok(files) = std::fs::read_dir(&dir) {
-        let mut entries: Vec<_> = files
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().is_some_and(|x| x == "wav"))
-            .collect();
-        if entries.len() > 250 {
-            entries.sort_by_key(|e| e.metadata().and_then(|m| m.modified()).ok());
-            for extra in entries.iter().take(entries.len().saturating_sub(200)) {
-                let _ = std::fs::remove_file(extra.path());
-            }
+    }
+    if let Ok(mut cache) = AUDIO_CACHE.lock() {
+        if epoch != CACHE_EPOCH.load(Ordering::SeqCst) {
+            return;
         }
+        cache.retain(|(key, _)| *key != name);
+        while cache.len() >= 32
+            || cache.iter().map(|(_, v)| v.len()).sum::<usize>() + bytes.len() > MAX_BYTES
+        {
+            cache.pop_front();
+        }
+        cache.push_back((name, bytes.to_vec()));
     }
 }
 pub async fn render(text: &str, settings: &Tts) -> Result<Vec<u8>> {
+    let epoch = CACHE_EPOCH.load(Ordering::SeqCst);
     if let Some(bytes) = tts_cache_get(text, settings) {
         crate::usage::record_diagnostic("TTS cache hit");
         return Ok(bytes);
     }
     let began = std::time::Instant::now();
-    let bytes = if settings.provider == "system" {
-        crate::audio::synthesize_system(text, settings.speed).await?
+    let bytes = render_uncached(text, settings).await?;
+    crate::usage::record_latency("Speech synthesis", began.elapsed());
+    tts_cache_put(text, settings, &bytes, epoch);
+    Ok(bytes)
+}
+async fn render_uncached(text: &str, settings: &Tts) -> Result<Vec<u8>> {
+    if settings.provider == "system" {
+        crate::audio::synthesize_system(text, settings.speed).await
     } else if settings.provider == "kokoro" {
-        local_request(
+        Ok(local_request(
             json!({"text":text,"voice":settings.local_voice,"speed":settings.speed.clamp(0.6,1.5)}),
         )
         .await?
-        .1
+        .1)
     } else {
-        synthesize(text, settings).await?
-    };
-    crate::usage::record_latency("Speech synthesis", began.elapsed());
-    tts_cache_put(text, settings, &bytes);
-    Ok(bytes)
+        synthesize(text, settings).await
+    }
 }
 pub async fn local_voices(_settings: &config::Settings) -> Result<()> {
     let (header, _) = local_request(json!({"action":"voices"})).await?;
@@ -418,6 +607,13 @@ pub async fn local_voices(_settings: &config::Settings) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pcm_packets_can_split_samples_at_any_byte() {
+        let mut decoder = PcmDecoder::default();
+        assert!(decoder.decode(&[0]).is_empty());
+        assert_eq!(decoder.decode(&[64, 0, 192]), vec![0.5, -0.5]);
+        assert!(decoder.pending.is_none());
+    }
     #[test]
     fn strip_markup_and_urls() {
         assert_eq!(

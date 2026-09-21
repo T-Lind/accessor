@@ -111,6 +111,14 @@ impl Ui {
         }
         self.dirty = true;
     }
+    pub fn clear_private(&mut self) {
+        self.lines.clear();
+        self.input.clear();
+        self.settings = None;
+        self.notice.clear();
+        self.scroll = 0;
+        self.dirty = true;
+    }
     pub fn suspend(&mut self) -> Result<()> {
         if self.interactive() {
             terminal::disable_raw_mode()?;

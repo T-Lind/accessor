@@ -64,10 +64,11 @@ fn prepare_ort() -> Result<()> {
                 runtime.display()
             );
             let environment = ort::init_from(runtime)?;
+            let settings = crate::config::Settings::load()?;
             let pool = ort::environment::GlobalThreadPoolOptions::default()
-                .with_intra_threads(2)?
+                .with_intra_threads(settings.stt.threads)?
                 .with_inter_threads(1)?
-                .with_spin_control(true)?;
+                .with_spin_control(settings.stt.spin)?;
             environment
                 .with_name("accessor")
                 .with_telemetry(false)
@@ -84,8 +85,8 @@ fn prepare_ort() -> Result<()> {
 }
 
 fn whisper_threads() -> usize {
-    std::thread::available_parallelism()
-        .map(|threads| threads.get().clamp(1, 8))
+    crate::config::Settings::load()
+        .map(|s| s.stt.threads)
         .unwrap_or(2)
 }
 
@@ -189,6 +190,7 @@ impl Drop for PendingSpeech {
     }
 }
 pub struct MicFlags {
+    pub endpoint_ms: Arc<AtomicU64>,
     pub streaming: Arc<AtomicBool>,
     pub speech_state: Arc<SpeechState>,
     pub diagnostics: Arc<Diagnostics>,
@@ -224,6 +226,45 @@ fn transcribe_asr(asr: &mut Asr, samples: &[f32]) -> Result<String> {
             .text),
         Asr::Whisper { cli, model } => whisper_cli_transcribe(cli, model, &samples),
     }
+}
+
+/// Repeat in one process so load cost, first decode and warm inference are distinct.
+/// The caller chooses assets/engine explicitly; nothing is downloaded here.
+pub fn benchmark(
+    assets: &Path,
+    engine: &str,
+    files: &[PathBuf],
+    runs: usize,
+) -> Result<serde_json::Value> {
+    ensure!((1..=100).contains(&runs), "runs must be 1–100");
+    let started = Instant::now();
+    let mut asr = load_asr(assets, engine)?;
+    let load_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let mut rows = Vec::new();
+    for file in files {
+        let (rate, samples) = decode_wav(&std::fs::read(file)?)?;
+        ensure!(rate == 16_000, "Benchmark inputs must be 16 kHz WAVs");
+        let seconds = samples.len() as f64 / 16_000.0;
+        let first = Instant::now();
+        let first_text = transcribe_asr(&mut asr, &samples)?;
+        let first_ms = first.elapsed().as_secs_f64() * 1000.0;
+        let mut timings = Vec::new();
+        let mut texts = Vec::new();
+        for _ in 0..runs {
+            let start = Instant::now();
+            texts.push(transcribe_asr(&mut asr, &samples)?);
+            timings.push(start.elapsed().as_secs_f64() * 1000.0);
+        }
+        let mut ordered = timings.clone();
+        ordered.sort_by(f64::total_cmp);
+        let median = ordered[ordered.len() / 2];
+        let p95 = ordered[(ordered.len() as f64 * 0.95).ceil() as usize - 1];
+        rows.push(serde_json::json!({"file":file,"audio_seconds":seconds,"first_decode_ms":first_ms,"first_text":first_text,"warm_ms":timings,"median_ms":median,"p95_ms":p95,"real_time_factor":median/(seconds*1000.0),"texts":texts}));
+    }
+    let settings = crate::config::Settings::load()?;
+    Ok(
+        serde_json::json!({"engine":engine,"threads":settings.stt.threads,"spin":settings.stt.spin,"endpoint_ms":settings.stt.endpoint_ms,"load_ms":load_ms,"runs":runs,"files":rows,"note":"Inference only, not microphone, endpoint, network, agent or audible response latency. Whisper CLI reloads its model for each decode."}),
+    )
 }
 
 /// Bring quiet, valid microphone utterances into the range expected by local
@@ -382,15 +423,16 @@ struct Utterance {
     at: Instant,
 }
 
-const END_SILENCE_SAMPLES: usize = 16_000;
+const END_SILENCE_SAMPLES: usize = 9_600;
 
-/// Fixed-memory utterance segmentation: 320ms pre-roll, 1000ms trailing silence.
+/// Fixed-memory utterance segmentation: 320ms pre-roll, configurable trailing silence.
 /// Long speech is delivered in overlapping chunks instead of discarded.
 struct Segmenter {
     before: VecDeque<f32>,
     current: Vec<f32>,
     voiced: usize,
     silence: usize,
+    end_silence: usize,
 }
 impl Segmenter {
     fn new() -> Self {
@@ -399,6 +441,7 @@ impl Segmenter {
             current: Vec::new(),
             voiced: 0,
             silence: 0,
+            end_silence: END_SILENCE_SAMPLES,
         }
     }
     fn push(&mut self, frame: &[f32], speech: bool) -> Option<Vec<f32>> {
@@ -435,13 +478,15 @@ impl Segmenter {
             self.silence = 0;
             return Some(chunk);
         }
-        if self.silence >= END_SILENCE_SAMPLES {
+        if self.silence >= self.end_silence {
             let result = if self.voiced >= 1536 {
                 Some(std::mem::take(&mut self.current))
             } else {
                 None
             };
+            let end_silence = self.end_silence;
             *self = Self::new();
+            self.end_silence = end_silence;
             return result;
         }
         None
@@ -504,6 +549,7 @@ pub fn listen(
     };
     let runtime = tokio::runtime::Handle::current();
     let MicFlags {
+        endpoint_ms,
         streaming,
         speech_state,
         diagnostics,
@@ -658,8 +704,12 @@ pub fn listen(
                         }
                         dsp_state.active.store(
                             !output_active
-                                && last_voice
-                                    .is_some_and(|t| t.elapsed() < Duration::from_millis(1200)),
+                                && last_voice.is_some_and(|t| {
+                                    t.elapsed()
+                                        < Duration::from_millis(
+                                            endpoint_ms.load(Ordering::Relaxed) + 100,
+                                        )
+                                }),
                             Ordering::SeqCst,
                         );
                         dsp_diagnostics.frames.fetch_add(1, Ordering::Relaxed);
@@ -699,6 +749,7 @@ pub fn listen(
                             });
                             last_activity = Instant::now();
                         }
+                        segments.end_silence = endpoint_ms.load(Ordering::Relaxed) as usize * 16;
                         let completed = segments.push(&frame, speech);
                         let may_stream = !output_active
                             && dsp_awake.load(Ordering::SeqCst)
@@ -1697,6 +1748,8 @@ mod tests {
     #[test]
     fn a_short_pause_keeps_both_phrases_in_one_clip() {
         let mut segment = Segmenter::new();
+        // Slower speakers can retain the previous one-second endpoint.
+        segment.end_silence = 16_000;
         for _ in 0..20 {
             assert!(segment.push(&[0.1; 256], true).is_none());
         }
@@ -1714,6 +1767,21 @@ mod tests {
         let clip = clip.unwrap();
         assert_eq!(clip.iter().filter(|v| **v == 0.1).count(), 20 * 256);
         assert_eq!(clip.iter().filter(|v| **v == 0.2).count(), 20 * 256);
+    }
+
+    #[test]
+    fn fast_endpoint_keeps_short_pauses_and_config_survives_reset() {
+        let mut segment = Segmenter::new();
+        segment.end_silence = 4800;
+        for _ in 0..8 {
+            assert!(segment.push(&[0.1; 256], true).is_none());
+        }
+        for _ in 0..18 {
+            assert!(segment.push(&[0.0; 256], false).is_none());
+        }
+        assert!(segment.push(&[0.0; 256], false).is_some());
+        assert_eq!(segment.end_silence, 4800);
+        assert!(segment.current.is_empty());
     }
 
     #[test]

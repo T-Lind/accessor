@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 BINARY = ROOT / "target" / "release" / ("acc.exe" if os.name == "nt" else "acc")
 
 class App:
-    def __init__(self, *extra, env=None):
+    def __init__(self, *extra, env=None, ready="WHITE:"):
         self.process = subprocess.Popen([str(BINARY), "run", "--wake-code", "29", "--text", *extra], cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", env=env)
         self.lines = queue.Queue()
         self.seen = []
@@ -23,7 +23,7 @@ class App:
                 self.lines.put(line)
         self.reader = threading.Thread(target=read, daemon=True)
         self.reader.start()
-        self.expect("WHITE:")
+        self.expect(ready)
 
     def send(self, line):
         self.process.stdin.write(line + "\n")

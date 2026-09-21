@@ -4,6 +4,7 @@ use anyhow::{bail, Result};
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
     Home,
+    Security,
     Voice,
     Speech,
     Harnesses,
@@ -14,6 +15,7 @@ impl Page {
     fn title(self) -> &'static str {
         match self {
             Self::Home => "Settings",
+            Self::Security => "Security",
             Self::Voice => "Voice",
             Self::Speech => "Speech",
             Self::Harnesses => "Harnesses",
@@ -79,7 +81,40 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                 Action::Open(Page::Display),
             ),
             row("Tests", "mic, voice, connectors", Action::Open(Page::Tests)),
+            row(
+                "Security",
+                "password and auto-lock",
+                Action::Open(Page::Security),
+            ),
             row("Close", "Esc", Action::Close),
+        ],
+        Page::Security => vec![
+            row(
+                "Set / change passphrase",
+                "masked entry",
+                Action::Run("/password"),
+            ),
+            row(
+                "Lock now",
+                "stop work and hide conversation",
+                Action::Run("/lock"),
+            ),
+            row(
+                "Auto-lock after",
+                &format!("{} s since unlock", s.security.lock_seconds),
+                Action::Edit("security.lock-seconds"),
+            ),
+            row(
+                "Spoken unlock",
+                on(s.security.spoken_unlock),
+                Action::Toggle("security.spoken-unlock"),
+            ),
+            row(
+                "Remove password",
+                "requires unlocked session",
+                Action::Run("/password remove"),
+            ),
+            row("Back", "categories", Action::Open(Page::Home)),
         ],
         Page::Voice => vec![
             row("Wake code", &s.wake_code, Action::Edit("wake-code")),
@@ -112,6 +147,21 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
             row("Back", "categories", Action::Open(Page::Home)),
         ],
         Page::Speech => vec![
+            row(
+                "End-of-speech pause",
+                &format!("{} ms", s.stt.endpoint_ms),
+                Action::Edit("stt.endpoint-ms"),
+            ),
+            row(
+                "Recognition CPU threads",
+                &format!("{} (restart)", s.stt.threads),
+                Action::Edit("stt.threads"),
+            ),
+            row(
+                "Keep CPU spinning",
+                on(s.stt.spin),
+                Action::Toggle("stt.spin"),
+            ),
             row("Speak replies", on(s.speak), Action::Toggle("speak")),
             row(
                 "Speak progress",
@@ -175,6 +225,11 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                 Action::Edit("tts.volume"),
             ),
             row("Test voice", "play a sample", Action::Run("/tts test")),
+            row(
+                "Stream Cartesia replies",
+                on(s.tts.streaming),
+                Action::Toggle("tts.streaming"),
+            ),
             row("List voices", "", Action::Run("/tts voices")),
             row(
                 "Cartesia API key",
@@ -315,6 +370,9 @@ fn hint(action: &Action) -> &'static str {
             "Live mic transcription test, a sample of the current voice, and usage analytics."
         }
         Action::Open(Page::Home) => "Return to the category list.",
+        Action::Open(Page::Security) => "Local passphrase lock. Auto-lock counts from unlock, independent of speech or work. Spoken passwords can be overheard and replayed.",
+        Action::Edit("security.lock-seconds") => "Seconds since unlock before access is revoked (1–86400); default 3600. Running work is stopped.",
+        Action::Toggle("security.spoken-unlock") => "Allow exact passphrase words after wake code + unlock, using only local transcription. Off requires keyboard entry.",
         Action::Toggle("barge-in") => {
             "When on, new speech can interrupt the agent. When off, wait or /cancel."
         }
@@ -581,6 +639,27 @@ fn chat_mode(s: &Settings) -> &'static str {
 }
 fn current_value<'a>(key: &str, s: &'a Settings) -> &'a str {
     match key {
+        "tts.streaming" => {
+            if s.tts.streaming {
+                "true"
+            } else {
+                "false"
+            }
+        }
+        "security.spoken-unlock" => {
+            if s.security.spoken_unlock {
+                "true"
+            } else {
+                "false"
+            }
+        }
+        "stt.spin" => {
+            if s.stt.spin {
+                "true"
+            } else {
+                "false"
+            }
+        }
         "barge-in" => {
             if s.barge_in {
                 "true"
@@ -1522,7 +1601,7 @@ mod tests {
         assert!(picker.contains("Mock"));
         let mut speech = Panel::default();
         speech.answer("2", &s, &[]).unwrap();
-        let Answer::Show = speech.answer("6", &s, &[]).unwrap() else {
+        let Answer::Show = speech.answer("9", &s, &[]).unwrap() else {
             panic!("open local STT list");
         };
         let list = speech.display(&s, false, &[]);

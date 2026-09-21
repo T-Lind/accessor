@@ -1,0 +1,822 @@
+{
+  "model": "scratch\\kws-models\\sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20",
+  "configurations": [
+    {
+      "chunk": 8,
+      "threads": 1,
+      "load_ms": 995.2256999968085,
+      "files": [
+        {
+          "file": "scratch\\voice-benchmark-clips\\clean.wav",
+          "median_ms": 170.05970000172965,
+          "runs_ms": [
+            127.71699999575503,
+            173.05829998804256,
+            167.93130000587553,
+            170.05970000172965,
+            169.09199999645352,
+            185.21609998424537,
+            170.7023999770172
+          ],
+          "rtf": 0.04708838432832055,
+          "detections": [
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ]
+          ]
+        },
+        {
+          "file": "scratch\\voice-benchmark-clips\\quiet.wav",
+          "median_ms": 146.16970001952723,
+          "runs_ms": [
+            125.40160000207834,
+            168.09099999954924,
+            170.20710001816042,
+            162.7100000041537,
+            144.75940002012067,
+            146.16970001952723,
+            136.39460000558756
+          ],
+          "rtf": 0.040473404408009755,
+          "detections": [
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ]
+          ]
+        },
+        {
+          "file": "scratch\\voice-benchmark-clips\\noise_10db.wav",
+          "median_ms": 155.92940000351518,
+          "runs_ms": [
+            155.92940000351518,
+            156.2238999758847,
+            134.38800000585616,
+            157.1422999841161,
+            108.12869999790564,
+            141.66439999826252,
+            168.3863000071142
+          ],
+          "rtf": 0.04317579953025479,
+          "detections": [
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            []
+          ]
+        },
+        {
+          "file": "scratch\\voice-benchmark-clips\\echo_120ms.wav",
+          "median_ms": 162.91119999368675,
+          "runs_ms": [
+            121.18370001553558,
+            162.91119999368675,
+            114.19670001487248,
+            209.71659998758696,
+            176.50820000562817,
+            169.19069999130443,
+            147.27779998793267
+          ],
+          "rtf": 0.045109012873788386,
+          "detections": [
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "chunk": 8,
+      "threads": 2,
+      "load_ms": 1053.6892999953125,
+      "files": [
+        {
+          "file": "scratch\\voice-benchmark-clips\\clean.wav",
+          "median_ms": 138.94159998744726,
+          "runs_ms": [
+            156.56599999056198,
+            154.64170000632294,
+            150.4443000012543,
+            93.73019999475218,
+            124.19699999736622,
+            138.94159998744726,
+            136.88710000133142
+          ],
+          "rtf": 0.03847199224351302,
+          "detections": [
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ]
+          ]
+        },
+        {
+          "file": "scratch\\voice-benchmark-clips\\quiet.wav",
+          "median_ms": 144.22919999924488,
+          "runs_ms": [
+            137.69949998822995,
+            144.22919999924488,
+            152.71459997165948,
+            124.39449998782948,
+            105.61259998939931,
+            149.6950000000652,
+            151.89269999973476
+          ],
+          "rtf": 0.039936093035925484,
+          "detections": [
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ]
+          ]
+        },
+        {
+          "file": "scratch\\voice-benchmark-clips\\noise_10db.wav",
+          "median_ms": 149.6259999985341,
+          "runs_ms": [
+            153.5712000040803,
+            142.2370999935083,
+            149.6259999985341,
+            153.49939998122863,
+            164.53550002188422,
+            142.19860002049245,
+            136.28020000760444
+          ],
+          "rtf": 0.04143043056860975,
+          "detections": [
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            []
+          ]
+        },
+        {
+          "file": "scratch\\voice-benchmark-clips\\echo_120ms.wav",
+          "median_ms": 118.37780001224019,
+          "runs_ms": [
+            144.32800002396107,
+            99.5849999890197,
+            107.01700000208803,
+            118.37780001224019,
+            137.42039998760447,
+            113.24550001882017,
+            120.7764999999199
+          ],
+          "rtf": 0.03277801467873188,
+          "detections": [
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "chunk": 16,
+      "threads": 1,
+      "load_ms": 1223.1096999894362,
+      "files": [
+        {
+          "file": "scratch\\voice-benchmark-clips\\clean.wav",
+          "median_ms": 104.49520000838675,
+          "runs_ms": [
+            104.49520000838675,
+            104.50850002234802,
+            73.07500002207235,
+            107.5655999884475,
+            84.70099998521619,
+            112.44850000366569,
+            94.46600000956096
+          ],
+          "rtf": 0.028934016339024433,
+          "detections": [
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ]
+          ]
+        },
+        {
+          "file": "scratch\\voice-benchmark-clips\\quiet.wav",
+          "median_ms": 85.16200000303797,
+          "runs_ms": [
+            81.7891999904532,
+            61.133200011681765,
+            94.39209999982268,
+            99.78799999225885,
+            116.96420001680963,
+            78.82080000126734,
+            85.16200000303797
+          ],
+          "rtf": 0.023580783608760342,
+          "detections": [
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ]
+          ]
+        },
+        {
+          "file": "scratch\\voice-benchmark-clips\\noise_10db.wav",
+          "median_ms": 81.61170000676066,
+          "runs_ms": [
+            102.754499996081,
+            96.94119999767281,
+            106.75150001770817,
+            65.51990000298247,
+            68.47459997516125,
+            81.61170000676066,
+            75.93329998780973
+          ],
+          "rtf": 0.022597729477159257,
+          "detections": [
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            []
+          ]
+        },
+        {
+          "file": "scratch\\voice-benchmark-clips\\echo_120ms.wav",
+          "median_ms": 89.6227000048384,
+          "runs_ms": [
+            76.9830999779515,
+            90.58710001409054,
+            98.10420000576414,
+            106.18460000841878,
+            89.6227000048384,
+            73.7342000065837,
+            70.66869997652248
+          ],
+          "rtf": 0.02481592136365455,
+          "detections": [
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "chunk": 16,
+      "threads": 2,
+      "load_ms": 1105.0823999976274,
+      "files": [
+        {
+          "file": "scratch\\voice-benchmark-clips\\clean.wav",
+          "median_ms": 97.16110001318157,
+          "runs_ms": [
+            96.68359998613596,
+            102.4807000067085,
+            102.21729998011142,
+            95.8972999942489,
+            97.16110001318157,
+            95.47470000688918,
+            111.89249999006279
+          ],
+          "rtf": 0.026903253499427265,
+          "detections": [
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ]
+          ]
+        },
+        {
+          "file": "scratch\\voice-benchmark-clips\\quiet.wav",
+          "median_ms": 104.45980000076815,
+          "runs_ms": [
+            100.44209999614395,
+            103.3369000069797,
+            109.46840001270175,
+            105.37239999393933,
+            92.61660001357086,
+            104.45980000076815,
+            106.99030000250787
+          ],
+          "rtf": 0.028924214315594117,
+          "detections": [
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ]
+          ]
+        },
+        {
+          "file": "scratch\\voice-benchmark-clips\\noise_10db.wav",
+          "median_ms": 104.11149999708869,
+          "runs_ms": [
+            107.21370001556352,
+            100.27070000069216,
+            104.11149999708869,
+            108.36730001028627,
+            105.17929997877218,
+            101.6636999847833,
+            103.84200001135468
+          ],
+          "rtf": 0.028827772392936088,
+          "detections": [
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            []
+          ]
+        },
+        {
+          "file": "scratch\\voice-benchmark-clips\\echo_120ms.wav",
+          "median_ms": 107.39989997819066,
+          "runs_ms": [
+            104.50139999738894,
+            105.70610000286251,
+            109.58150000078604,
+            107.39989997819066,
+            109.27689998061396,
+            106.97339999023825,
+            116.8564000108745
+          ],
+          "rtf": 0.029738308176156903,
+          "detections": [
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ]
+          ]
+        }
+      ]
+    }
+  ],
+  "note": "Offline CPU compute time, not live detection latency. Audio arrival position includes 80ms feeder quantization. Synthetic clips cannot establish room false-accept or miss rates."
+}

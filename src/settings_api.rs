@@ -10,6 +10,7 @@ pub const KEYS: &[&str] = &[
     "idle-seconds",
     "chat",
     "tts.provider",
+    "tts.streaming",
     "tts.voice",
     "tts.local-voice",
     "tts.model",

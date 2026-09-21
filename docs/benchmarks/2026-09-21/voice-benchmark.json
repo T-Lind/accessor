@@ -1,0 +1,485 @@
+{
+  "platform": "Windows-11-10.0.26200-SP0",
+  "processor": "Intel64 Family 6 Model 154 Stepping 3, GenuineIntel",
+  "logical_cpus": 16,
+  "source": "scratch\\bench-clean.wav",
+  "note": "Synthetic file tests. Thread limits do not emulate a 2012 CPU; not a far-field accuracy test.",
+  "configurations": [
+    {
+      "endpoint_ms": 600,
+      "engine": "canary",
+      "files": [
+        {
+          "audio_seconds": 3.1115,
+          "file": "scratch\\voice-benchmark-clips\\clean.wav",
+          "first_decode_ms": 387.54909999999995,
+          "first_text": "twenty nine. What is on my calendar tomorrow morning?",
+          "median_ms": 425.35970000000003,
+          "p95_ms": 578.6156,
+          "real_time_factor": 0.13670567250522256,
+          "texts": [
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?"
+          ],
+          "warm_ms": [
+            444.0034,
+            369.8708,
+            347.41339999999997,
+            343.91880000000003,
+            425.35970000000003,
+            471.1906,
+            578.6156
+          ]
+        },
+        {
+          "audio_seconds": 3.1115,
+          "file": "scratch\\voice-benchmark-clips\\quiet.wav",
+          "first_decode_ms": 595.3271,
+          "first_text": "twenty nine. What is on my calendar tomorrow morning?",
+          "median_ms": 530.6387,
+          "p95_ms": 616.6044,
+          "real_time_factor": 0.17054112164550858,
+          "texts": [
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?"
+          ],
+          "warm_ms": [
+            380.6104,
+            616.6044,
+            499.7162,
+            471.49210000000005,
+            530.6387,
+            576.1052,
+            539.7583999999999
+          ]
+        },
+        {
+          "audio_seconds": 3.1115,
+          "file": "scratch\\voice-benchmark-clips\\noise_10db.wav",
+          "first_decode_ms": 371.6745,
+          "first_text": "twenty nine. What is on my calendar to morrow morning?",
+          "median_ms": 539.5708999999999,
+          "p95_ms": 736.0325,
+          "real_time_factor": 0.17341182709304193,
+          "texts": [
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?"
+          ],
+          "warm_ms": [
+            539.5708999999999,
+            736.0325,
+            544.2178,
+            404.6245,
+            568.4012,
+            459.266,
+            503.6068
+          ]
+        },
+        {
+          "audio_seconds": 3.1115,
+          "file": "scratch\\voice-benchmark-clips\\echo_120ms.wav",
+          "first_decode_ms": 449.1901,
+          "first_text": "twenty nine. What is on my calendar tomorrow morning?",
+          "median_ms": 398.1927,
+          "p95_ms": 610.106,
+          "real_time_factor": 0.12797451390004821,
+          "texts": [
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?"
+          ],
+          "warm_ms": [
+            398.1927,
+            610.106,
+            414.53459999999995,
+            384.0015,
+            438.6283,
+            381.3322,
+            359.8929
+          ]
+        }
+      ],
+      "load_ms": 1136.9325,
+      "note": "Inference only, not microphone, endpoint, network, agent or audible response latency. Whisper CLI reloads its model for each decode.",
+      "runs": 7,
+      "spin": false,
+      "threads": 1
+    },
+    {
+      "endpoint_ms": 600,
+      "engine": "canary",
+      "files": [
+        {
+          "audio_seconds": 3.1115,
+          "file": "scratch\\voice-benchmark-clips\\clean.wav",
+          "first_decode_ms": 303.7761,
+          "first_text": "twenty nine. What is on my calendar tomorrow morning?",
+          "median_ms": 301.2946,
+          "p95_ms": 341.8065,
+          "real_time_factor": 0.09683258878354492,
+          "texts": [
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?"
+          ],
+          "warm_ms": [
+            301.2946,
+            318.9876,
+            276.2215,
+            279.55449999999996,
+            341.8065,
+            278.9413,
+            315.5298
+          ]
+        },
+        {
+          "audio_seconds": 3.1115,
+          "file": "scratch\\voice-benchmark-clips\\quiet.wav",
+          "first_decode_ms": 323.3668,
+          "first_text": "twenty nine. What is on my calendar tomorrow morning?",
+          "median_ms": 396.9289,
+          "p95_ms": 605.2374,
+          "real_time_factor": 0.12756834324280894,
+          "texts": [
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?"
+          ],
+          "warm_ms": [
+            330.65860000000004,
+            396.9289,
+            360.6655,
+            396.80670000000003,
+            420.3441,
+            590.2486,
+            605.2374
+          ]
+        },
+        {
+          "audio_seconds": 3.1115,
+          "file": "scratch\\voice-benchmark-clips\\noise_10db.wav",
+          "first_decode_ms": 606.5964,
+          "first_text": "twenty nine. What is on my calendar to morrow morning?",
+          "median_ms": 473.43960000000004,
+          "p95_ms": 537.6016,
+          "real_time_factor": 0.15215799453639725,
+          "texts": [
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?"
+          ],
+          "warm_ms": [
+            468.82629999999995,
+            448.8568,
+            473.43960000000004,
+            537.6016,
+            531.0435,
+            492.7359,
+            345.9612
+          ]
+        },
+        {
+          "audio_seconds": 3.1115,
+          "file": "scratch\\voice-benchmark-clips\\echo_120ms.wav",
+          "first_decode_ms": 367.252,
+          "first_text": "twenty nine. What is on my calendar tomorrow morning?",
+          "median_ms": 402.6092,
+          "p95_ms": 446.8204,
+          "real_time_factor": 0.12939392575928008,
+          "texts": [
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?"
+          ],
+          "warm_ms": [
+            390.3452,
+            383.8071,
+            401.77239999999995,
+            412.7561,
+            402.6092,
+            446.8204,
+            427.7835
+          ]
+        }
+      ],
+      "load_ms": 787.5993,
+      "note": "Inference only, not microphone, endpoint, network, agent or audible response latency. Whisper CLI reloads its model for each decode.",
+      "runs": 7,
+      "spin": false,
+      "threads": 2
+    },
+    {
+      "endpoint_ms": 600,
+      "engine": "canary",
+      "files": [
+        {
+          "audio_seconds": 3.1115,
+          "file": "scratch\\voice-benchmark-clips\\clean.wav",
+          "first_decode_ms": 266.32820000000004,
+          "first_text": "twenty nine. What is on my calendar tomorrow morning?",
+          "median_ms": 287.8862,
+          "p95_ms": 343.2668,
+          "real_time_factor": 0.09252328458942631,
+          "texts": [
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?"
+          ],
+          "warm_ms": [
+            266.5521,
+            287.8862,
+            273.8263,
+            289.995,
+            297.3967,
+            277.22679999999997,
+            343.2668
+          ]
+        },
+        {
+          "audio_seconds": 3.1115,
+          "file": "scratch\\voice-benchmark-clips\\quiet.wav",
+          "first_decode_ms": 494.3664,
+          "first_text": "twenty nine. What is on my calendar tomorrow morning?",
+          "median_ms": 461.6336,
+          "p95_ms": 568.7694,
+          "real_time_factor": 0.1483636831110397,
+          "texts": [
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?"
+          ],
+          "warm_ms": [
+            379.71090000000004,
+            351.3377,
+            461.6336,
+            440.4176,
+            523.3898,
+            490.1716,
+            568.7694
+          ]
+        },
+        {
+          "audio_seconds": 3.1115,
+          "file": "scratch\\voice-benchmark-clips\\noise_10db.wav",
+          "first_decode_ms": 732.0708000000001,
+          "first_text": "twenty nine. What is on my calendar to morrow morning?",
+          "median_ms": 530.0801,
+          "p95_ms": 673.6805999999999,
+          "real_time_factor": 0.1703615940864535,
+          "texts": [
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?"
+          ],
+          "warm_ms": [
+            673.6805999999999,
+            509.5787,
+            508.7226,
+            541.4635,
+            566.7265,
+            530.0801,
+            497.6834
+          ]
+        },
+        {
+          "audio_seconds": 3.1115,
+          "file": "scratch\\voice-benchmark-clips\\echo_120ms.wav",
+          "first_decode_ms": 442.305,
+          "first_text": "twenty nine. What is on my calendar tomorrow morning?",
+          "median_ms": 354.0945,
+          "p95_ms": 551.7345,
+          "real_time_factor": 0.11380186405270769,
+          "texts": [
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?"
+          ],
+          "warm_ms": [
+            551.7345,
+            486.3727,
+            329.0794,
+            327.37420000000003,
+            354.0945,
+            430.5471,
+            300.4238
+          ]
+        }
+      ],
+      "load_ms": 787.5191,
+      "note": "Inference only, not microphone, endpoint, network, agent or audible response latency. Whisper CLI reloads its model for each decode.",
+      "runs": 7,
+      "spin": true,
+      "threads": 2
+    },
+    {
+      "endpoint_ms": 600,
+      "engine": "canary",
+      "files": [
+        {
+          "audio_seconds": 3.1115,
+          "file": "scratch\\voice-benchmark-clips\\clean.wav",
+          "first_decode_ms": 272.6549,
+          "first_text": "twenty nine. What is on my calendar tomorrow morning?",
+          "median_ms": 346.4826,
+          "p95_ms": 517.0005,
+          "real_time_factor": 0.11135548770689378,
+          "texts": [
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?"
+          ],
+          "warm_ms": [
+            275.1839,
+            287.125,
+            299.7283,
+            346.4826,
+            410.6202,
+            385.153,
+            517.0005
+          ]
+        },
+        {
+          "audio_seconds": 3.1115,
+          "file": "scratch\\voice-benchmark-clips\\quiet.wav",
+          "first_decode_ms": 418.29,
+          "first_text": "twenty nine. What is on my calendar tomorrow morning?",
+          "median_ms": 484.31,
+          "p95_ms": 527.9438,
+          "real_time_factor": 0.15565161497669935,
+          "texts": [
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?"
+          ],
+          "warm_ms": [
+            484.31,
+            429.0951,
+            514.2795,
+            455.24550000000005,
+            527.9438,
+            438.89250000000004,
+            522.4667
+          ]
+        },
+        {
+          "audio_seconds": 3.1115,
+          "file": "scratch\\voice-benchmark-clips\\noise_10db.wav",
+          "first_decode_ms": 635.2666,
+          "first_text": "twenty nine. What is on my calendar to morrow morning?",
+          "median_ms": 530.9705,
+          "p95_ms": 638.7897,
+          "real_time_factor": 0.1706477583159248,
+          "texts": [
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?"
+          ],
+          "warm_ms": [
+            638.7897,
+            551.6121,
+            542.3933,
+            530.9705,
+            511.57450000000006,
+            478.9528,
+            424.794
+          ]
+        },
+        {
+          "audio_seconds": 3.1115,
+          "file": "scratch\\voice-benchmark-clips\\echo_120ms.wav",
+          "first_decode_ms": 408.9572,
+          "first_text": "twenty nine. What is on my calendar tomorrow morning?",
+          "median_ms": 450.6072,
+          "p95_ms": 516.5885999999999,
+          "real_time_factor": 0.1448199260806685,
+          "texts": [
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?"
+          ],
+          "warm_ms": [
+            481.5573,
+            464.7319,
+            447.1906,
+            516.5885999999999,
+            446.6928,
+            450.6072,
+            409.1015
+          ]
+        }
+      ],
+      "load_ms": 776.005,
+      "note": "Inference only, not microphone, endpoint, network, agent or audible response latency. Whisper CLI reloads its model for each decode.",
+      "runs": 7,
+      "spin": false,
+      "threads": 4
+    }
+  ]
+}

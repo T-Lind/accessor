@@ -1,0 +1,8 @@
+{
+  "transcript": "Twenty nine. What is on my calendar tomorrow morning?",
+  "source": "Synthetic Cartesia sonic-3 output, generated for this benchmark; not a microphone recording",
+  "sample_rate": 16000,
+  "channels": 1,
+  "seconds": 3.1115,
+  "sha256": "0332762e4688c16d5019f89b9c21bb048d89a8ae052a9637630eb3f3d8c7f55a"
+}

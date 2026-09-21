@@ -1,0 +1,30 @@
+{
+  "note": "No disk/memory audio cache, no playback. First run includes connection/worker startup. First byte is network arrival, not audible playback.",
+  "provider": "system",
+  "runs": [
+    {
+      "audio_seconds": 3.999002267573696,
+      "first_byte_ms": null,
+      "real_time_factor": 0.1863977687745243,
+      "total_ms": 745.4051000000001
+    },
+    {
+      "audio_seconds": 3.999002267573696,
+      "first_byte_ms": null,
+      "real_time_factor": 0.10287125949783392,
+      "total_ms": 411.38239999999996
+    },
+    {
+      "audio_seconds": 3.999002267573696,
+      "first_byte_ms": null,
+      "real_time_factor": 0.09838376516818254,
+      "total_ms": 393.4369
+    },
+    {
+      "audio_seconds": 3.999002267573696,
+      "first_byte_ms": null,
+      "real_time_factor": 0.08542958396652227,
+      "total_ms": 341.6331
+    }
+  ]
+}

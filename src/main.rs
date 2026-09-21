@@ -1,6 +1,7 @@
 mod agent;
 mod app;
 mod audio;
+mod auth;
 mod cli;
 mod config;
 mod connectors;
@@ -21,6 +22,7 @@ mod session;
 mod settings_api;
 mod settings_ui;
 mod speech;
+mod stream_playback;
 mod stt_models;
 mod stt_stream;
 mod triggers;

@@ -21,6 +21,11 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
+    /// Configure the local lock using masked terminal prompts (never arguments).
+    Password {
+        #[arg(value_parser = ["set", "remove", "status"], default_value = "status")]
+        action: String,
+    },
     /// Subscription quota bars and resets; no model request is generated.
     Usage {
         #[arg(long)]
@@ -192,6 +197,15 @@ enum ConfigCommand {
 }
 #[derive(Subcommand)]
 enum SttCommand {
+    /// Repeat local inference with cold/warm timings and real-time factor; no network.
+    Benchmark {
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+        #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u32).range(1..=100))]
+        runs: u32,
+        #[arg(long)]
+        engine: Option<String>,
+    },
     Test {
         #[arg(long)]
         file: Option<PathBuf>,
@@ -205,6 +219,20 @@ enum SttCommand {
 }
 #[derive(Subcommand)]
 enum TtsCommand {
+    /// Measure uncached synthesis in one process without playing or saving audio.
+    Benchmark {
+        /// Also play audio and measure software playback-start timing.
+        #[arg(long)]
+        playback: bool,
+        #[arg(default_value = "I'm ready to help. What would you like to do?")]
+        text: String,
+        #[arg(long, value_parser = ["system", "kokoro", "cartesia"])]
+        provider: Option<String>,
+        #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u32).range(1..=100))]
+        runs: u32,
+    },
+    /// Remove legacy spoken-audio WAVs from Accessor's old disk cache.
+    ClearCache,
     Setup,
     /// Speak a sample; --output writes neural speech to WAV without playback.
     Test {
@@ -354,6 +382,7 @@ fn normalized(mut args: Vec<OsString>) -> Vec<OsString> {
 pub async fn entry() -> Result<()> {
     let cli = Cli::parse_from(normalized(std::env::args_os().collect()));
     match cli.command {
+        Commands::Password { action } => crate::auth::cli(&action),
         Commands::Usage {
             json,
             cached,
@@ -555,6 +584,24 @@ pub async fn entry() -> Result<()> {
         Commands::Transcribe { file, model_dir } => transcribe(file, model_dir).await,
         Commands::Stt {
             action:
+                SttCommand::Benchmark {
+                    files,
+                    runs,
+                    engine,
+                },
+        } => {
+            let settings = Settings::load()?;
+            let result = audio::benchmark(
+                &settings.assets()?,
+                engine.as_deref().unwrap_or(&settings.stt.engine),
+                &files,
+                runs as usize,
+            )?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            Ok(())
+        }
+        Commands::Stt {
+            action:
                 SttCommand::Test {
                     file,
                     model_dir,
@@ -577,6 +624,33 @@ pub async fn entry() -> Result<()> {
             }
         }
         Commands::Tts { action } => match action {
+            TtsCommand::Benchmark {
+                playback,
+                text,
+                provider,
+                runs,
+            } => {
+                let mut settings = Settings::load()?.tts;
+                if let Some(provider) = provider {
+                    settings.provider = provider;
+                }
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&if playback {
+                        speech::benchmark_playback(&text, &settings, runs as usize).await?
+                    } else {
+                        speech::benchmark(&text, &settings, runs as usize).await?
+                    })?
+                );
+                Ok(())
+            }
+            TtsCommand::ClearCache => {
+                println!(
+                    "Removed {} legacy cached audio files.",
+                    speech::clear_disk_cache()?
+                );
+                Ok(())
+            }
             TtsCommand::Setup => tts_setup(),
             TtsCommand::ForgetKey => config::delete_secret("cartesia"),
             TtsCommand::Voices { provider } => {

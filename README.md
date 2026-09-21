@@ -4,6 +4,8 @@ Say “twenty-nine”, hear a gentle chime, and talk to your agent. Accessor kee
 
 The stack is Rust/Tokio, Clap, Ratatui, CPAL, Earshot voice detection, and Canary 180M Flash INT8 via [transcribe-rs](https://github.com/cjpais/transcribe-rs), the transcription library behind [Handy](https://github.com/cjpais/Handy). Codex App Server, Claude Code, and Antigravity (`agy`) are supported harnesses; mock mode needs no account. Platform notes (history, Jev routing, Ink-2, overflow) live in [docs/PLATFORM.md](docs/PLATFORM.md).
 
+See [local password locking](docs/SECURITY.md) and [voice performance, benchmarks, and deployment priorities](docs/VOICE_PERFORMANCE.md) for the latest security and latency work.
+
 ## Quick start
 
 On Windows, from this checkout:
@@ -96,9 +98,9 @@ Say “twenty-nine” or “hey twenty-nine”, pause for the chime, then speak,
 | `/status`, `/help` | Inspect state or controls |
 | `/quit`, Ctrl+C | Stop Accessor and its agent connection |
 
-The numeric code reduces accidental activations; it is not authentication. “Hey 29”, “hi 29”, and “ok 29” are accepted. There are two voice states: awake and asleep. Sleep ends active listening and leaves the local wake detector on. Separate mute/unmute mode has been removed; use the hardware/OS mic switch or quit for microphone privacy. Asking the agent to mute or be quiet means sleep, and it must invoke the control before claiming success.
+The numeric code reduces accidental activations; it is not authentication. “Hey 29”, “hi 29”, and “ok 29” are accepted. The voice states are awake and asleep; an independent password lock can block both voice and typed access. Sleep ends active listening and leaves the local wake detector on. Separate mute/unmute mode has been removed; use the hardware/OS mic switch or quit for microphone privacy. Asking the agent to mute or be quiet means sleep, and it must invoke the control before claiming success.
 
-While the agent is thinking, you can continue speaking normally. Accessor keeps completed clips in order, waits for one second of silence to end a phrase, and delivers long speech in overlapping 30-second chunks. Recognition and relevance checks run in order without replacing earlier speech. New replies wait for capture and processing, including when speech synthesis has already started. A wake chime no longer resets capture and flushes the next phrase. Queues are bounded; overload is reported visibly.
+While the agent is thinking, you can continue speaking normally. Accessor keeps completed clips in order, waits for the configured silence cutoff (600 ms by default) to end a phrase, and delivers long speech in overlapping 30-second chunks. Recognition and relevance checks run in order without replacing earlier speech. New replies wait for capture and processing, including when speech synthesis has already started. A wake chime no longer resets capture and flushes the next phrase. Queues are bounded; overload is reported visibly.
 
 During audible speech or an alarm, **say “29”, pause, then say your request**. During audible output, the recognizer decodes only short wake windows, bypassing completed long speaker clips. Rolling local wake checks inspect up to 2.4 seconds of audio at roughly 600 ms intervals, without waiting for the room to become silent. Actual recognition latency depends on the local model and computer; `/audio` reports it, alongside capture/VAD/window counts, decoder errors, capture-paused state and the latest transient wake-window text. That diagnostic text is not added to agent history or saved to disk. A rolling detection only interrupts and opens listening: mixed speaker/user text is never submitted as a request. The listening window stays silent and gives at least eight seconds to begin speaking. Raw voice activity alone does not interrupt. Escape remains immediate typed cancellation.
 
@@ -108,7 +110,7 @@ The activity pane shows user lines, formatted agent replies (bold, links), and l
 
 Each harness keeps its own native conversation alive. When routing moves to another harness and later returns, Accessor supplies the user-and-agent turns that harness missed. Together, its native history plus that synchronized delta represent the full Accessor conversation without resending every turn repeatedly.
 
-Local models decode completed speech segments after one second of silence; long speech is delivered in overlapping 30-second chunks. Canary uses a two-thread CPU pool; Whisper uses available threads with a low-beam decoder. Completed clips queue in order; explicit cancellation or sleep invalidates old capture. Optional Cartesia streaming overlaps upload with capture and local recognition.
+Local models decode completed speech segments after a configurable pause (`stt.endpoint-ms`, default 600 ms); long speech is delivered in overlapping 30-second chunks. Local recognition defaults to two CPU threads with spinning disabled; `stt.threads` and `stt.spin` tune the runtime after restart. Whisper uses the selected thread count with a low-beam decoder. Completed clips queue in order; explicit cancellation or sleep invalidates old capture. Optional Cartesia streaming overlaps upload with capture and local recognition.
 
 ## Test transcription separately
 
@@ -153,7 +155,7 @@ Export a sample without playing it:
 acc tts test "Hello, I'm Accessor." --provider kokoro --output sample.wav
 ```
 
-The output must be a new file. Markdown, link destinations, and code blocks are removed from spoken text. Completed agent commentary is spoken as soon as it arrives, before the final response. Progress and final responses share an ordered speech queue. Disable progress speech in `/settings` if preferred. Tool output and private reasoning are not read aloud. `/tts speed 1.1` (range 0.6–1.5) applies to system voices, Kokoro, and Cartesia.
+The output must be a new file. Markdown, link destinations, and code blocks are removed from spoken text. Completed agent commentary is spoken as soon as it arrives, before the final response. Cartesia plays incoming PCM packets by default (`tts.streaming=true`); local voices and the buffered Cartesia fallback synthesize completed chunks. Progress and final responses share an ordered speech queue. Disable progress speech in `/settings` if preferred. Tool output and private reasoning are not read aloud. `/tts speed 1.1` (range 0.6–1.5) applies to system voices, Kokoro, and Cartesia.
 
 ## Reuse agent connectors
 
@@ -285,7 +287,7 @@ acc config set stt.conversation cartesia
 acc config set stt.streaming true
 ```
 
-Streaming uploads detected awake speech in roughly 100 ms PCM packets while you talk, including pre-roll. It starts before local words or Jev relevance are known, so subsequently ignored speech can reach Cartesia. Sleep and speaker playback use local wake detection. Accessor still owns the one-second silence endpoint: it finalizes the WebSocket and submits only the complete final transcript. Interim text never triggers actions. The complete local clip/transcript is retained as fallback; overload, disconnects, or missing finals cannot submit a partial cloud request. Wake-addressed local controls bypass waiting for the cloud result. Turning streaming off restores the finished-clip local word check before upload. See [Cartesia's manual streaming protocol](https://docs.cartesia.ai/api-reference/stt/websocket).
+Streaming uploads detected awake speech in roughly 100 ms PCM packets while you talk, including pre-roll. It starts before local words or Jev relevance are known, so subsequently ignored speech can reach Cartesia. Sleep and speaker playback use local wake detection. Accessor still owns the configurable silence endpoint: it finalizes the WebSocket and submits only the complete final transcript. Interim text never triggers actions. The complete local clip/transcript is retained as fallback; overload, disconnects, or missing finals cannot submit a partial cloud request. Wake-addressed local controls bypass waiting for the cloud result. Turning streaming off restores the finished-clip local word check before upload. See [Cartesia's manual streaming protocol](https://docs.cartesia.ai/api-reference/stt/websocket).
 
 `/analytics` compares this run, the past day/week, and lifetime; lists provider calls and estimated costs; and shows accepted/ignored input counts, fallback/cache counts, and median/P95 timings for recognition queues, local/cloud recognition, relevance checks, and synthesis. Historical STT counts may include duplicates from older versions; new transcriptions are counted once per actual local/cloud pass. Analytics writes are batched outside the speech/UI path, and HTTP connections are reused. Costs are built-in estimates, not live quota balances or invoices, and may omit cancelled/failed calls. No speedup is promised for a particular microphone, model, or network; the measured stages show where time is going.
 
@@ -324,8 +326,15 @@ Agents should discover and use Accessor's MCP memory tools rather than shelling 
 | --- | --- |
 | Cartesia Ink-2 STT | Optional live PCM WebSocket upload while awake; only finalized transcripts go to the agent. |
 | Canary / Parakeet TDT / Whisper STT | Local decoding of completed utterance chunks, plus rolling local wake checks. No incremental transcript stream. |
-| Cartesia TTS | Sentence-sized synthesis with the next chunk prefetched; each chunk is buffered before playback. The provider supports WebSocket audio streaming, but Accessor does not yet use it for TTS. |
+| Cartesia TTS | Incoming PCM playback through the HTTP streaming endpoint, with bounded buffering, echo references and cancellation. `tts.streaming=false` restores completed-WAV sentence prefetch. |
 | Kokoro TTS | Persistent local worker, sentence-sized synthesis and prefetch; completed WAV chunks before playback. |
 | System TTS | OS synthesis into a completed WAV chunk before playback. |
 
-Only Cartesia STT currently has a true live audio stream in Accessor. Sentence chunking/prefetch improves TTS latency but is distinct from playing incoming audio packets. A future TTS stream must keep cancellation, the speech capture hold, and echo-reference timing intact. See [Cartesia TTS WebSocket](https://docs.cartesia.ai/api-reference/tts/websocket).
+Cartesia STT and TTS both support streaming in Accessor. Input streaming remains opt-in; TTS streaming is enabled by default for Cartesia. Local TTS still uses completed WAV chunks. See [Cartesia streaming bytes](https://docs.cartesia.ai/api-reference/tts/bytes).
+
+
+### Password and privacy controls
+
+Use `/password` or `acc password set` to choose a passphrase, then say “29 unlock” followed by the passphrase in the same utterance. Spoken unlocking is local and enabled by default. “29 lock” or `/lock` revokes access and stops work/playback. `/unlock` provides masked keyboard entry in the dashboard. Settings → Security includes the default one-hour absolute auto-lock deadline and a keyboard-only option. Sleep and lock are separate. Read [the security boundary and recovery instructions](docs/SECURITY.md) before unattended use.
+
+Short spoken replies are now cached only in bounded memory, cleared on locking. `acc tts clear-cache` removes WAVs from the previous disk cache. Benchmark generated speech with `acc stt benchmark sample.wav`, `acc tts benchmark --provider cartesia`, or the repeatable scripts described in [the performance guide](docs/VOICE_PERFORMANCE.md).

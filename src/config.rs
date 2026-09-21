@@ -27,6 +27,21 @@ pub struct Settings {
     #[serde(default = "default_prompt")]
     pub prompt: String,
     pub sounds: Sounds,
+    pub security: Security,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Security {
+    pub lock_seconds: u64,
+    pub spoken_unlock: bool,
+}
+impl Default for Security {
+    fn default() -> Self {
+        Self {
+            lock_seconds: 3600,
+            spoken_unlock: true,
+        }
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -80,6 +95,9 @@ impl Default for Routing {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Stt {
+    pub endpoint_ms: u64,
+    pub threads: usize,
+    pub spin: bool,
     pub streaming: bool,
     pub conversation: String,
     pub lazy: bool,
@@ -89,6 +107,9 @@ pub struct Stt {
 impl Default for Stt {
     fn default() -> Self {
         Self {
+            endpoint_ms: 600,
+            threads: 2,
+            spin: false,
             conversation: "local".into(),
             streaming: false,
             lazy: false,
@@ -111,6 +132,7 @@ impl Default for Approvals {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Tts {
+    pub streaming: bool,
     pub volume: f32,
     pub provider: String,
     pub voice: String,
@@ -121,6 +143,7 @@ pub struct Tts {
 impl Default for Tts {
     fn default() -> Self {
         Self {
+            streaming: true,
             volume: 1.0,
             provider: "system".into(),
             voice: "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4".into(),
@@ -170,6 +193,7 @@ impl Default for Settings {
             approvals: Approvals::default(),
             prompt: default_prompt(),
             sounds: Sounds::default(),
+            security: Security::default(),
         }
     }
 }
@@ -243,7 +267,7 @@ pub fn locations(settings: &Settings) -> String {
         .map(display_path)
         .unwrap_or_else(|_| "(unavailable)".into());
     format!(
-        "Accessor home (copy this folder to replicate settings):\n  {home}\n  config.json          wake, harnesses, TTS, routing (no secrets)\n  analytics.json       optional usage totals\n  models.json          cached Codex model list\n  notes/               private Markdown notes\n  schedules.json       pending alarms and agent tasks\n  tts-cache/           optional spoken-clip cache\n  events/              local Gmail notification queue\nSettings file:\n  {config}\nSpeech models / ONNX runtime (large; copy or let `acc` re-download):\n  {assets}\n  Override with ACC_HOME (settings) or ACC_ASSETS (models).\nSecrets are NOT in that folder. Re-enter them on the new machine:\n  acc tts key     Cartesia (TTS + Ink-2)\n  acc jev key     TypeSafe / Jev\n  AI_GATEWAY_API_KEY or OS credential 'ai-gateway'\nWindows: Credential Manager, service name Accessor.\nHarness CLIs (Codex / Claude Code / agy) and their plugin logins live in those apps, not here.\nassets-dir in config.json is often an absolute path — set it again on the other machine if the checkout moved. Starting acc without speech files downloads ONNX Runtime and the selected local STT model automatically."
+        "Accessor home (copy this folder to replicate settings):\n  {home}\n  config.json          wake, harnesses, TTS, routing (no secrets)\n  analytics.json       optional usage totals\n  models.json          cached Codex model list\n  notes/               private Markdown notes\n  schedules.json       pending alarms and agent tasks\n  password.json        salted passphrase hash and retry counter\n  tts-cache/           legacy audio cache; acc tts clear-cache removes it\n  events/              local Gmail notification queue\nSettings file:\n  {config}\nSpeech models / ONNX runtime (large; copy or let `acc` re-download):\n  {assets}\n  Override with ACC_HOME (settings) or ACC_ASSETS (models).\nAPI keys are NOT in that folder. The optional password.json contains only a salted hash. Re-enter them on the new machine:\n  acc tts key     Cartesia (TTS + Ink-2)\n  acc jev key     TypeSafe / Jev\n  AI_GATEWAY_API_KEY or OS credential 'ai-gateway'\nWindows: Credential Manager, service name Accessor.\nHarness CLIs (Codex / Claude Code / agy) and their plugin logins live in those apps, not here.\nassets-dir in config.json is often an absolute path — set it again on the other machine if the checkout moved. Starting acc without speech files downloads ONNX Runtime and the selected local STT model automatically."
     )
 }
 impl Settings {
@@ -263,6 +287,15 @@ impl Settings {
         Ok(value)
     }
     pub fn validate(&self) -> Result<()> {
+        ensure!((300..=2000).contains(&self.stt.endpoint_ms), "stt.endpoint-ms must be 300–2000; shorter pauses respond faster but can split hesitant speech");
+        ensure!(
+            (1..=8).contains(&self.stt.threads),
+            "stt.threads must be 1–8"
+        );
+        ensure!(
+            (1..=86400).contains(&self.security.lock_seconds),
+            "security.lock-seconds must be 1–86400 (absolute time since unlock)"
+        );
         ensure!(
             ["codex", "mock", "claude", "antigravity"].contains(&self.agent.as_str()),
             "Supported harnesses: codex, claude, antigravity, mock"
@@ -426,6 +459,11 @@ impl Settings {
     }
     pub fn assign(&mut self, key: &str, value: &str) -> Result<()> {
         match key {
+            "stt.endpoint-ms" => self.stt.endpoint_ms = value.parse()?,
+            "stt.threads" => self.stt.threads = value.parse()?,
+            "stt.spin" => self.stt.spin = value.parse()?,
+            "security.lock-seconds" => self.security.lock_seconds = value.parse()?,
+            "security.spoken-unlock" => self.security.spoken_unlock = value.parse()?,
             "event-owner" => self.event_owner = Some(value.into()),
             "wake-code" => self.wake_code = value.into(),
             "idle-seconds" => self.idle_seconds = value.parse()?,
@@ -441,6 +479,7 @@ impl Settings {
                 }
             }
             "tts.provider" => self.tts.provider = value.into(),
+            "tts.streaming" => self.tts.streaming = value.parse()?,
             "tts.voice" => self.tts.voice = value.into(),
             "tts.local-voice" => self.tts.local_voice = value.into(),
             "tts.model" => self.tts.model = value.into(),

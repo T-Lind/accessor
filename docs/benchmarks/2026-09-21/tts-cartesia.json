@@ -1,0 +1,30 @@
+{
+  "note": "No disk/memory audio cache, no playback. First run includes connection/worker startup. First byte is network arrival, not audible playback.",
+  "provider": "cartesia",
+  "runs": [
+    {
+      "audio_seconds": 2.6470625,
+      "first_byte_ms": 497.5082,
+      "real_time_factor": 0.3505018487474323,
+      "total_ms": 927.8003
+    },
+    {
+      "audio_seconds": 2.8328125,
+      "first_byte_ms": 321.0329,
+      "real_time_factor": 0.2898336547159404,
+      "total_ms": 821.0444
+    },
+    {
+      "audio_seconds": 2.414875,
+      "first_byte_ms": 361.7453,
+      "real_time_factor": 0.40010290387701225,
+      "total_ms": 966.1985
+    },
+    {
+      "audio_seconds": 2.6935,
+      "first_byte_ms": 311.19980000000004,
+      "real_time_factor": 0.30281819194356785,
+      "total_ms": 815.6408
+    }
+  ]
+}

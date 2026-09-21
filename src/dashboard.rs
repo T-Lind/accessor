@@ -2,6 +2,12 @@ use crate::config::Settings;
 use anyhow::{bail, Result};
 
 pub const COMMANDS: &[(&str, &str)] = &[
+    ("/lock", "Lock access and cancel running work"),
+    ("/unlock", "Unlock with masked passphrase entry"),
+    (
+        "/password",
+        "Set/change passphrase; /password remove disables locking",
+    ),
     ("/settings", "Agents, models, wake, voice, chat, and speed"),
     ("/help", "Show commands"),
     ("/setup", "Guided setup in this screen"),

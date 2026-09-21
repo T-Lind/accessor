@@ -93,7 +93,10 @@ pub fn talks_about_sleep_or_shutdown(text: &str) -> bool {
         &["goodnight"],
     ];
     for pattern in sleep_or_off_patterns {
-        if words.windows(pattern.len()).any(|window| window == *pattern) {
+        if words
+            .windows(pattern.len())
+            .any(|window| window == *pattern)
+        {
             return true;
         }
     }
@@ -697,13 +700,33 @@ mod tests {
     #[test]
     fn wake_addressing_does_not_override_no_response_classification() {
         let dismissal = json!({"answers":{"addressed":{"noul":0.9},"response":{"noul":0.1}}});
-        assert!(!relevance_decision(&dismissal, true, "never mind").unwrap().accepted);
+        assert!(
+            !relevance_decision(&dismissal, true, "never mind")
+                .unwrap()
+                .accepted
+        );
         let actionable = json!({"answers":{"addressed":{"noul":0.9},"response":{"noul":0.9}}});
-        assert!(relevance_decision(&actionable, true, "never mind").unwrap().accepted);
+        assert!(
+            relevance_decision(&actionable, true, "never mind")
+                .unwrap()
+                .accepted
+        );
         // Sleep and turn off requests are actionable even if Jev classified raw response as low
-        assert!(relevance_decision(&dismissal, true, "that's fine, go to sleep").unwrap().accepted);
-        assert!(relevance_decision(&dismissal, true, "turn off").unwrap().accepted);
-        assert!(relevance_decision(&dismissal, true, "shut down").unwrap().accepted);
+        assert!(
+            relevance_decision(&dismissal, true, "that's fine, go to sleep")
+                .unwrap()
+                .accepted
+        );
+        assert!(
+            relevance_decision(&dismissal, true, "turn off")
+                .unwrap()
+                .accepted
+        );
+        assert!(
+            relevance_decision(&dismissal, true, "shut down")
+                .unwrap()
+                .accepted
+        );
     }
     #[test]
     fn ignored_decision_keeps_reason_and_invalid_scores_fall_back() {
