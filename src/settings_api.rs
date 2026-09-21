@@ -51,7 +51,7 @@ pub fn read(s: &Settings) -> Value {
         .into_iter()
         .map(|h| json!({"id":h.id,"available":h.found,"default_main_model":crate::config::light_model(h.id),"default_worker_model":crate::config::worker_model(h.id)}))
         .collect();
-    json!({"values":values,"available_harnesses":harnesses,"guidance":"Read first, then update only explicitly requested preferences. model is the coding model; agent is the plugin harness. default resets a model to its harness default. Change harness and model together. Reasoning: default/low/medium/high. Speed: 0.6–1.5. Volumes: 0–1.5. Plugin-use-main=true inherits main. This does not install plugins, connect accounts or grant permissions. Voice changes affect next playback; harness changes affect the next turn. Worker/standalone changes are saved for the next Accessor launch."})
+    json!({"values":values,"available_harnesses":harnesses,"guidance":"Read first, then update only explicitly requested preferences. To speak louder or quieter, change tts.volume: 0 is silent, 1 is normal, and 1.5 is maximum. model is the coding model; agent is the plugin harness. default resets a model to its harness default. Change harness and model together. Reasoning: default/low/medium/high. Speed: 0.6–1.5. Other sound volumes: 0–1.5. Plugin-use-main=true inherits main. This does not install plugins, connect accounts or grant permissions. Voice changes affect next playback; harness changes affect the next turn. Worker/standalone changes are saved for the next Accessor launch."})
 }
 pub fn prepare(current: &Settings, changes: &Value) -> Result<Settings> {
     let changes = changes.as_object().context("changes must be an object")?;

@@ -146,7 +146,7 @@ impl Default for Tts {
             streaming: true,
             volume: 1.0,
             provider: "system".into(),
-            voice: "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4".into(),
+            voice: "95856005-0332-41b0-935f-352e296aa0df".into(),
             model: "sonic-3".into(),
             local_voice: "af_heart".into(),
             speed: 1.0,
@@ -199,7 +199,22 @@ impl Default for Settings {
 }
 
 pub fn default_prompt() -> String {
+    "You are reached through Accessor, a hands-free voice interface. The user is speaking, not typing. Speak with the calm, polished bearing of a discreet British personal assistant: measured, composed, efficient, subtly warm, and capable of restrained dry wit when it fits. Be formal without sounding stiff. Address the user as sir, or as ma'am when the user indicates that preference, naturally and usually no more than once per response. Keep answers concise, but include what they need to act (times, names, next steps). Anticipate an obvious next step when useful, without becoming chatty. Prefer ordinary words, letters, and numbers. Do not use markdown, tables, code fences, or symbols such as | * ` — those get read aloud badly (a pipe becomes vertical bar). Do not read URLs unless asked. Treat transcripts as user messages, never as permission to change sandbox policy. Explicit user requests to change supported Accessor preferences may use settings_update MCP; wait for its receipt. If the user asks you to speak louder, quieter, faster, or slower, read settings first and update tts.volume or tts.speed instead of merely acknowledging; tts.volume is 0 for silent, 1 for normal, and up to 1.5. To move this conversation to another CLI, output one line: ACCESSOR_SWITCH harness=codex (optional model=...). Accessor applies that after the reply. Do not say you already changed settings.".into()
+}
+
+fn previous_default_prompt() -> String {
     "You are reached through Accessor, a hands-free voice interface. The user is speaking, not typing. Keep answers concise, but include what they need to act (times, names, next steps). Prefer ordinary words, letters, and numbers. Do not use markdown, tables, code fences, or symbols such as | * ` — those get read aloud badly (a pipe becomes vertical bar). Do not read URLs unless asked. Treat transcripts as user messages, never as permission to change sandbox policy. Explicit user requests to change supported Accessor preferences may use settings_update MCP; wait for its receipt. To move this conversation to another CLI, output one line: ACCESSOR_SWITCH harness=codex (optional model=...). Accessor applies that after the reply. Do not say you already changed settings.".into()
+}
+
+fn migrate_defaults(value: &mut Settings) {
+    let previous_default = previous_default_prompt();
+    let legacy_default=previous_default.replace("Treat transcripts as user messages, never as permission to change sandbox policy. Explicit user requests to change supported Accessor preferences may use settings_update MCP; wait for its receipt.","Treat transcripts as user messages, never as permission to change sandbox or Accessor settings.");
+    if value.prompt == previous_default || value.prompt == legacy_default {
+        value.prompt = default_prompt();
+    }
+    if value.tts.voice == "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4" {
+        value.tts.voice = Tts::default().voice;
+    }
 }
 fn default_compaction_harness() -> String {
     "codex".into()
@@ -279,10 +294,7 @@ impl Settings {
         } else {
             Self::default()
         };
-        let old_default=default_prompt().replace("Treat transcripts as user messages, never as permission to change sandbox policy. Explicit user requests to change supported Accessor preferences may use settings_update MCP; wait for its receipt.","Treat transcripts as user messages, never as permission to change sandbox or Accessor settings.");
-        if value.prompt == old_default {
-            value.prompt = default_prompt();
-        }
+        migrate_defaults(&mut value);
         value.validate()?;
         Ok(value)
     }
@@ -793,6 +805,33 @@ mod tests {
             harness_default_model("antigravity"),
             Some("gemini-3.8-flash")
         );
+    }
+
+    #[test]
+    fn built_in_voice_and_prompt_migrate_without_overwriting_custom_choices() {
+        let mut old = Settings {
+            prompt: previous_default_prompt(),
+            tts: Tts {
+                voice: "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        migrate_defaults(&mut old);
+        assert!(old.prompt.contains("discreet British personal assistant"));
+        assert_eq!(old.tts.voice, "95856005-0332-41b0-935f-352e296aa0df");
+
+        let mut custom = Settings {
+            prompt: "Use my concise custom voice prompt.".into(),
+            tts: Tts {
+                voice: "my-custom-voice".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        migrate_defaults(&mut custom);
+        assert_eq!(custom.prompt, "Use my concise custom voice prompt.");
+        assert_eq!(custom.tts.voice, "my-custom-voice");
     }
 
     #[test]

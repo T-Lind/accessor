@@ -129,9 +129,11 @@ class RuntimeTests(unittest.TestCase):
             return json.loads(reply["content"][0]["text"])
 
         self.assertTrue(control("status")["awake"])
-        changed=control(None,"settings_update",{"changes":{"tts.speed":1.2,"routing.reasoning":"high","sounds.think":0}})
+        changed=control(None,"settings_update",{"changes":{"tts.speed":1.2,"tts.volume":0.65,"routing.reasoning":"high","sounds.think":0}})
         self.assertIn("next turn",changed["receipt"])
-        self.assertEqual(control(None,"settings_read",{})["values"]["routing.reasoning"],"high")
+        live_settings=control(None,"settings_read",{})["values"]
+        self.assertEqual(live_settings["routing.reasoning"],"high")
+        self.assertAlmostEqual(live_settings["tts.volume"],0.65)
         self.assertTrue(control("status")["busy"])  # Updating settings never aborts its caller.
         self.assertFalse(control("sleep")["awake"])
         app.expect("MCP: asleep")
