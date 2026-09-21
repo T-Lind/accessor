@@ -134,6 +134,13 @@ fn is_sleep(text: &str) -> bool {
             | "goodnight"
             | "stop listening"
             | "go to bed"
+            | "turn off"
+            | "turn yourself off"
+            | "shut down"
+            | "shut off"
+            | "power down"
+            | "be quiet"
+            | "shut up"
     ) {
         return true;
     }
@@ -164,6 +171,13 @@ fn is_sleep(text: &str) -> bool {
         &["disconnect"],
         &["good", "night"],
         &["goodnight"],
+        &["turn", "off"],
+        &["turn", "yourself", "off"],
+        &["shut", "down"],
+        &["shut", "off"],
+        &["power", "down"],
+        &["be", "quiet"],
+        &["shut", "up"],
     ];
 
     let allowed_trailing: &[&str] = &[
@@ -327,6 +341,30 @@ mod tests {
 
         assert_eq!(s.hear("29", now), Action::Open);
         assert_eq!(s.hear("stop listening", now), Action::Disconnect);
+
+        assert_eq!(s.hear("29", now), Action::Open);
+        assert_eq!(s.hear("turn off please", now), Action::Disconnect);
+
+        assert_eq!(s.hear("29", now), Action::Open);
+        assert_eq!(s.hear("turn yourself off now", now), Action::Disconnect);
+
+        assert_eq!(s.hear("29", now), Action::Open);
+        assert_eq!(s.hear("shut down", now), Action::Disconnect);
+
+        assert_eq!(s.hear("29", now), Action::Open);
+        assert_eq!(s.hear("be quiet", now), Action::Disconnect);
+
+        assert_eq!(s.hear("29", now), Action::Open);
+        assert_eq!(
+            s.hear("turn off the kitchen lights", now),
+            Action::Prompt("turn off the kitchen lights".into())
+        );
+
+        assert_eq!(s.hear("29", now), Action::Open);
+        assert_eq!(
+            s.hear("shut down the postgres container", now),
+            Action::Prompt("shut down the postgres container".into())
+        );
 
         assert_eq!(s.hear("29", now), Action::Open);
         assert_eq!(
