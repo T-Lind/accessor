@@ -243,6 +243,25 @@ fn transcribe_utterance(
     }
 }
 
+/// One local engine loaded once and reused, for offline file tests.
+pub struct Recognizer {
+    asr: Asr,
+}
+impl Recognizer {
+    pub fn load(assets: &Path, engine: &str) -> Result<Self> {
+        Ok(Self {
+            asr: load_asr(assets, engine)?,
+        })
+    }
+    pub fn recognize(
+        &mut self,
+        samples: &[f32],
+        gate: Option<&crate::noise::Gate>,
+    ) -> Result<String> {
+        transcribe_utterance(&mut self.asr, samples, gate)
+    }
+}
+
 /// Repeat in one process so load cost, first decode and warm inference are distinct.
 /// The caller chooses assets/engine explicitly; nothing is downloaded here.
 pub fn benchmark(

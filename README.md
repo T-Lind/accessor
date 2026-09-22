@@ -126,10 +126,13 @@ The ambient floor is learned automatically from frames the VAD calls non-speech.
 acc stt test
 acc stt test --file sample.wav
 acc transcribe sample.wav
+acc stt wake sample.wav
 acc --text --agent mock
 ```
 
 The live STT test explicitly displays **all** recognized speech, without an agent or wake gate. Local STT automatically raises quiet, valid utterances into the model’s useful range. Severely clipped input cannot be reconstructed, so Accessor reports a one-time microphone-level warning with a PipeWire adjustment when appropriate. File testing accepts 16 kHz mono PCM WAV and reports model load/inference timing. `--text` never opens a microphone and is silent unless `--speak` is explicitly passed.
+
+`acc stt wake FILE...` runs the production wake matcher on recordings and, by default, prints the transcript and match result with the noise gate off and on (`--noise-gate on|off`, `--wake-code`, `--floor-db`, `--json`). `python scripts/test_wake.py [wav ...]` wraps it, building clean/quiet/noisy variants so the gate can be compared on the same phrase; pass your own "twenty nine" recording for a real wake match.
 
 ## Choose a voice
 
