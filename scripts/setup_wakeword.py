@@ -135,8 +135,8 @@ def main() -> None:
     model = extract_model(archive, assets / "models")
     print("\nSherpa wake-word experiment is ready.")
     print(f"Model: {model}")
-    print("Live test: python scripts/test_wakeword.py")
-    print("File test: python scripts/test_wakeword.py --wav tests/fixtures/voice-benchmark.wav")
+    print("Live test: python3 scripts/test_wakeword.py")
+    print("File test: python3 scripts/test_wakeword.py --wav tests/fixtures/voice-benchmark.wav")
 
 
 if __name__ == "__main__":

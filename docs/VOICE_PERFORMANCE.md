@@ -101,8 +101,8 @@ On Linux, install the isolated experiment and its checksum-pinned model, then
 try the live microphone detector:
 
 ```sh
-python scripts/setup_wakeword.py
-python scripts/test_wakeword.py
+python3 scripts/setup_wakeword.py
+python3 scripts/test_wakeword.py
 ```
 
 Use `--seconds 30` for a bounded microphone run, `--device NAME` to select a
