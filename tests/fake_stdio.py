@@ -4,6 +4,12 @@ import sys
 from control_fixtures import control_reply
 
 kind = sys.argv[1]
+if kind == "antigravity" and sys.argv[2:] == ["plugin", "list"]:
+    print("fixture-plugin (enabled)", flush=True)
+    sys.exit(0)
+if kind == "antigravity" and sys.argv[2:] == ["mcp", "list"]:
+    print("fixture-connector enabled", flush=True)
+    sys.exit(0)
 if "--print-timeout" in sys.argv and "/usage" in sys.argv:
     assert kind == "antigravity"
     print("Gemini Models\tWeekly Limit Remaining\t81%\t2033-05-18T03:33:20Z", flush=True)
@@ -25,6 +31,7 @@ if kind == "claude":
     assert "--dangerously-skip-permissions" not in sys.argv
 if kind == "antigravity":
     assert "--sandbox" in sys.argv
+    assert "--disable-slash-commands" not in sys.argv
 
 
 def send(value):

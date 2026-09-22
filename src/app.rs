@@ -994,14 +994,15 @@ pub async fn run(mut args: Run) -> Result<()> {
                             }
                             LocalCommand::Native=>{
                                 if access.enabled() { ui.message("The native agent CLI is outside Accessor's lock. Use acc connectors setup separately, then return here."); continue; }
-                                if busy || speaker.is_some() {ui.message("Cancel or finish the current task/playback before opening Codex.");continue;}
+                                let plugin_harness=settings.plugin_target().0.to_owned();
+                                if busy || speaker.is_some() {ui.message(format!("Cancel or finish the current task/playback before opening {plugin_harness}."));continue;}
                                 if !ui.interactive() {ui.message("Run acc connectors setup in an interactive terminal.");continue;}
                                 muted.store(true,Ordering::SeqCst);epoch.fetch_add(1,Ordering::SeqCst);
                                 ui.suspend()?;
-                                println!("Opening Codex. Use /plugins for connections; exit Codex to return to Accessor.");
-                                let result=crate::connectors::delegate(&[]).await;
+                                println!("Opening {plugin_harness}. Use its native plugin or MCP setup; exit to return to Accessor.");
+                                let result=crate::connectors::delegate_harness(&plugin_harness,&settings,args.codex_bin.as_ref(),&[]).await;
                                 ui.resume()?;muted.store(panel.is_some() || (speaker.is_some() && !settings.barge_in),Ordering::SeqCst);epoch.fetch_add(1,Ordering::SeqCst);
-                                if let Err(e)=result {ui.message(format!("Codex: {e:#}"));}
+                                if let Err(e)=result {ui.message(format!("{plugin_harness}: {e:#}"));}
                             }
                             LocalCommand::Analytics=>ui.message(crate::usage::report()),
                             LocalCommand::Context=>ui.message(crate::route::context_report(transcript.make_contiguous(), &settings)),

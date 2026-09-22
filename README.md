@@ -62,7 +62,8 @@ Everything needed day to day is available inside the screen:
 | `/stt test`, `/stt off` | Start/stop live transcription testing |
 | `/devices` | List microphones in the conversation area |
 | `/connectors` | Check the agent's connected apps |
-| `/connectors setup`, `/agent` | Open Codex's native UI for account/plugin setup; exit it to return |
+| `/connectors setup` | Open the configured plugin harness for native plugin/MCP setup; exit it to return |
+| `/agent` | Open Codex's native UI directly; exit it to return |
 | `/update` | Check Codex / Claude Code / Antigravity and apply CLI updates |
 | `/config locations` | Show the settings folder to copy to another machine |
 | `/events` | Inspect the local event queue |
@@ -170,7 +171,7 @@ acc agent mcp add --help
 acc agent mcp login SERVER_NAME
 ```
 
-`connectors setup` opens Codex; use `/plugins` to install/connect integrations. `connectors list` delegates to its plugin listing. `connectors status` asks its App Server for accessible apps on the first catalog page; this reports account availability, not a completed tool invocation. Restart Accessor after changing integrations. [Official plugin documentation](https://learn.chatgpt.com/docs/plugins) and [MCP configuration](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
+`connectors setup`, `connectors list`, and `connectors status` use the configured plugin harness. For Codex, setup opens its native UI and status asks App Server for accessible apps on the first catalog page; Accessor also refreshes the installed-app runtime before accepting a live Codex request. For Antigravity, the commands use its native plugin catalog and MCP registry, both of which are inherited by Accessor sessions. Status reports configuration/runtime availability, not a completed external tool invocation. Restart Accessor after changing integrations. [Official plugin documentation](https://learn.chatgpt.com/docs/plugins) and [MCP configuration](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
 
 Accessor uses the same local Codex configuration and login. Plugins limited to the desktop UI may not work in a standalone App Server. Custom MCP setup remains provider-specific. A Gmail tool connection permits on-demand email tasks; it does not by itself deliver incoming-email notifications.
 

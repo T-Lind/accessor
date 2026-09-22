@@ -238,6 +238,15 @@ class RuntimeTests(unittest.TestCase):
         app.send("29 which model")
         app.expect("model=gpt-5.6-luna")
 
+    def test_connector_management_uses_antigravity_when_configured(self):
+        self.config("routing.plugin-use-main", "false")
+        self.config("agent", "antigravity")
+        self.assertIn("fixture-plugin (enabled)", self.cli("connectors", "list").stdout)
+        status = self.cli("connectors", "status").stdout
+        self.assertIn("Plugins reported by antigravity", status)
+        self.assertIn("fixture-plugin (enabled)", status)
+        self.assertIn("fixture-connector enabled", status)
+
     def test_all_harnesses_create_edit_and_delete_schedules(self):
         for harness in ("codex", "claude", "antigravity"):
             with self.subTest(harness=harness):

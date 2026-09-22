@@ -193,8 +193,13 @@ async fn codex(
     let _tree = crate::process_tree::ProcessTree::attach(&process)?;
     let mut stdin = process.stdin.take().context("Codex stdin missing")?;
     let mut lines = BufReader::new(process.stdout.take().context("Codex stdout missing")?).lines();
-    write(&mut stdin, json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"accessor","title":"Accessor","version":env!("CARGO_PKG_VERSION")}}})).await?;
+    // Connected apps are an app-server capability, not a plain MCP server.
+    // Opt in and refresh the per-thread runtime snapshot before accepting work;
+    // otherwise a freshly started embedded client can see the user's plugins in
+    // app/list while giving the model an empty connector tool catalog.
+    write(&mut stdin, json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"accessor","title":"Accessor","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}})).await?;
     let mut thread: Option<String> = None;
+    let mut apps_ready = false;
     let mut model = options.model.clone();
     let mut turn: Option<String> = None;
     let mut turn_starting = false;
@@ -271,6 +276,12 @@ async fn codex(
                 } else if let Some(id) = msg["id"].as_u64() {
                     if let Some(error) = msg.get("error") {
                         if id <= 2 { bail!("Codex setup failed: {error}"); }
+                        if id == 4 {
+                            events.send(Event::Note(format!("Codex connected-app refresh is unavailable in this CLI version: {error}"))).await?;
+                            apps_ready = true;
+                            events.send(Event::Ready).await?;
+                            continue;
+                        }
                         if requests.remove(&id) == Some("turn/start") { turn_starting = false; events.send(Event::Done).await?; }
                         events.send(Event::Failed(format!("Codex request failed: {error}"))).await?;
                         continue;
@@ -282,13 +293,16 @@ async fn codex(
                         thread = msg["result"]["thread"]["id"].as_str().map(str::to_owned);
                         if thread.is_none() { bail!("Codex did not return a thread id"); }
                         if options.shared_memory {write(&mut stdin,json!({"id":3,"method":"mcpServerStatus/list","params":{"limit":100}})).await?;}
-                        events.send(Event::Ready).await?;
+                        write(&mut stdin,json!({"id":4,"method":"app/installed","params":{"threadId":thread,"forceRefresh":true}})).await?;
                     } else if id==3 {
                         if let Some(server)=msg["result"]["data"].as_array().and_then(|rows|rows.iter().find(|r|r["name"]=="accessor")) {
                             if !server["tools"].is_object() || server["toolsError"].is_string() || server["tools"]["memory_save"].is_null() {
                                 events.send(Event::Note("Accessor MCP memory tools are unavailable. Restart Accessor and inspect the native MCP status; a shell write is not a substitute.".into())).await?;
                             }
                         }
+                    } else if id==4 {
+                        apps_ready = true;
+                        events.send(Event::Ready).await?;
                     } else if requests.remove(&id) == Some("turn/start") {
                         turn = msg["result"]["turn"]["id"].as_str().map(str::to_owned);
                         turn_starting = false;
@@ -331,7 +345,7 @@ async fn codex(
                 }
             }
             _ = tick.tick() => {
-                if thread.is_none() && Instant::now() > handshake_deadline { bail!("Codex connection timed out"); }
+                if (thread.is_none() || !apps_ready) && Instant::now() > handshake_deadline { bail!("Codex connection timed out while loading connected apps"); }
                 let expired: Vec<_> = pending.iter().filter(|(_,p)| p.deadline <= Instant::now()).map(|(n,_)| *n).collect();
                 let had_expired = !expired.is_empty();
                 for n in expired {

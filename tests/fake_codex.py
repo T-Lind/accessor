@@ -16,6 +16,8 @@ for line in sys.stdin:
     msg = json.loads(line)
     method = msg.get("method")
     if method == "initialize":
+        if msg["params"]["clientInfo"].get("title") == "Accessor":
+            assert msg["params"]["capabilities"]["experimentalApi"] is True
         time.sleep(float(os.environ.get("ACC_FIXTURE_START_DELAY", "0")))
         send({"id": msg["id"], "result": {}})
     elif method == "thread/start":
@@ -28,6 +30,10 @@ for line in sys.stdin:
         send({"id":msg["id"],"result":{"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":27,"windowDurationMins":300,"resetsAt":2000000000},"secondary":{"usedPercent":39,"windowDurationMins":10080,"resetsAt":2000100000}}}}})
     elif method == "mcpServerStatus/list":
         send({"id":msg["id"],"result":{"data":[{"name":"accessor","tools":{"memory_save":{}},"toolsError":None}]}})
+    elif method == "app/installed":
+        assert msg["params"]["threadId"] == "thread-1"
+        assert msg["params"]["forceRefresh"] is True
+        send({"id":msg["id"],"result":{"apps":[{"id":"fixture-calendar","runtimeName":"Calendar","enabled":True,"callable":True}]}})
     elif method == "turn/start":
         send({"id": msg["id"], "result": {"turn": {"id": "turn-1"}}})
         send({"method": "turn/started", "params": {"turn": {"id": "turn-1"}}})

@@ -704,11 +704,15 @@ pub async fn entry() -> Result<()> {
             }
         },
         Commands::Connectors { action } => match action {
-            ConnectorCommand::List => connectors::delegate(&["plugin".into(), "list".into()]).await,
+            ConnectorCommand::List => {
+                connectors::delegate_plugin(&["plugin".into(), "list".into()]).await
+            }
             ConnectorCommand::Status => connectors::status().await,
             ConnectorCommand::Setup => {
-                println!("Gmail, Calendar, Drive, Slack, and other integrations belong to your agent.\nIn Codex: enter /plugins, choose the plugin, and complete its connection flow.\nFor an MCP server: acc agent mcp add ...; acc agent mcp login NAME.\nRestart Accessor after changing agent integrations.\n\nOpening Codex now. Accessor does not store your connector credentials.");
-                connectors::delegate(&[]).await
+                let settings = config::Settings::load()?;
+                let harness = settings.plugin_target().0;
+                println!("Plugins and connectors belong to the configured plugin harness ({harness}). Complete its native plugin or MCP setup, then exit to return to Accessor. Accessor reuses that harness's configuration and does not store connector credentials.\n\nOpening {harness} now.");
+                connectors::delegate_plugin(&[]).await
             }
         },
         Commands::Agent { args } => connectors::delegate(&args).await,

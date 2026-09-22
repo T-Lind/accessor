@@ -65,17 +65,36 @@ pub async fn models(executable: std::path::PathBuf) -> Result<Vec<Model>> {
     Ok(models)
 }
 
-pub async fn delegate(args: &[OsString]) -> Result<()> {
-    let status = Command::new(config::codex(&Settings::load()?))
+pub async fn delegate_harness(
+    harness: &str,
+    settings: &Settings,
+    codex_override: Option<&std::path::PathBuf>,
+    args: &[OsString],
+) -> Result<()> {
+    let status = Command::new(config::harness_bin(harness, settings, codex_override))
         .args(args)
         .status()
         .await
-        .context("Could not open Codex; use acc config set codex-bin PATH")?;
-    ensure!(status.success(), "Codex exited with {status}");
+        .with_context(|| {
+            format!("Could not open {harness}; check that harness's installation and login")
+        })?;
+    ensure!(status.success(), "{harness} exited with {status}");
     Ok(())
 }
-pub async fn status() -> Result<()> {
-    let mut process = Command::new(config::codex(&Settings::load()?))
+
+pub async fn delegate(args: &[OsString]) -> Result<()> {
+    let settings = Settings::load()?;
+    delegate_harness("codex", &settings, None, args).await
+}
+
+pub async fn delegate_plugin(args: &[OsString]) -> Result<()> {
+    let settings = Settings::load()?;
+    let harness = settings.plugin_target().0;
+    delegate_harness(harness, &settings, None, args).await
+}
+
+async fn codex_status(executable: std::path::PathBuf) -> Result<()> {
+    let mut process = Command::new(executable)
         .arg("app-server")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -111,4 +130,16 @@ pub async fn status() -> Result<()> {
     }).await.context("Connector status timed out")?;
     let _ = process.kill().await;
     result
+}
+
+pub async fn status() -> Result<()> {
+    let settings = Settings::load()?;
+    let harness = settings.plugin_target().0;
+    if harness == "codex" {
+        return codex_status(config::harness_bin(harness, &settings, None)).await;
+    }
+    println!("Plugins reported by {harness}:");
+    delegate_harness(harness, &settings, None, &["plugin".into(), "list".into()]).await?;
+    println!("\nMCP connectors reported by {harness}:");
+    delegate_harness(harness, &settings, None, &["mcp".into(), "list".into()]).await
 }
