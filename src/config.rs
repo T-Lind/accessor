@@ -103,6 +103,8 @@ pub struct Stt {
     pub lazy: bool,
     #[serde(default = "default_stt_engine")]
     pub engine: String,
+    pub noise_gate: bool,
+    pub noise_floor_db: f32,
 }
 impl Default for Stt {
     fn default() -> Self {
@@ -114,6 +116,8 @@ impl Default for Stt {
             streaming: false,
             lazy: false,
             engine: "canary".into(),
+            noise_gate: true,
+            noise_floor_db: crate::noise::DEFAULT_FLOOR_DB,
         }
     }
 }
@@ -303,6 +307,11 @@ impl Settings {
         ensure!(
             (1..=8).contains(&self.stt.threads),
             "stt.threads must be 1–8"
+        );
+        ensure!(
+            (crate::noise::MIN_FLOOR_DB..=crate::noise::MAX_FLOOR_DB)
+                .contains(&self.stt.noise_floor_db),
+            "stt.noise-floor-db must be -100 to -20 dBFS"
         );
         ensure!(
             (1..=86400).contains(&self.security.lock_seconds),
@@ -555,6 +564,8 @@ impl Settings {
             }
             "stt.lazy" => self.stt.lazy = value.parse()?,
             "stt.streaming" => self.stt.streaming = value.parse()?,
+            "stt.noise-gate" => self.stt.noise_gate = value.parse()?,
+            "stt.noise-floor-db" => self.stt.noise_floor_db = value.parse()?,
             "approvals.reviewer" => self.approvals.reviewer = value.to_lowercase(),
             "microphone" => self.microphone = Some(value.into()),
             "codex-bin" => self.codex_bin = Some(PathBuf::from(value).canonicalize()?),
@@ -791,6 +802,18 @@ mod tests {
         s.tts.provider = "unknown".into();
         assert!(s.validate().is_err());
         assert!(serde_json::from_str::<Settings>(r#"{"api_key":"secret"}"#).is_err());
+    }
+    #[test]
+    fn noise_gate_defaults_and_validation() {
+        let mut s = Settings::default();
+        assert!(s.stt.noise_gate);
+        assert_eq!(s.stt.noise_floor_db, crate::noise::DEFAULT_FLOOR_DB);
+        s.assign("stt.noise-gate", "false").unwrap();
+        assert!(!s.stt.noise_gate);
+        s.assign("stt.noise-floor-db", "-48.5").unwrap();
+        assert_eq!(s.stt.noise_floor_db, -48.5);
+        s.stt.noise_floor_db = -10.0;
+        assert!(s.validate().is_err());
     }
     #[test]
     fn conversation_stt_aliases() {

@@ -14,6 +14,7 @@ mod limits;
 mod markdown;
 mod mcp;
 mod memory;
+mod noise;
 mod organizer;
 mod process_tree;
 mod quota;
@@ -56,6 +57,10 @@ pub enum Input {
     IgnoredVoice {
         text: String,
         reason: String,
+        epoch: u64,
+    },
+    NoiseCalibrated {
+        floor_db: f32,
         epoch: u64,
     },
     GatedVoice {

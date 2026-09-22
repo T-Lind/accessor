@@ -225,6 +225,25 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                     Action::Toggle("stt.lazy"),
                 ),
                 row(
+                    "Room noise gate",
+                    if s.stt.noise_gate {
+                        "on · gate steady noise before STT"
+                    } else {
+                        "off · raw audio to STT"
+                    },
+                    Action::Toggle("stt.noise-gate"),
+                ),
+                row(
+                    "Noise floor",
+                    &format!("{:.1} dBFS", s.stt.noise_floor_db),
+                    Action::Edit("stt.noise-floor-db"),
+                ),
+                row(
+                    "Calibrate room noise",
+                    "sample 3 s of quiet",
+                    Action::Run("/noise calibrate"),
+                ),
+                row(
                     "Speech volume",
                     &format!("{:.0}%", s.tts.volume * 100.0),
                     Action::Edit("tts.volume"),
@@ -397,6 +416,15 @@ fn hint(action: &Action) -> &'static str {
         Action::Toggle("stt.streaming") => "Only when Cartesia is selected: send detected awake speech as you talk, before its words or relevance are known. Sleep and speaker playback stay local. Off uses the local word check first.",
         Action::Toggle("stt.lazy") => {
             "Keep the mic and VAD running, but load the selected local STT only when speech starts and free it after sleep."
+        }
+        Action::Toggle("stt.noise-gate") => {
+            "Gate steady room noise out of utterances before transcription. Wake detection and timing are unchanged. Calibrate in a quiet room for best results."
+        }
+        Action::Edit("stt.noise-floor-db") => {
+            "Ambient floor in dBFS (-100 to -20); lower is quieter. /noise calibrate measures it."
+        }
+        Action::Run("/noise calibrate") => {
+            "Measure the room's noise floor for 3 seconds; stay quiet. The result is saved and used by the gate."
         }
         Action::Toggle("routing.announce") => {
             "Spoken letters (A. D.) at most once every 5 minutes. Replies in between skip the identity prefix."
@@ -1114,6 +1142,10 @@ impl Panel {
                     "Cartesia model id (default {}). Esc returns.",
                     crate::config::Tts::default().model
                 ),
+                "stt.noise-floor-db" => {
+                    "Noise floor in dBFS (-100 to -20). /noise calibrate measures it. Esc returns."
+                        .into()
+                }
                 "tts.speed" => "Speed 0.6–1.5. Esc returns.".into(),
                 "sounds.think" | "sounds.wake" | "sounds.sleep" | "sounds.alarm" | "tts.volume" => {
                     "Volume 0–1.5 (or 0–150%). 0 is silent, 1 is default. Esc returns.".into()

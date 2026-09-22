@@ -201,6 +201,7 @@ pub struct MicFlags {
     pub cloud_stt: Arc<AtomicBool>,
     pub lazy: Arc<AtomicBool>,
     pub engine: Arc<Mutex<String>>,
+    pub noise: Arc<crate::noise::Control>,
 }
 pub fn transcribe(model: &mut CanaryModel, samples: &[f32]) -> Result<String> {
     let samples = condition_for_asr(samples);
@@ -225,6 +226,20 @@ fn transcribe_asr(asr: &mut Asr, samples: &[f32]) -> Result<String> {
             .map_err(|e| anyhow::anyhow!("{e}"))?
             .text),
         Asr::Whisper { cli, model } => whisper_cli_transcribe(cli, model, &samples),
+    }
+}
+
+/// Recognize a completed utterance, optionally gating steady room noise first.
+/// Wake probes deliberately skip this so barge-in timing and soft wake words
+/// are unaffected.
+fn transcribe_utterance(
+    asr: &mut Asr,
+    samples: &[f32],
+    gate: Option<&crate::noise::Gate>,
+) -> Result<String> {
+    match gate {
+        Some(gate) => transcribe_asr(asr, &gate.apply(samples)),
+        None => transcribe_asr(asr, samples),
     }
 }
 
@@ -560,8 +575,11 @@ pub fn listen(
         cloud_stt,
         lazy,
         engine,
+        noise,
     } = flags;
     let warm = Arc::new(AtomicBool::new(false));
+    let dsp_noise = noise.clone();
+    let asr_noise = noise;
     let host = cpal::default_host();
     let device = if let Some(name) = name {
         host.input_devices()?
@@ -638,6 +656,8 @@ pub fn listen(
             let mut speech_run = 0_usize;
             let mut last_voice: Option<Instant> = None;
             let mut was_output = false;
+            let mut noise_floor = crate::noise::FloorTracker::new(dsp_noise.floor_db());
+            let mut calibrating: Option<Vec<f32>> = None;
             let mut current_epoch = dsp_epoch.load(Ordering::SeqCst);
             while !dsp_stop.load(Ordering::SeqCst) {
                 let chunk = match raw_rx.recv_timeout(Duration::from_millis(100)) {
@@ -661,6 +681,8 @@ pub fn listen(
                     wake_window = WakeWindow::default();
                     speech_run = 0;
                     last_voice = None;
+                    calibrating = None;
+                    noise_floor.set(dsp_noise.floor_db());
                     dsp_state.active.store(false, Ordering::SeqCst);
                     dsp_warm.store(false, Ordering::SeqCst);
                     detector = earshot::Detector::default();
@@ -715,6 +737,28 @@ pub fn listen(
                         dsp_diagnostics.frames.fetch_add(1, Ordering::Relaxed);
                         if speech {
                             dsp_diagnostics.voiced.fetch_add(1, Ordering::Relaxed);
+                        }
+                        if dsp_noise.take_calibration_request() {
+                            calibrating = Some(Vec::new());
+                        }
+                        if let Some(levels) = &mut calibrating {
+                            if !output_active {
+                                levels.push(crate::noise::db(crate::noise::rms(&frame)));
+                            }
+                            // ~3 s of 16 ms frames; ignored while the speaker plays.
+                            if levels.len() >= 188 {
+                                let floor = crate::noise::estimate_floor_db(levels);
+                                dsp_noise.set_floor_db(floor);
+                                noise_floor.set(floor);
+                                calibrating = None;
+                                let _ = dsp_output.try_send(crate::Input::NoiseCalibrated {
+                                    floor_db: floor,
+                                    epoch: current_epoch,
+                                });
+                            }
+                        } else if !speech && !output_active {
+                            noise_floor.observe_silence(&frame);
+                            dsp_noise.set_floor_db(noise_floor.floor_db());
                         }
                         if dsp_interrupting.load(Ordering::SeqCst) {
                             if let Some(samples) = wake_window.push(&frame, speech) {
@@ -882,7 +926,7 @@ pub fn listen(
                     break;
                 };
                 let began = Instant::now();
-                let decoded = transcribe_asr(loaded, &u.samples);
+                let decoded = transcribe_utterance(loaded, &u.samples, asr_noise.gate().as_ref());
                 crate::usage::record_stt(&loaded_engine, u.samples.len() as f64 / 16_000.0);
                 crate::usage::record_latency("Local transcription", began.elapsed());
                 let text = decoded.unwrap_or_default();
@@ -909,7 +953,7 @@ pub fn listen(
                 break;
             };
             let began = Instant::now();
-            let decoded = transcribe_asr(loaded, &u.samples);
+            let decoded = transcribe_utterance(loaded, &u.samples, asr_noise.gate().as_ref());
             crate::usage::record_stt(&loaded_engine, u.samples.len() as f64 / 16_000.0);
             crate::usage::record_latency("Local transcription", began.elapsed());
             match decoded {

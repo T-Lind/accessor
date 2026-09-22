@@ -223,6 +223,10 @@ pub async fn run(mut args: Run) -> Result<()> {
     let streaming_stt = Arc::new(AtomicBool::new(settings.stt.streaming));
     let stt_engine = Arc::new(Mutex::new(settings.stt.engine.clone()));
     let endpoint_ms = Arc::new(AtomicU64::new(settings.stt.endpoint_ms));
+    let noise_control = Arc::new(crate::noise::Control::new(
+        settings.stt.noise_gate,
+        settings.stt.noise_floor_db,
+    ));
     let (input_tx, mut input_rx) = mpsc::channel(16);
     let control_bridge = crate::control::Bridge::start(input_tx.clone()).await?;
     let found = config::harness_offers(&settings, args.codex_bin.as_ref());
@@ -254,6 +258,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                 cloud_stt: cloud_stt.clone(),
                 lazy: lazy_stt.clone(),
                 engine: stt_engine.clone(),
+                noise: noise_control.clone(),
             },
         ) {
             Ok(capture) => {
@@ -770,13 +775,17 @@ pub async fn run(mut args: Run) -> Result<()> {
                         } else {
                             if captured_during_output { continue; }
                             let tx=input_tx.clone();
+                            let cloud_gate=noise_control.gate();
                             cloud_job=Some(tokio::spawn(async move {
                                 let start=Instant::now();
                                 let was_streamed=streamed.is_some();
                                 let result=if let Some(streamed)=streamed {
                                     crate::usage::record_diagnostic("Streaming STT clip");
                                     streamed.text().await
-                                } else {speech::cartesia_stt(&samples).await};
+                                } else {
+                                    let gated=match &cloud_gate {Some(gate)=>gate.apply(&samples),None=>samples.clone()};
+                                    speech::cartesia_stt(&gated).await
+                                };
                                 let text=match result {
                                     Ok(text)=>{crate::usage::record_stt("cartesia",samples.len() as f64/16_000.0);text},
                                     Err(_)=>{crate::usage::record_diagnostic("Cloud STT fallback");let _=tx.send(Input::Error("Cartesia transcription unavailable; using local transcript and kept listening".into())).await;local_text},
@@ -788,6 +797,15 @@ pub async fn run(mut args: Run) -> Result<()> {
                         }
                     }
                     Input::IgnoredVoice{text,reason,epoch:e}=>{if e==epoch.load(Ordering::SeqCst) && session.active() {ui.ignored(&text,&reason);}continue;},
+                    Input::NoiseCalibrated{floor_db,epoch:e}=>{
+                        if e==epoch.load(Ordering::SeqCst) {
+                            match settings.set("stt.noise-floor-db",&format!("{floor_db:.1}")) {
+                                Ok(())=>{noise_control.set_floor_db(settings.stt.noise_floor_db);ui.message(format!("Room noise calibrated: floor {:.1} dBFS. Steady noise below this is gated before transcription.",settings.stt.noise_floor_db));}
+                                Err(err)=>ui.message(format!("Measured {floor_db:.1} dBFS but could not save it: {err:#}")),
+                            }
+                        }
+                        continue;
+                    }
                     Input::Text(text) => (text, true, false, false, None),
                 };
                 if pending_stt.is_some() && text.trim()=="/cancel" {
@@ -954,6 +972,8 @@ pub async fn run(mut args: Run) -> Result<()> {
                                         cloud_stt.store(settings.stt.conversation=="cartesia", Ordering::SeqCst);
                                         lazy_stt.store(settings.stt.lazy, Ordering::SeqCst);
                                         streaming_stt.store(settings.stt.streaming, Ordering::SeqCst);
+                                        if key=="stt.noise-gate" {noise_control.set_enabled(settings.stt.noise_gate);}
+                                        if key=="stt.noise-floor-db" {noise_control.set_floor_db(settings.stt.noise_floor_db);}
                                         if key=="speak" {speak=settings.speak;}
                                         if key=="chat" {ui.set_chat(&settings.chat);}
                                         if key=="wake-code" || key=="idle-seconds" {session=Session::new(wake::WakeCode::new(&settings.wake_code,&args.wake_alias)?,Duration::from_secs(settings.idle_seconds));epoch.fetch_add(1,Ordering::SeqCst);}
@@ -998,6 +1018,26 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 if busy {ui.message("Cancel or finish the agent task before changing transcription test mode.");continue;}
                                 args.stt_test=enabled;session.close();epoch.fetch_add(1,Ordering::SeqCst);
                                 ui.message(if enabled {"Transcription test ON: all recognized speech is displayed, with no agent. /stt off exits."}else{"Transcription test OFF. Waiting for wake code."});
+                            }
+                            LocalCommand::Noise(action)=>{
+                                match action.as_str() {
+                                    "calibrate"=>{
+                                        panel=None;ui.settings(None);
+                                        if busy || speaker.is_some() {ui.message("Finish or cancel current work/playback, then calibrate while the room is quiet.");continue;}
+                                        muted.store(false,Ordering::SeqCst);
+                                        noise_control.request_calibration();
+                                        ui.message("Calibrating room noise for 3 seconds. Please stay quiet.");
+                                    }
+                                    "reset"=>{
+                                        match settings.set("stt.noise-floor-db",&format!("{:.1}",config::Stt::default().noise_floor_db)) {
+                                            Ok(())=>{noise_control.set_floor_db(settings.stt.noise_floor_db);ui.message("Room-noise floor reset to the default; it will re-learn while you are silent.");}
+                                            Err(e)=>ui.message(format!("Could not reset the noise floor: {e:#}")),
+                                        }
+                                    }
+                                    _=>{
+                                        ui.message(format!("Room-noise gate: {}. Floor: {:.1} dBFS (auto-tracking). /noise calibrate samples 3 s of quiet; /noise reset clears it; /noise on|off toggles.",if settings.stt.noise_gate {"on"} else {"off"},noise_control.floor_db()));
+                                    }
+                                }
                             }
                             LocalCommand::Utility(command)=>{
                                 if utility.is_some() {ui.message("A diagnostic is already running; /cancel stops it.");continue;}
@@ -1069,7 +1109,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 Err(e)=>ui.message(format!("Could not read memory: {e:#}")),
                             }
                         },
-                        ["/audio"] => ui.message(format!("Local wake checks: {wake_checks}; wake hits: {wake_hits}; speaker echoes rejected: {wake_echoes}; last decode: {wake_decode_ms} ms. Rolling checks active: {}. Local engine: {}. Say {}, pause, then your request. No recordings saved.\n{}; {}; capture paused: {}; decoder errors: {wake_errors}; last wake-window recognition (diagnostic only): {}",interrupting.load(Ordering::SeqCst),settings.stt.engine,settings.wake_code,audio_diagnostics.summary(),speech_state.summary(),muted.load(Ordering::SeqCst),last_wake_probe)),
+                        ["/audio"] => ui.message(format!("Local wake checks: {wake_checks}; wake hits: {wake_hits}; speaker echoes rejected: {wake_echoes}; last decode: {wake_decode_ms} ms. Rolling checks active: {}. Local engine: {}. Say {}, pause, then your request. No recordings saved. Noise gate: {} at {:.1} dBFS.\n{}; {}; capture paused: {}; decoder errors: {wake_errors}; last wake-window recognition (diagnostic only): {}",interrupting.load(Ordering::SeqCst),settings.stt.engine,settings.wake_code,if settings.stt.noise_gate {"on"} else {"off"},noise_control.floor_db(),audio_diagnostics.summary(),speech_state.summary(),muted.load(Ordering::SeqCst),last_wake_probe)),
                         ["/limits"] => ui.message(limits.report()),
                         [action @ ("/worker-approve" | "/worker-deny"), number] => {
                             if let (Ok(number),Some(w))=(number.parse(),worker.as_ref()) {

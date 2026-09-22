@@ -17,6 +17,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/stt",
         "Local STT test, /stt provider cartesia|local, or /stt engine parakeet",
     ),
+    ("/noise", "Room-noise gate: /noise calibrate|on|off|reset"),
     ("/jev", "Save a TypeSafe API key for Jev: /jev key"),
     ("/devices", "List microphones"),
     ("/connectors", "Show agent connections"),
@@ -78,6 +79,7 @@ pub enum LocalCommand {
     Speak(String),
     Secret(&'static str),
     Stt(bool),
+    Noise(String),
     Utility(Vec<String>),
     Native,
     Analytics,
@@ -175,6 +177,13 @@ pub fn parse(text: &str, s: &Settings) -> Result<Option<LocalCommand>> {
         }
         ["/stt"] | ["/stt", "test"] => LocalCommand::Stt(true),
         ["/stt", "off"] => LocalCommand::Stt(false),
+        ["/noise"] => LocalCommand::Noise("status".into()),
+        ["/noise", "calibrate"] | ["/noise", "calibration"] => {
+            LocalCommand::Noise("calibrate".into())
+        }
+        ["/noise", "reset"] => LocalCommand::Noise("reset".into()),
+        ["/noise", "on"] => LocalCommand::Set("stt.noise-gate".into(), "true".into()),
+        ["/noise", "off"] => LocalCommand::Set("stt.noise-gate".into(), "false".into()),
         ["/jev", "key"] | ["/typesafe", "key"] => LocalCommand::Secret("typesafe"),
         ["/jev"] => LocalCommand::Secret("typesafe"),
         _ => return Ok(None),
@@ -347,5 +356,13 @@ mod tests {
         };
         assert_eq!(key, "tts.model");
         assert_eq!(value, "sonic-3");
+        assert!(matches!(
+            parse("/noise calibrate", &s).unwrap(),
+            Some(LocalCommand::Noise(action)) if action == "calibrate"
+        ));
+        let Some(LocalCommand::Set(key, value)) = parse("/noise off", &s).unwrap() else {
+            panic!("noise off")
+        };
+        assert_eq!((key.as_str(), value.as_str()), ("stt.noise-gate", "false"));
     }
 }
