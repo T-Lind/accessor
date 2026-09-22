@@ -20,6 +20,36 @@ const OPEN_MARGIN_DB: f32 = 9.0;
 const CLOSE_MARGIN_DB: f32 = 3.0;
 const ATTACK: f32 = 0.02; // fast open so word onsets survive
 const RELEASE: f32 = 0.002; // slow close so noise does not pump
+const SAMPLE_RATE: f32 = 16_000.0;
+const RUMBLE_CUTOFF_HZ: f32 = 70.0;
+
+/// One-pole high-pass for low-frequency rumble and DC. It runs on a completed
+/// clip or wake probe in the recognizer, never in the microphone callback.
+pub fn remove_rumble(samples: &mut [f32]) {
+    let alpha = 1.0 / (1.0 + 2.0 * std::f32::consts::PI * RUMBLE_CUTOFF_HZ / SAMPLE_RATE);
+    let mut previous_input = 0.0f32;
+    let mut previous_output = 0.0f32;
+    for sample in samples {
+        let input = *sample;
+        let output = alpha * (previous_output + input - previous_input);
+        *sample = output;
+        previous_input = input;
+        previous_output = output;
+    }
+}
+
+/// Apply the existing room-noise gate, then optional rumble removal. Keeping
+/// the gate first preserves its existing raw-audio floor calibration.
+pub fn prepare_for_stt(samples: &[f32], gate: Option<&Gate>, highpass: bool) -> Vec<f32> {
+    let mut output = match gate {
+        Some(gate) => gate.apply(samples),
+        None => samples.to_vec(),
+    };
+    if highpass {
+        remove_rumble(&mut output);
+    }
+    output
+}
 
 /// RMS of a block of samples in `[-1, 1]`.
 pub fn rms(samples: &[f32]) -> f32 {
@@ -127,13 +157,15 @@ impl Gate {
 /// Shared runtime state between the capture loop, the recognizer, and the UI.
 pub struct Control {
     enabled: AtomicBool,
+    highpass: AtomicBool,
     floor_bits: AtomicU32,
     calibrate: AtomicBool,
 }
 impl Control {
-    pub fn new(enabled: bool, floor_db: f32) -> Self {
+    pub fn new(enabled: bool, floor_db: f32, highpass: bool) -> Self {
         Self {
             enabled: AtomicBool::new(enabled),
+            highpass: AtomicBool::new(highpass),
             floor_bits: AtomicU32::new(floor_db.clamp(MIN_FLOOR_DB, MAX_FLOOR_DB).to_bits()),
             calibrate: AtomicBool::new(false),
         }
@@ -143,6 +175,12 @@ impl Control {
     }
     pub fn set_enabled(&self, value: bool) {
         self.enabled.store(value, Ordering::Relaxed);
+    }
+    pub fn highpass(&self) -> bool {
+        self.highpass.load(Ordering::Relaxed)
+    }
+    pub fn set_highpass(&self, value: bool) {
+        self.highpass.store(value, Ordering::Relaxed);
     }
     pub fn floor_db(&self) -> f32 {
         f32::from_bits(self.floor_bits.load(Ordering::Relaxed))
@@ -198,5 +236,21 @@ mod tests {
         let settled = tracker.floor_db();
         tracker.observe_silence(&[0.5; 256]);
         assert!(tracker.floor_db() < settled + 3.0, "{}", tracker.floor_db());
+    }
+    #[test]
+    fn rumble_filter_reduces_low_tones_and_preserves_speech_band() {
+        let tone = |hz: f32| -> Vec<f32> {
+            (0..16_000)
+                .map(|i| (2.0 * std::f32::consts::PI * hz * i as f32 / SAMPLE_RATE).sin())
+                .collect()
+        };
+        let mut rumble = tone(30.0);
+        let mut voice = tone(300.0);
+        let original_rumble = rms(&rumble[2000..]);
+        let original_voice = rms(&voice[2000..]);
+        remove_rumble(&mut rumble);
+        remove_rumble(&mut voice);
+        assert!(rms(&rumble[2000..]) < original_rumble * 0.45);
+        assert!(rms(&voice[2000..]) > original_voice * 0.95);
     }
 }

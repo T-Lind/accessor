@@ -128,6 +128,13 @@ virtual source, compare it with the physical/default source in the same run:
 python3 scripts/test_room_wake.py --device RAW_NODE --denoised-device FILTERED_NODE
 ```
 
+The built-in `stt.denoise=highpass` experiment removes sub-speech rumble on the
+recognizer thread. Compare the same recorded wake clip with
+`acc stt wake room.wav --noise-gate off --denoise off` and
+`acc stt wake room.wav --noise-gate off --denoise highpass`. This filters wake
+probes after capture; it does not alter VAD timing or Cartesia's live streaming
+upload. Keep it off if quiet or distant wake words become less reliable.
+
 List candidate source names with `acc devices` or `wpctl status`. This is a
 positive recall test of full-clip recognition, not the rolling wake-window
 timing or an estimate of false activations per hour.

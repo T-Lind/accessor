@@ -234,6 +234,15 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                     Action::Toggle("stt.noise-gate"),
                 ),
                 row(
+                    "Rumble removal",
+                    if s.stt.denoise == "highpass" {
+                        "highpass · filters low rumble for wake and STT"
+                    } else {
+                        "off · no rumble filter"
+                    },
+                    Action::Cycle("stt.denoise", &["off", "highpass"]),
+                ),
+                row(
                     "Noise floor",
                     &format!("{:.1} dBFS", s.stt.noise_floor_db),
                     Action::Edit("stt.noise-floor-db"),
@@ -419,6 +428,9 @@ fn hint(action: &Action) -> &'static str {
         }
         Action::Toggle("stt.noise-gate") => {
             "Gate steady room noise out of utterances before transcription. Wake detection and timing are unchanged. Calibrate in a quiet room for best results."
+        }
+        Action::Cycle("stt.denoise", _) => {
+            "Optional 70 Hz high-pass removes low rumble from wake probes and completed speech before recognition. It does not change capture or voice activity timing. Compare with room recordings before leaving it on."
         }
         Action::Edit("stt.noise-floor-db") => {
             "Ambient floor in dBFS (-100 to -20); lower is quieter. /noise calibrate measures it."
@@ -780,6 +792,7 @@ fn current_value<'a>(key: &str, s: &'a Settings) -> &'a str {
         "approvals.reviewer" => s.approvals.reviewer.as_str(),
         "stt.conversation" => s.stt.conversation.as_str(),
         "stt.engine" => s.stt.engine.as_str(),
+        "stt.denoise" => s.stt.denoise.as_str(),
         "stt.streaming" => {
             if s.stt.streaming {
                 "true"

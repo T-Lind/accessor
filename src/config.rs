@@ -105,6 +105,7 @@ pub struct Stt {
     pub engine: String,
     pub noise_gate: bool,
     pub noise_floor_db: f32,
+    pub denoise: String,
 }
 impl Default for Stt {
     fn default() -> Self {
@@ -118,6 +119,7 @@ impl Default for Stt {
             engine: "canary".into(),
             noise_gate: true,
             noise_floor_db: crate::noise::DEFAULT_FLOOR_DB,
+            denoise: "off".into(),
         }
     }
 }
@@ -312,6 +314,10 @@ impl Settings {
             (crate::noise::MIN_FLOOR_DB..=crate::noise::MAX_FLOOR_DB)
                 .contains(&self.stt.noise_floor_db),
             "stt.noise-floor-db must be -100 to -20 dBFS"
+        );
+        ensure!(
+            ["off", "highpass"].contains(&self.stt.denoise.as_str()),
+            "stt.denoise must be off or highpass"
         );
         ensure!(
             (1..=86400).contains(&self.security.lock_seconds),
@@ -566,6 +572,7 @@ impl Settings {
             "stt.streaming" => self.stt.streaming = value.parse()?,
             "stt.noise-gate" => self.stt.noise_gate = value.parse()?,
             "stt.noise-floor-db" => self.stt.noise_floor_db = value.parse()?,
+            "stt.denoise" => self.stt.denoise = value.to_lowercase(),
             "approvals.reviewer" => self.approvals.reviewer = value.to_lowercase(),
             "microphone" => self.microphone = Some(value.into()),
             "codex-bin" => self.codex_bin = Some(PathBuf::from(value).canonicalize()?),
@@ -808,10 +815,15 @@ mod tests {
         let mut s = Settings::default();
         assert!(s.stt.noise_gate);
         assert_eq!(s.stt.noise_floor_db, crate::noise::DEFAULT_FLOOR_DB);
+        assert_eq!(s.stt.denoise, "off");
         s.assign("stt.noise-gate", "false").unwrap();
         assert!(!s.stt.noise_gate);
         s.assign("stt.noise-floor-db", "-48.5").unwrap();
         assert_eq!(s.stt.noise_floor_db, -48.5);
+        s.assign("stt.denoise", "highpass").unwrap();
+        assert_eq!(s.stt.denoise, "highpass");
+        assert!(s.assign("stt.denoise", "rnnoise").is_err());
+        s.stt.denoise = "off".into();
         s.stt.noise_floor_db = -10.0;
         assert!(s.validate().is_err());
     }

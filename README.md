@@ -120,6 +120,8 @@ A room-noise gate removes steady ambient noise from a finished utterance just be
 
 The ambient floor is learned automatically from frames the VAD calls non-speech. For a faster, deliberate result, say `/noise calibrate` (or use Settings → Speech → **Calibrate room noise**) and stay quiet for three seconds; the measured floor is saved as `stt.noise-floor-db` and used from then on. `/noise` shows the current floor and gate state, `/noise reset` returns to the default and lets it re-learn, and `/noise on|off` toggles the gate (also `stt.noise-gate`). The floor is shown in `/audio` diagnostics. The gate applies to local and non-streaming cloud transcription; optional Cartesia streaming uploads audio as you speak, before an utterance exists, so it is not gated.
 
+`stt.denoise` adds an independent, optional 70 Hz high-pass filter. Set it to `highpass` under Settings → Speech or with `acc config set stt.denoise highpass`; `off` is the default. The filter runs after capture on both rolling wake probes and completed local or non-streaming cloud clips, so it can remove low rumble without changing VAD, segmentation, or the room-noise gate's calibration. It does not remove hiss or voices in the speech band, and it cannot recover speech lost to distance or room reverberation. Cartesia streaming bypasses this finished-clip filter. Use `acc config set stt.denoise off` to disable the rumble filter.
+
 ## Test transcription separately
 
 ```sh
@@ -133,6 +135,8 @@ acc --text --agent mock
 The live STT test explicitly displays **all** recognized speech, without an agent or wake gate. Local STT automatically raises quiet, valid utterances into the model’s useful range. Severely clipped input cannot be reconstructed, so Accessor reports a one-time microphone-level warning with a PipeWire adjustment when appropriate. File testing accepts 16 kHz mono PCM WAV and reports model load/inference timing. `--text` never opens a microphone and is silent unless `--speak` is explicitly passed.
 
 `acc stt wake FILE...` runs the production wake matcher on recordings and, by default, prints the transcript and match result with the noise gate off and on (`--noise-gate on|off`, `--wake-code`, `--floor-db`, `--json`). `python scripts/test_wake.py [wav ...]` wraps it, building clean/quiet/noisy variants so the gate can be compared on the same phrase; pass your own "twenty nine" recording for a real wake match.
+
+To compare rumble removal on the same recording, run `acc stt wake room.wav --noise-gate off --denoise off` and then repeat with `--denoise highpass`. Keep the noise-gate setting the same in both runs; compare wake matches and the recognized words, including any quiet phrases lost by the filter.
 
 ## Choose a voice
 

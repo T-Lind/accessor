@@ -226,6 +226,7 @@ pub async fn run(mut args: Run) -> Result<()> {
     let noise_control = Arc::new(crate::noise::Control::new(
         settings.stt.noise_gate,
         settings.stt.noise_floor_db,
+        settings.stt.denoise == "highpass",
     ));
     let (input_tx, mut input_rx) = mpsc::channel(16);
     let control_bridge = crate::control::Bridge::start(input_tx.clone()).await?;
@@ -724,6 +725,8 @@ pub async fn run(mut args: Run) -> Result<()> {
                                         speak=settings.speak;
                                         cloud_stt.store(settings.stt.conversation=="cartesia",Ordering::SeqCst);
                                         streaming_stt.store(settings.stt.streaming,Ordering::SeqCst);
+                                        noise_control.set_enabled(settings.stt.noise_gate);
+                                        noise_control.set_highpass(settings.stt.denoise=="highpass");
                                         ui.set_chat(&settings.chat);
                                         if !speak {speech_queue.clear();speaker=None;echo_guard.finish();}
                                         if changes.get("sounds.think").is_some() {think=None;}
@@ -807,6 +810,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                             if captured_during_output { continue; }
                             let tx=input_tx.clone();
                             let cloud_gate=noise_control.gate();
+                            let cloud_highpass=noise_control.highpass();
                             cloud_job=Some(tokio::spawn(async move {
                                 let start=Instant::now();
                                 let was_streamed=streamed.is_some();
@@ -814,7 +818,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                     crate::usage::record_diagnostic("Streaming STT clip");
                                     streamed.text().await
                                 } else {
-                                    let gated=match &cloud_gate {Some(gate)=>gate.apply(&samples),None=>samples.clone()};
+                                    let gated=crate::noise::prepare_for_stt(&samples,cloud_gate.as_ref(),cloud_highpass);
                                     speech::cartesia_stt(&gated).await
                                 };
                                 let text=match result {
@@ -1005,6 +1009,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                         streaming_stt.store(settings.stt.streaming, Ordering::SeqCst);
                                         if key=="stt.noise-gate" {noise_control.set_enabled(settings.stt.noise_gate);}
                                         if key=="stt.noise-floor-db" {noise_control.set_floor_db(settings.stt.noise_floor_db);}
+                                        if key=="stt.denoise" {noise_control.set_highpass(settings.stt.denoise=="highpass");}
                                         if key=="speak" {speak=settings.speak;}
                                         if key=="chat" {ui.set_chat(&settings.chat);}
                                         if key=="wake-code" || key=="idle-seconds" {session=Session::new(wake::WakeCode::new(&settings.wake_code,&args.wake_alias)?,Duration::from_secs(settings.idle_seconds));epoch.fetch_add(1,Ordering::SeqCst);}
@@ -1066,7 +1071,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                         }
                                     }
                                     _=>{
-                                        ui.message(format!("Room-noise gate: {}. Floor: {:.1} dBFS (auto-tracking). /noise calibrate samples 3 s of quiet; /noise reset clears it; /noise on|off toggles.",if settings.stt.noise_gate {"on"} else {"off"},noise_control.floor_db()));
+                                        ui.message(format!("Room-noise gate: {}. Denoise: {}. Floor: {:.1} dBFS (auto-tracking). /noise calibrate samples 3 s of quiet; /noise reset clears it; /noise on|off toggles. Set stt.denoise to off or highpass in Speech settings.",if settings.stt.noise_gate {"on"} else {"off"},settings.stt.denoise,noise_control.floor_db()));
                                     }
                                 }
                             }
@@ -1140,7 +1145,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 Err(e)=>ui.message(format!("Could not read memory: {e:#}")),
                             }
                         },
-                        ["/audio"] => ui.message(format!("Local wake checks: {wake_checks}; wake hits: {wake_hits}; speaker echoes rejected: {wake_echoes}; last decode: {wake_decode_ms} ms. Rolling checks active: {}. Local engine: {}. Say {}, pause, then your request. No recordings saved. Noise gate: {} at {:.1} dBFS.\n{}; {}; capture paused: {}; decoder errors: {wake_errors}; last wake-window recognition (diagnostic only): {}",interrupting.load(Ordering::SeqCst),settings.stt.engine,settings.wake_code,if settings.stt.noise_gate {"on"} else {"off"},noise_control.floor_db(),audio_diagnostics.summary(),speech_state.summary(),muted.load(Ordering::SeqCst),last_wake_probe)),
+                        ["/audio"] => ui.message(format!("Local wake checks: {wake_checks}; wake hits: {wake_hits}; speaker echoes rejected: {wake_echoes}; last decode: {wake_decode_ms} ms. Rolling checks active: {}. Local engine: {}. Say {}, pause, then your request. No recordings saved. Noise gate: {} at {:.1} dBFS; denoise: {}.\n{}; {}; capture paused: {}; decoder errors: {wake_errors}; last wake-window recognition (diagnostic only): {}",interrupting.load(Ordering::SeqCst),settings.stt.engine,settings.wake_code,if settings.stt.noise_gate {"on"} else {"off"},noise_control.floor_db(),settings.stt.denoise,audio_diagnostics.summary(),speech_state.summary(),muted.load(Ordering::SeqCst),last_wake_probe)),
                         ["/limits"] => ui.message(limits.report()),
                         [action @ ("/worker-approve" | "/worker-deny"), number] => {
                             if let (Ok(number),Some(w))=(number.parse(),worker.as_ref()) {

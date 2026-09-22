@@ -216,7 +216,7 @@ enum SttCommand {
         #[arg(long)]
         plain: bool,
     },
-    /// Test production wake detection on WAV files, with the noise gate on/off.
+    /// Test wake recognition on WAV files with selectable noise processing.
     Wake {
         #[arg(required = true)]
         files: Vec<PathBuf>,
@@ -229,6 +229,9 @@ enum SttCommand {
         /// compare (default) prints gate off vs on; on/off runs one mode.
         #[arg(long, value_parser = ["compare", "on", "off"], default_value = "compare")]
         noise_gate: String,
+        /// Rumble removal; defaults to the saved stt.denoise setting.
+        #[arg(long, value_parser = ["off", "highpass"])]
+        denoise: Option<String>,
         /// Noise floor in dBFS; defaults to stt.noise-floor-db.
         #[arg(long, allow_hyphen_values = true)]
         floor_db: Option<f32>,
@@ -680,12 +683,13 @@ pub async fn entry() -> Result<()> {
                     wake_alias,
                     engine,
                     noise_gate,
+                    denoise,
                     floor_db,
                     json,
                 },
         } => {
             wake_test(
-                files, wake_code, wake_alias, engine, noise_gate, floor_db, json,
+                files, wake_code, wake_alias, engine, noise_gate, denoise, floor_db, json,
             )
             .await
         }
@@ -823,6 +827,7 @@ async fn wake_test(
     wake_alias: Vec<String>,
     engine: String,
     noise_gate: String,
+    denoise: Option<String>,
     floor_db: Option<f32>,
     json: bool,
 ) -> Result<()> {
@@ -830,6 +835,7 @@ async fn wake_test(
     let assets = s.assets()?;
     crate::stt_models::ensure_ready(&assets, &engine, |msg| eprintln!("{msg}")).await?;
     let floor_db = floor_db.unwrap_or(s.stt.noise_floor_db);
+    let denoise = denoise.unwrap_or(s.stt.denoise);
     let wake = crate::wake::WakeCode::new(&wake_code, &wake_alias)?;
     let modes: Vec<(&str, bool)> = match noise_gate.as_str() {
         "on" => vec![("on", true)],
@@ -844,7 +850,7 @@ async fn wake_test(
         for (label, gated) in &modes {
             let gate = gated.then(|| crate::noise::Gate::new(floor_db));
             let began = Instant::now();
-            let text = recognizer.recognize(&samples, gate.as_ref())?;
+            let text = recognizer.recognize(&samples, gate.as_ref(), denoise == "highpass")?;
             let command = wake.strip(&text).map(str::to_owned);
             let probe = wake.in_probe(&text);
             results.insert(
@@ -872,13 +878,14 @@ async fn wake_test(
                 "wake_code": wake_code,
                 "floor_db": floor_db,
                 "gate": noise_gate,
+                "denoise": denoise,
                 "runs": rows,
                 "note": "Offline file test using the production wake matcher. Not a room false-accept or far-field accuracy test.",
             }))?
         );
     } else {
         println!(
-            "Wake detection · engine {engine} · code \"{wake_code}\" · gate {noise_gate} · floor {floor_db:.1} dBFS"
+            "Wake detection · engine {engine} · code \"{wake_code}\" · gate {noise_gate} · denoise {denoise} · floor {floor_db:.1} dBFS"
         );
         for row in &rows {
             println!(

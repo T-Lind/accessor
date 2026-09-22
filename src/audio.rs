@@ -229,17 +229,18 @@ fn transcribe_asr(asr: &mut Asr, samples: &[f32]) -> Result<String> {
     }
 }
 
-/// Recognize a completed utterance, optionally gating steady room noise first.
-/// Wake probes deliberately skip this so barge-in timing and soft wake words
-/// are unaffected.
+/// Recognize a completed utterance with optional steady-noise gating and
+/// low-frequency rumble removal. Wake probes use only the latter, after capture.
 fn transcribe_utterance(
     asr: &mut Asr,
     samples: &[f32],
     gate: Option<&crate::noise::Gate>,
+    highpass: bool,
 ) -> Result<String> {
-    match gate {
-        Some(gate) => transcribe_asr(asr, &gate.apply(samples)),
-        None => transcribe_asr(asr, samples),
+    if gate.is_some() || highpass {
+        transcribe_asr(asr, &crate::noise::prepare_for_stt(samples, gate, highpass))
+    } else {
+        transcribe_asr(asr, samples)
     }
 }
 
@@ -257,8 +258,9 @@ impl Recognizer {
         &mut self,
         samples: &[f32],
         gate: Option<&crate::noise::Gate>,
+        highpass: bool,
     ) -> Result<String> {
-        transcribe_utterance(&mut self.asr, samples, gate)
+        transcribe_utterance(&mut self.asr, samples, gate, highpass)
     }
 }
 
@@ -893,7 +895,8 @@ pub fn listen(
                     break;
                 };
                 let began = Instant::now();
-                let decoded = transcribe_asr(loaded, &probe.samples);
+                let decoded =
+                    transcribe_utterance(loaded, &probe.samples, None, asr_noise.highpass());
                 if interrupting.load(Ordering::SeqCst)
                     && probe.epoch == epoch.load(Ordering::SeqCst)
                 {
@@ -945,7 +948,12 @@ pub fn listen(
                     break;
                 };
                 let began = Instant::now();
-                let decoded = transcribe_utterance(loaded, &u.samples, asr_noise.gate().as_ref());
+                let decoded = transcribe_utterance(
+                    loaded,
+                    &u.samples,
+                    asr_noise.gate().as_ref(),
+                    asr_noise.highpass(),
+                );
                 crate::usage::record_stt(&loaded_engine, u.samples.len() as f64 / 16_000.0);
                 crate::usage::record_latency("Local transcription", began.elapsed());
                 let text = decoded.unwrap_or_default();
@@ -972,7 +980,12 @@ pub fn listen(
                 break;
             };
             let began = Instant::now();
-            let decoded = transcribe_utterance(loaded, &u.samples, asr_noise.gate().as_ref());
+            let decoded = transcribe_utterance(
+                loaded,
+                &u.samples,
+                asr_noise.gate().as_ref(),
+                asr_noise.highpass(),
+            );
             crate::usage::record_stt(&loaded_engine, u.samples.len() as f64 / 16_000.0);
             crate::usage::record_latency("Local transcription", began.elapsed());
             match decoded {
@@ -1415,8 +1428,8 @@ pub fn wrap_pcm16_mono(pcm: &[u8], sample_rate: u32) -> Result<Vec<u8>> {
                 sample_format: hound::SampleFormat::Int,
             },
         )?;
-        for frame in pcm.chunks_exact(2) {
-            writer.write_sample(i16::from_le_bytes([frame[0], frame[1]]))?;
+        for &frame in pcm.as_chunks::<2>().0 {
+            writer.write_sample(i16::from_le_bytes(frame))?;
         }
         writer.finalize()?;
     }
