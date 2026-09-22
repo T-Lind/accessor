@@ -1,8 +1,8 @@
 """Experimental sherpa-onnx keyword benchmark; no mic, training or cloud.
 
-Install sherpa-onnx==1.12.40 and numpy in an isolated environment. Download the
-official sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20 model, then pass its folder.
-This is research tooling, not the production wake path.
+Run setup_wakeword.py to install sherpa-onnx and the official
+sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20 model, then pass its folder. This
+is research tooling, not the production wake path.
 """
 import argparse
 import json

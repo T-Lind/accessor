@@ -97,6 +97,20 @@ keywords through a pronunciation list, avoiding a newly trained classifier for
 every numeric code. Official documentation lists a 4.4 MiB quantized encoder and
 160/320 ms model chunk latency. [Model and customization documentation](https://k2-fsa.github.io/sherpa/onnx/kws/pretrained_models/index.html).
 
+On Linux, install the isolated experiment and its checksum-pinned model, then
+try the live microphone detector:
+
+```sh
+python scripts/setup_wakeword.py
+python scripts/test_wakeword.py
+```
+
+Use `--seconds 30` for a bounded microphone run, `--device NAME` to select a
+PipeWire input, or `--wav tests/fixtures/voice-benchmark.wav` for a repeatable
+file check. A successful detection prints `DETECTED twenty_nine`. Exit status 2
+means the test completed without a detection. This tool does not change saved
+settings or replace Accessor's production Canary wake path.
+
 openWakeWord is another credible candidate: it supports ONNX on Windows and
 custom wake models, but “twenty nine” needs a trained and validated model. Review
 model licensing separately from its Apache-licensed code before distribution.
