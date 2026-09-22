@@ -294,13 +294,22 @@ enum OrganizerCommand {
         #[arg(long)]
         label: Option<String>,
     },
-    /// Schedule an agent prompt relative to now.
+    /// Schedule an agent prompt by delay or device-local calendar time.
     Task {
         prompt: String,
         #[arg(long)]
-        in_seconds: u64,
+        in_seconds: Option<u64>,
         #[arg(long)]
         every_seconds: Option<u64>,
+        /// First local calendar date (YYYY-MM-DD); uses the device timezone.
+        #[arg(long)]
+        local_date: Option<String>,
+        /// Local wall-clock time (HH:MM); follows device timezone changes.
+        #[arg(long)]
+        local_time: Option<String>,
+        /// Repeat by local calendar days rather than elapsed seconds.
+        #[arg(long)]
+        every_days: Option<u32>,
         #[arg(long)]
         label: Option<String>,
         #[arg(long)]
@@ -323,6 +332,12 @@ enum OrganizerCommand {
         at_unix: Option<u64>,
         #[arg(long)]
         every_seconds: Option<u64>,
+        #[arg(long)]
+        local_date: Option<String>,
+        #[arg(long)]
+        local_time: Option<String>,
+        #[arg(long)]
+        every_days: Option<u32>,
         #[arg(long)]
         harness: Option<String>,
         #[arg(long)]
@@ -468,6 +483,9 @@ pub async fn entry() -> Result<()> {
                 prompt,
                 in_seconds,
                 every_seconds,
+                local_date,
+                local_time,
+                every_days,
                 label,
                 harness,
                 model,
@@ -476,9 +494,12 @@ pub async fn entry() -> Result<()> {
                 let item = crate::organizer::add_task(
                     &prompt,
                     label.as_deref(),
-                    Some(in_seconds),
+                    in_seconds,
                     None,
                     every_seconds,
+                    local_date.as_deref(),
+                    local_time.as_deref(),
+                    every_days,
                     harness.as_deref(),
                     model.as_deref(),
                     &reasoning,
@@ -505,6 +526,9 @@ pub async fn entry() -> Result<()> {
                 in_seconds,
                 at_unix,
                 every_seconds,
+                local_date,
+                local_time,
+                every_days,
                 harness,
                 model,
                 reasoning,
@@ -518,6 +542,9 @@ pub async fn entry() -> Result<()> {
                         delay_seconds: in_seconds,
                         at_unix,
                         every_seconds,
+                        local_date,
+                        local_time,
+                        every_days,
                         harness,
                         model,
                         reasoning,

@@ -33,6 +33,11 @@ class MemoryRuntimeTests(unittest.TestCase):
         replies = [json.loads(line) for line in result.stdout.splitlines()]
         self.assertEqual(len(replies), len(calls) + 1)
         self.assertEqual(replies[0]["result"]["protocolVersion"], "2025-11-25")
+        instructions = replies[0]["result"]["instructions"]
+        self.assertIn("notes_search", instructions)
+        self.assertIn("note_read", instructions)
+        self.assertIn("device timezone", instructions)
+        self.assertIn("harness_health", instructions)
         return [reply["result"] for reply in replies[1:]]
 
     def test_shared_process_store_scopes_conflicts_and_forgetting(self):
@@ -66,6 +71,27 @@ class MemoryRuntimeTests(unittest.TestCase):
         self.assertFalse(results[1]["isError"])
         self.assertIn("tea", results[2]["content"][0]["text"])
         self.assertTrue(results[3]["isError"])
+
+    def test_notes_timezone_and_harness_health_are_first_class_mcp_tools(self):
+        results = self.mcp(self.a, [
+            ("organizer_control", {"directive": {"action": "note", "title": "Room test", "text": "Compare raw and denoised microphone wake recall."}}),
+            ("notes_search", {"query": "denoised microphone", "limit": 5}),
+            ("harness_health", {}),
+            ("organizer_control", {"directive": {"action": "schedule", "prompt": "Morning check", "local_date": "2099-01-01", "local_time": "08:00", "every_days": 1, "harness": "mock", "model": "mock-worker", "reasoning": "low"}}),
+            ("organizer_status", {}),
+        ])
+        self.assertTrue(all(not item["isError"] for item in results))
+        found = json.loads(results[1]["content"][0]["text"])["notes"]
+        self.assertEqual(len(found), 1)
+        note = self.mcp(self.a, [("note_read", {"id": found[0]["id"]})])[0]
+        document = json.loads(note["content"][0]["text"])["note"]
+        self.assertEqual(document["title"], "Room test")
+        self.assertIn("wake recall", document["markdown"])
+        health = json.loads(results[2]["content"][0]["text"])
+        self.assertIn("timezone", health["device_time"])
+        self.assertTrue(any(row["id"] == "mock" and row["available"] for row in health["harnesses"]))
+        status = json.loads(results[4]["content"][0]["text"])
+        self.assertIn("follows device timezone", status["status"])
 
     def test_settings_patch_is_atomic_and_security_fields_are_not_exposed(self):
         results = self.mcp(self.a, [

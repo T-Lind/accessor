@@ -8,15 +8,17 @@ and the dedicated CLI prompt. A plain terminal can echo input; use the dashboard
 or dedicated CLI when entering secrets by keyboard.
 
 After setting a password, Accessor locks immediately. Every subsequent launch
-starts locked. Say **“29 unlock [your passphrase]”** in one utterance, then say
-“29” and your request. Substitute your configured wake code. Alternatively,
-type `/unlock`, then enter the passphrase in the masked field. Saying **“29 lock”**
-or typing `/lock` locks again; while awake, “lock” alone also works. During audible
-output, the existing wake-interruption limitations still apply; keyboard `/lock`
-is the reliable fallback.
+starts locked. Say **“29”**, wait for the chime, then say **“unlock [your
+passphrase]”** within eight seconds. You can also say **“29 unlock [your
+passphrase]”** in one utterance. After unlocking, say “29” and your request.
+Substitute your configured wake code. Alternatively, type `/unlock`, then enter
+the passphrase in the masked field. Saying **“29 lock”** or typing `/lock` locks
+again; while awake, “lock” alone also works. During audible output, the existing
+wake-interruption limitations still apply; keyboard `/lock` is the reliable
+fallback.
 
-Spoken unlocking is enabled by default. It uses local transcription, with cloud
-STT/streaming disabled while locked. Unlock phrases never enter agent history,
+Spoken unlocking is enabled by default. Both the wake and passphrase use local
+transcription, with cloud STT/streaming disabled while locked. Unlock phrases never enter agent history,
 relevance checks, activity messages, or analytics. Case, punctuation and whitespace
 are normalized, but every word must match exactly and in order. There is no fuzzy
 password matching or speaker identification. Choose words rather than digits to

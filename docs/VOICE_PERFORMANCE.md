@@ -111,6 +111,27 @@ file check. A successful detection prints `DETECTED twenty_nine`. Exit status 2
 means the test completed without a detection. This tool does not change saved
 settings or replace Accessor's production Canary wake path.
 
+To test the production local STT path across a real room, run:
+
+```sh
+python3 scripts/test_room_wake.py
+```
+
+The guided test records three trials at 1, 3 and 5 metres in quiet and ordinary
+background noise, transcribes every clip locally in one model process, prints
+wake recall, and deletes the WAV files afterward. The JSON report retains the
+recognized text. Use `--keep-audio DIR` only when you deliberately want to keep
+the room recordings. If PipeWire exposes an RNNoise or other noise-suppressed
+virtual source, compare it with the physical/default source in the same run:
+
+```sh
+python3 scripts/test_room_wake.py --device RAW_NODE --denoised-device FILTERED_NODE
+```
+
+List candidate source names with `acc devices` or `wpctl status`. This is a
+positive recall test of full-clip recognition, not the rolling wake-window
+timing or an estimate of false activations per hour.
+
 openWakeWord is another credible candidate: it supports ONNX on Windows and
 custom wake models, but “twenty nine” needs a trained and validated model. Review
 model licensing separately from its Apache-licensed code before distribution.

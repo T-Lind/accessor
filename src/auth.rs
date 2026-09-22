@@ -237,7 +237,12 @@ impl Lock {
 /// Always consume explicit unlock attempts locally, even when already unlocked.
 /// This prevents a repeated passphrase from becoming an agent prompt.
 pub fn spoken_unlock<'a>(wake: &crate::wake::WakeCode, text: &'a str) -> Option<&'a str> {
-    let rest = wake.strip(text)?.trim();
+    spoken_unlock_followup(wake.strip(text)?.trim())
+}
+
+/// Accept the second half of a two-utterance local unlock after a bare wake.
+pub fn spoken_unlock_followup(text: &str) -> Option<&str> {
+    let rest = text.trim();
     let word = rest.get(..6)?;
     if !word.eq_ignore_ascii_case("unlock") {
         return None;
@@ -245,6 +250,11 @@ pub fn spoken_unlock<'a>(wake: &crate::wake::WakeCode, text: &'a str) -> Option<
     let phrase = rest.get(6..)?;
     (phrase.is_empty() || phrase.starts_with(|c: char| !c.is_alphanumeric()))
         .then(|| phrase.trim_start_matches(|c: char| !c.is_alphanumeric()))
+}
+
+pub fn spoken_wake(wake: &crate::wake::WakeCode, text: &str) -> bool {
+    wake.strip(text)
+        .is_some_and(|rest| normalize(rest).is_empty())
 }
 
 pub fn spoken_lock(wake: &crate::wake::WakeCode, text: &str) -> bool {
@@ -261,6 +271,12 @@ mod tests {
             spoken_unlock(&wake, "twenty nine unlock Blue, River Lantern!"),
             Some("Blue, River Lantern!")
         );
+        assert!(spoken_wake(&wake, "hey twenty nine!"));
+        assert_eq!(
+            spoken_unlock_followup("unlock Blue, River Lantern!"),
+            Some("Blue, River Lantern!")
+        );
+        assert!(spoken_unlock_followup("blue river lantern").is_none());
         assert!(spoken_unlock(&wake, "unlock blue river lantern").is_none());
         assert!(spoken_unlock(&wake, "29 unlocking secrets").is_none());
         assert!(spoken_lock(&wake, "29 lock!"));
