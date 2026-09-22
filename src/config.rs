@@ -146,7 +146,7 @@ impl Default for Tts {
             streaming: true,
             volume: 1.0,
             provider: "system".into(),
-            voice: "95856005-0332-41b0-935f-352e296aa0df".into(),
+            voice: crate::speech::DEFAULT_CARTESIA_VOICE.into(),
             model: "sonic-3".into(),
             local_voice: "af_heart".into(),
             speed: 1.0,
@@ -282,7 +282,7 @@ pub fn locations(settings: &Settings) -> String {
         .map(display_path)
         .unwrap_or_else(|_| "(unavailable)".into());
     format!(
-        "Accessor home (copy this folder to replicate settings):\n  {home}\n  config.json          wake, harnesses, TTS, routing (no secrets)\n  analytics.json       optional usage totals\n  models.json          cached Codex model list\n  notes/               private Markdown notes\n  schedules.json       pending alarms and agent tasks\n  password.json        salted passphrase hash and retry counter\n  tts-cache/           legacy audio cache; acc tts clear-cache removes it\n  events/              local Gmail notification queue\nSettings file:\n  {config}\nSpeech models / ONNX runtime (large; copy or let `acc` re-download):\n  {assets}\n  Override with ACC_HOME (settings) or ACC_ASSETS (models).\nAPI keys are NOT in that folder. The optional password.json contains only a salted hash. Re-enter them on the new machine:\n  acc tts key     Cartesia (TTS + Ink-2)\n  acc jev key     TypeSafe / Jev\n  AI_GATEWAY_API_KEY or OS credential 'ai-gateway'\nWindows: Credential Manager, service name Accessor.\nHarness CLIs (Codex / Claude Code / agy) and their plugin logins live in those apps, not here.\nassets-dir in config.json is often an absolute path — set it again on the other machine if the checkout moved. Starting acc without speech files downloads ONNX Runtime and the selected local STT model automatically."
+        "Accessor home (copy this folder to replicate settings):\n  {home}\n  config.json          wake, harnesses, TTS, routing (no secrets)\n  analytics.json       optional usage totals\n  models.json          cached Codex model list\n  voices.json          cached Cartesia voice list\n  notes/               private Markdown notes\n  schedules.json       pending alarms and agent tasks\n  password.json        salted passphrase hash and retry counter\n  tts-cache/           legacy audio cache; acc tts clear-cache removes it\n  events/              local Gmail notification queue\nSettings file:\n  {config}\nSpeech models / ONNX runtime (large; copy or let `acc` re-download):\n  {assets}\n  Override with ACC_HOME (settings) or ACC_ASSETS (models).\nAPI keys are NOT in that folder. The optional password.json contains only a salted hash. Re-enter them on the new machine:\n  acc tts key     Cartesia (TTS + Ink-2)\n  acc jev key     TypeSafe / Jev\n  AI_GATEWAY_API_KEY or OS credential 'ai-gateway'\nWindows: Credential Manager, service name Accessor.\nHarness CLIs (Codex / Claude Code / agy) and their plugin logins live in those apps, not here.\nassets-dir in config.json is often an absolute path — set it again on the other machine if the checkout moved. Starting acc without speech files downloads ONNX Runtime and the selected local STT model automatically."
     )
 }
 impl Settings {
@@ -492,7 +492,12 @@ impl Settings {
             }
             "tts.provider" => self.tts.provider = value.into(),
             "tts.streaming" => self.tts.streaming = value.parse()?,
-            "tts.voice" => self.tts.voice = value.into(),
+            "tts.voice" => {
+                self.tts.voice = crate::speech::resolve_voice(value, &crate::speech::voice_catalog())
+                    .context(
+                        "Unknown Cartesia voice. Run /tts voices, pick one in /settings → Speech → Voice, or paste a voice ID.",
+                    )?;
+            }
             "tts.local-voice" => self.tts.local_voice = value.into(),
             "tts.model" => self.tts.model = value.into(),
             "tts.speed" => self.tts.speed = value.parse()?,

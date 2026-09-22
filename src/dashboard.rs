@@ -64,7 +64,7 @@ pub fn summary(s: &Settings) -> String {
     format!("Wake code: {}\nWake once, then follow up for {} idle seconds (0 = never sleep)\nMain harness: {} · {} · {}\nCoding agent: {} · {} · {}\nCompaction agent: {} · {} · {} @ ~{} tokens\nPlugins & connectors: {} · {} · {}{}\nInput relevance: {}\nSpoken replies: {} · {} · {:.2}×\nLocal STT: {} · Conversation STT: {}\nApprovals: {}\nSettings: {}\nUse /settings for harness → model → reasoning.",s.wake_code,s.idle_seconds,s.routing.main,s.routing.main_model.as_deref().unwrap_or(crate::config::light_model(&s.routing.main)),s.routing.reasoning,s.routing.coding,s.model.as_deref().unwrap_or(crate::config::worker_model(&s.routing.coding)),s.routing.coding_reasoning,s.routing.compaction_harness,s.routing.compaction_model,s.routing.compaction_reasoning,s.routing.compact_tokens,plugin,plugin_model,plugin_effort,if s.routing.plugin_use_main {" (follows main)"} else {""},s.routing.input_gate,s.speak,s.tts.provider,s.tts.speed,s.stt.engine,s.stt.conversation,s.approvals.reviewer,crate::config::path().map(|p|p.display().to_string()).unwrap_or_default())
 }
 pub fn tts_help(s: &Settings) -> String {
-    format!("Voice provider: {}\nSpeed: {:.2}× (0.6–1.5)\n/tts provider system|kokoro|cartesia|off\n/tts voice VOICE_ID        Set the selected provider's voice\n/tts speed 1.1            Speaking speed for local and Cartesia voices\n/tts test [sample text]    Hear a sample\n/tts voices               List neural voices\n/tts key                  Enter Cartesia key in a hidden field\nKokoro installation: python scripts/setup_tts.py",s.tts.provider,s.tts.speed)
+    format!("Voice provider: {}\nSpeed: {:.2}× (0.6–1.5)\n/tts provider system|kokoro|cartesia|off\n/tts voice NAME_OR_ID      Pick a voice by name or id\n/tts model MODEL           Cartesia model (default sonic-3)\n/tts speed 1.1            Speaking speed for local and Cartesia voices\n/tts test [sample text]    Hear a sample\n/tts voices [search]      List Cartesia voices (marks the current one)\n/tts key                  Enter Cartesia key in a hidden field\nKokoro installation: python scripts/setup_tts.py",s.tts.provider,s.tts.speed)
 }
 pub enum LocalCommand {
     Settings,
@@ -116,28 +116,41 @@ pub fn parse(text: &str, s: &Settings) -> Result<Option<LocalCommand>> {
         ["/tts", "provider", provider] => {
             LocalCommand::Set("tts.provider".into(), (*provider).into())
         }
-        ["/tts", "voice", voice] => LocalCommand::Set(
-            if s.tts.provider == "kokoro" {
-                "tts.local-voice"
-            } else {
-                "tts.voice"
+        ["/tts", "voice", rest @ ..] => {
+            let value = rest.join(" ");
+            if value.is_empty() {
+                bail!("Usage: /tts voice VOICE_NAME_OR_ID");
             }
-            .into(),
-            (*voice).into(),
-        ),
+            LocalCommand::Set(
+                if s.tts.provider == "kokoro" {
+                    "tts.local-voice"
+                } else {
+                    "tts.voice"
+                }
+                .into(),
+                value,
+            )
+        }
         ["/tts", "speed", speed] => LocalCommand::Set("tts.speed".into(), (*speed).into()),
+        ["/tts", "model", model] => LocalCommand::Set("tts.model".into(), (*model).into()),
         ["/tts", "test", ..] => LocalCommand::Speak(parts[2..].join(" ")),
         ["/tts", "key"] => LocalCommand::Secret("cartesia"),
-        ["/tts", "voices"] => {
+        ["/tts", "voices", rest @ ..] => {
             if s.tts.provider != "cartesia" && s.tts.provider != "kokoro" {
                 bail!("Choose /tts provider kokoro or cartesia first.");
             }
-            LocalCommand::Utility(vec![
+            let mut args = vec![
                 "tts".into(),
                 "voices".into(),
                 "--provider".into(),
                 s.tts.provider.clone(),
-            ])
+            ];
+            let search = rest.join(" ");
+            if !search.is_empty() {
+                args.push("--search".into());
+                args.push(search);
+            }
+            LocalCommand::Utility(args)
         }
         ["/devices"] => LocalCommand::Utility(vec!["devices".into()]),
         ["/connectors"] | ["/connectors", "status"] => {
@@ -307,5 +320,32 @@ mod tests {
         assert_eq!(s.wake_code, "42");
         assert_eq!(s.idle_seconds, 0);
         assert_eq!(s.tts.provider, "kokoro");
+    }
+    #[test]
+    fn voice_and_voice_search_commands_parse() {
+        let s = Settings {
+            tts: crate::config::Tts {
+                provider: "cartesia".into(),
+                ..crate::config::Tts::default()
+            },
+            ..Settings::default()
+        };
+        let Some(LocalCommand::Set(key, value)) =
+            parse("/tts voice Classy British Man", &s).unwrap()
+        else {
+            panic!("voice command")
+        };
+        assert_eq!(key, "tts.voice");
+        assert_eq!(value, "Classy British Man");
+        let Some(LocalCommand::Utility(args)) = parse("/tts voices british", &s).unwrap() else {
+            panic!("voice search")
+        };
+        assert!(args.contains(&"--search".to_string()));
+        assert!(args.contains(&"british".to_string()));
+        let Some(LocalCommand::Set(key, value)) = parse("/tts model sonic-3", &s).unwrap() else {
+            panic!("model command")
+        };
+        assert_eq!(key, "tts.model");
+        assert_eq!(value, "sonic-3");
     }
 }
