@@ -216,6 +216,25 @@ enum SttCommand {
         #[arg(long)]
         plain: bool,
     },
+    /// Test production wake detection on WAV files, with the noise gate on/off.
+    Wake {
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+        #[arg(long, default_value = "29")]
+        wake_code: String,
+        #[arg(long)]
+        wake_alias: Vec<String>,
+        #[arg(long, default_value = "canary")]
+        engine: String,
+        /// compare (default) prints gate off vs on; on/off runs one mode.
+        #[arg(long, value_parser = ["compare", "on", "off"], default_value = "compare")]
+        noise_gate: String,
+        /// Noise floor in dBFS; defaults to stt.noise-floor-db.
+        #[arg(long, allow_hyphen_values = true)]
+        floor_db: Option<f32>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 #[derive(Subcommand)]
 enum TtsCommand {
@@ -653,6 +672,23 @@ pub async fn entry() -> Result<()> {
                 app::run(args).await
             }
         }
+        Commands::Stt {
+            action:
+                SttCommand::Wake {
+                    files,
+                    wake_code,
+                    wake_alias,
+                    engine,
+                    noise_gate,
+                    floor_db,
+                    json,
+                },
+        } => {
+            wake_test(
+                files, wake_code, wake_alias, engine, noise_gate, floor_db, json,
+            )
+            .await
+        }
         Commands::Tts { action } => match action {
             TtsCommand::Benchmark {
                 playback,
@@ -778,6 +814,101 @@ async fn transcribe(file: PathBuf, dir: Option<PathBuf>) -> Result<()> {
         samples.len() as f64 / 16000.,
         start.elapsed().as_secs_f64()
     );
+    Ok(())
+}
+#[allow(clippy::too_many_arguments)]
+async fn wake_test(
+    files: Vec<PathBuf>,
+    wake_code: String,
+    wake_alias: Vec<String>,
+    engine: String,
+    noise_gate: String,
+    floor_db: Option<f32>,
+    json: bool,
+) -> Result<()> {
+    let s = Settings::load()?;
+    let assets = s.assets()?;
+    crate::stt_models::ensure_ready(&assets, &engine, |msg| eprintln!("{msg}")).await?;
+    let floor_db = floor_db.unwrap_or(s.stt.noise_floor_db);
+    let wake = crate::wake::WakeCode::new(&wake_code, &wake_alias)?;
+    let modes: Vec<(&str, bool)> = match noise_gate.as_str() {
+        "on" => vec![("on", true)],
+        "off" => vec![("off", false)],
+        _ => vec![("off", false), ("on", true)],
+    };
+    let mut recognizer = audio::Recognizer::load(&assets, &engine)?;
+    let mut rows = Vec::new();
+    for file in &files {
+        let samples = transcribe_rs::audio::read_wav_samples(file)?;
+        let mut results = serde_json::Map::new();
+        for (label, gated) in &modes {
+            let gate = gated.then(|| crate::noise::Gate::new(floor_db));
+            let began = Instant::now();
+            let text = recognizer.recognize(&samples, gate.as_ref())?;
+            let command = wake.strip(&text).map(str::to_owned);
+            let probe = wake.in_probe(&text);
+            results.insert(
+                (*label).into(),
+                serde_json::json!({
+                    "text": text,
+                    "wake": command.is_some(),
+                    "command": command,
+                    "probe": probe,
+                    "inference_ms": began.elapsed().as_secs_f64() * 1000.0,
+                }),
+            );
+        }
+        rows.push(serde_json::json!({
+            "file": file.display().to_string(),
+            "seconds": samples.len() as f64 / 16000.0,
+            "results": results,
+        }));
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "engine": engine,
+                "wake_code": wake_code,
+                "floor_db": floor_db,
+                "gate": noise_gate,
+                "runs": rows,
+                "note": "Offline file test using the production wake matcher. Not a room false-accept or far-field accuracy test.",
+            }))?
+        );
+    } else {
+        println!(
+            "Wake detection · engine {engine} · code \"{wake_code}\" · gate {noise_gate} · floor {floor_db:.1} dBFS"
+        );
+        for row in &rows {
+            println!(
+                "{}  ({:.2}s)",
+                row["file"].as_str().unwrap_or(""),
+                row["seconds"].as_f64().unwrap_or(0.0)
+            );
+            for (label, _) in &modes {
+                let r = &row["results"][label];
+                println!(
+                    "  gate {label:<3} wake={:<5} probe={:<5} {:>6.0} ms  {}",
+                    if r["wake"].as_bool().unwrap_or(false) {
+                        "yes"
+                    } else {
+                        "no"
+                    },
+                    if r["probe"].as_bool().unwrap_or(false) {
+                        "yes"
+                    } else {
+                        "no"
+                    },
+                    r["inference_ms"].as_f64().unwrap_or(0.0),
+                    ui::safe(r["text"].as_str().unwrap_or(""))
+                );
+                if let Some(command) = r["command"].as_str() {
+                    println!("      command: {}", ui::safe(command));
+                }
+            }
+        }
+    }
     Ok(())
 }
 async fn setup() -> Result<()> {

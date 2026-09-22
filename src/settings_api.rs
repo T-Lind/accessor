@@ -34,6 +34,7 @@ pub const KEYS: &[&str] = &[
     "routing.announce",
     "stt.conversation",
     "stt.streaming",
+    "stt.noise-gate",
 ];
 pub fn read(s: &Settings) -> Value {
     let source = serde_json::to_value(s).unwrap();

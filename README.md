@@ -60,6 +60,7 @@ Everything needed day to day is available inside the screen:
 | `/tts test`, `/tts voices [search]` | Audition or list/search voices; the current one is marked |
 | `/tts key` | Masked Cartesia key entry; saved in the OS credential store |
 | `/stt test`, `/stt off` | Start/stop live transcription testing |
+| `/noise` | Room-noise gate: `/noise calibrate`, `reset`, `on`, `off` |
 | `/devices` | List microphones in the conversation area |
 | `/connectors` | Check the agent's connected apps |
 | `/connectors setup` | Open the configured plugin harness for native plugin/MCP setup; exit it to return |
@@ -113,16 +114,25 @@ Each harness keeps its own native conversation alive. When routing moves to anot
 
 Local models decode completed speech segments after a configurable pause (`stt.endpoint-ms`, default 600 ms); long speech is delivered in overlapping 30-second chunks. Local recognition defaults to two CPU threads with spinning disabled; `stt.threads` and `stt.spin` tune the runtime after restart. Whisper uses the selected thread count with a low-beam decoder. Completed clips queue in order; explicit cancellation or sleep invalidates old capture. Optional Cartesia streaming overlaps upload with capture and local recognition.
 
+## Room noise calibration and suppression
+
+A room-noise gate removes steady ambient noise from a finished utterance just before it is recognized, which reduces noise-driven hallucinations without changing wake detection, barge-in timing, or segmentation. It is on by default and conservative: speech above the learned floor is untouched, steady noise near the floor is attenuated by at most 10 dB, and the gain always starts open so the first word is not clipped. It runs on the transcription path, not the capture hot path.
+
+The ambient floor is learned automatically from frames the VAD calls non-speech. For a faster, deliberate result, say `/noise calibrate` (or use Settings → Speech → **Calibrate room noise**) and stay quiet for three seconds; the measured floor is saved as `stt.noise-floor-db` and used from then on. `/noise` shows the current floor and gate state, `/noise reset` returns to the default and lets it re-learn, and `/noise on|off` toggles the gate (also `stt.noise-gate`). The floor is shown in `/audio` diagnostics. The gate applies to local and non-streaming cloud transcription; optional Cartesia streaming uploads audio as you speak, before an utterance exists, so it is not gated.
+
 ## Test transcription separately
 
 ```sh
 acc stt test
 acc stt test --file sample.wav
 acc transcribe sample.wav
+acc stt wake sample.wav
 acc --text --agent mock
 ```
 
 The live STT test explicitly displays **all** recognized speech, without an agent or wake gate. Local STT automatically raises quiet, valid utterances into the model’s useful range. Severely clipped input cannot be reconstructed, so Accessor reports a one-time microphone-level warning with a PipeWire adjustment when appropriate. File testing accepts 16 kHz mono PCM WAV and reports model load/inference timing. `--text` never opens a microphone and is silent unless `--speak` is explicitly passed.
+
+`acc stt wake FILE...` runs the production wake matcher on recordings and, by default, prints the transcript and match result with the noise gate off and on (`--noise-gate on|off`, `--wake-code`, `--floor-db`, `--json`). `python scripts/test_wake.py [wav ...]` wraps it, building clean/quiet/noisy variants so the gate can be compared on the same phrase; pass your own "twenty nine" recording for a real wake match.
 
 ## Choose a voice
 
