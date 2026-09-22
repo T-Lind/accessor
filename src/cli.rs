@@ -246,6 +246,9 @@ enum TtsCommand {
     Voices {
         #[arg(long,value_parser=["kokoro","cartesia"])]
         provider: Option<String>,
+        /// Filter Cartesia voices by name, id, or description.
+        #[arg(long)]
+        search: Option<String>,
     },
     /// Remove the stored Cartesia key.
     ForgetKey,
@@ -678,12 +681,12 @@ pub async fn entry() -> Result<()> {
                 );
                 Ok(())
             }
-            TtsCommand::Setup => tts_setup(),
+            TtsCommand::Setup => tts_setup().await,
             TtsCommand::ForgetKey => config::delete_secret("cartesia"),
-            TtsCommand::Voices { provider } => {
+            TtsCommand::Voices { provider, search } => {
                 let s = Settings::load()?;
                 if provider.as_deref().unwrap_or(&s.tts.provider) == "cartesia" {
-                    speech::voices().await
+                    speech::voices(search.as_deref()).await
                 } else {
                     speech::local_voices(&s).await
                 }
@@ -802,7 +805,7 @@ async fn setup() -> Result<()> {
     );
     Ok(())
 }
-fn tts_setup() -> Result<()> {
+async fn tts_setup() -> Result<()> {
     let mut s = Settings::load()?;
     let options = [
         "System voice — installed on this computer",
@@ -825,10 +828,40 @@ fn tts_setup() -> Result<()> {
     } else if n == 2 {
         let key = read_secret_line("Cartesia API key (saved in the OS credential store)")?;
         config::save_secret("cartesia", &key)?;
-        s.tts.voice = Input::new()
-            .with_prompt("Cartesia voice ID")
-            .default(s.tts.voice)
-            .interact_text()?;
+        let mut catalog = speech::fetch_voices().await.unwrap_or_default();
+        if catalog.is_empty() {
+            catalog = speech::voice_catalog();
+        }
+        if !catalog.iter().any(|v| v.id == s.tts.voice) {
+            catalog.insert(
+                0,
+                speech::CartesiaVoice {
+                    id: s.tts.voice.clone(),
+                    name: "Current voice".into(),
+                    description: speech::short_id(&s.tts.voice),
+                },
+            );
+        }
+        let items: Vec<String> = catalog
+            .iter()
+            .map(|v| {
+                if v.description.is_empty() {
+                    v.name.clone()
+                } else {
+                    format!("{} — {}", v.name, v.description)
+                }
+            })
+            .collect();
+        let default = catalog
+            .iter()
+            .position(|v| v.id == s.tts.voice)
+            .unwrap_or(0);
+        let pick = Select::new()
+            .with_prompt("Cartesia voice")
+            .items(&items)
+            .default(default)
+            .interact()?;
+        s.tts.voice = catalog[pick].id.clone();
         s.tts.model = Input::new()
             .with_prompt("Cartesia model")
             .default(s.tts.model)

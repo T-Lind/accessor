@@ -115,6 +115,9 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut models = crate::connectors::cached_models();
     let mut model_lookup: Option<tokio::task::JoinHandle<Result<Vec<crate::connectors::Model>>>> =
         None;
+    let mut voice_lookup: Option<
+        tokio::task::JoinHandle<Result<Vec<crate::speech::CartesiaVoice>>>,
+    > = None;
     let mut panel: Option<crate::settings_ui::Panel> = None;
     let mut connected = false;
     let mut pending_prompt: Option<String> = None;
@@ -911,6 +914,10 @@ pub async fn run(mut args: Run) -> Result<()> {
                                     model_lookup=Some(tokio::spawn(crate::connectors::models(executable)));
                                     ui.message("Refreshing available Codex models...");
                                 }
+                                if settings.tts.provider=="cartesia" && voice_lookup.is_none() && config::optional_secret("cartesia","CARTESIA_API_KEY").is_some() {
+                                    voice_lookup=Some(tokio::spawn(crate::speech::fetch_voices()));
+                                    ui.message("Refreshing available Cartesia voices...");
+                                }
                             }
                             LocalCommand::SettingsNav(dir)=>{
                                 let Some(menu)=panel.as_mut() else {continue;};
@@ -1000,6 +1007,10 @@ pub async fn run(mut args: Run) -> Result<()> {
                                         }
                                         if key=="tts.provider" && settings.tts.provider=="cartesia" {
                                             ui.message("That is spoken output (TTS), not transcription. Use Speech → After wake STT, or /stt provider cartesia, for Ink-2.");
+                                            if voice_lookup.is_none() && config::optional_secret("cartesia","CARTESIA_API_KEY").is_some() {
+                                                voice_lookup=Some(tokio::spawn(crate::speech::fetch_voices()));
+                                                ui.message("Refreshing available Cartesia voices...");
+                                            }
                                         }
                                         if spoken_setting && speak {speech_queue.push_back(format!("Selected {key}: {value}."));}
                                         if let Some(menu)=&panel {ui.settings(Some(menu.display(&settings,connected,&models)));}
@@ -1665,6 +1676,13 @@ pub async fn run(mut args: Run) -> Result<()> {
                         Ok(Ok(available))=>{models=available;ui.message(format!("Loaded {} available Codex models.",models.len()));if let Some(menu)=&panel {ui.settings(Some(menu.display(&settings,connected,&models)));}}
                         Ok(Err(e))=>ui.message(format!("Model discovery unavailable: {e:#}. Cached choices remain available.")),
                         Err(e)=>ui.message(format!("Model discovery stopped: {e}")),
+                    }
+                }
+                if voice_lookup.as_ref().is_some_and(|task|task.is_finished()) {
+                    match voice_lookup.take().unwrap().await {
+                        Ok(Ok(list))=>{ui.message(format!("Loaded {} Cartesia voices.",list.len()));if let Some(menu)=&panel {ui.settings(Some(menu.display(&settings,connected,&models)));}}
+                        Ok(Err(e))=>ui.message(format!("Cartesia voices unavailable: {e:#}. Built-in and cached voices remain.")),
+                        Err(e)=>ui.message(format!("Cartesia voice list stopped: {e}")),
                     }
                 }
                 if utility.as_ref().is_some_and(|task|task.is_finished()) {

@@ -146,97 +146,111 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
             ),
             row("Back", "categories", Action::Open(Page::Home)),
         ],
-        Page::Speech => vec![
-            row(
-                "End-of-speech pause",
-                &format!("{} ms", s.stt.endpoint_ms),
-                Action::Edit("stt.endpoint-ms"),
-            ),
-            row(
-                "Recognition CPU threads",
-                &format!("{} (restart)", s.stt.threads),
-                Action::Edit("stt.threads"),
-            ),
-            row(
-                "Keep CPU spinning",
-                on(s.stt.spin),
-                Action::Toggle("stt.spin"),
-            ),
-            row("Speak replies", on(s.speak), Action::Toggle("speak")),
-            row(
-                "Speak progress",
-                on(s.speak_progress),
-                Action::Toggle("speak-progress"),
-            ),
-            row(
-                "TTS provider",
-                &s.tts.provider,
-                Action::Edit("tts.provider"),
-            ),
-            row(
-                "Voice ID",
-                voice_id(s),
-                Action::Edit(if s.tts.provider == "kokoro" {
-                    "tts.local-voice"
-                } else {
-                    "tts.voice"
-                }),
-            ),
-            row(
-                "Speed",
-                &format!("{:.2}×", s.tts.speed),
-                Action::Edit("tts.speed"),
-            ),
-            row(
-                "Local STT model",
-                &engine_label(s),
-                Action::Edit("stt.engine"),
-            ),
-            row(
-                "After wake STT",
-                if s.stt.conversation == "cartesia" {
-                    "external · Cartesia Ink-2"
-                } else {
-                    "internal · same local model"
-                },
-                Action::Cycle("stt.conversation", STT_MODES),
-            ),
-            row(
-                "Cartesia streaming",
-                if s.stt.streaming {
-                    "on · uploads awake speech as you talk"
-                } else {
-                    "off · local word check before upload"
-                },
-                Action::Toggle("stt.streaming"),
-            ),
-            row(
-                "Compute saving",
-                if s.stt.lazy {
-                    "load local STT on speech, free when asleep"
-                } else {
-                    "keep local STT in RAM"
-                },
-                Action::Toggle("stt.lazy"),
-            ),
-            row(
-                "Speech volume",
-                &format!("{:.0}%", s.tts.volume * 100.0),
-                Action::Edit("tts.volume"),
-            ),
-            row("Test voice", "play a sample", Action::Run("/tts test")),
-            row(
-                "Stream Cartesia replies",
-                on(s.tts.streaming),
-                Action::Toggle("tts.streaming"),
-            ),
-            row("List voices", "", Action::Run("/tts voices")),
-            row(
-                "Cartesia API key",
-                "hidden credential",
-                Action::Run("/tts key"),
-            ),
-        ],
+        Page::Speech => {
+            let mut list = vec![
+                row(
+                    "End-of-speech pause",
+                    &format!("{} ms", s.stt.endpoint_ms),
+                    Action::Edit("stt.endpoint-ms"),
+                ),
+                row(
+                    "Recognition CPU threads",
+                    &format!("{} (restart)", s.stt.threads),
+                    Action::Edit("stt.threads"),
+                ),
+                row(
+                    "Keep CPU spinning",
+                    on(s.stt.spin),
+                    Action::Toggle("stt.spin"),
+                ),
+                row("Speak replies", on(s.speak), Action::Toggle("speak")),
+                row(
+                    "Speak progress",
+                    on(s.speak_progress),
+                    Action::Toggle("speak-progress"),
+                ),
+                row(
+                    "TTS provider",
+                    &s.tts.provider,
+                    Action::Edit("tts.provider"),
+                ),
+                row(
+                    match s.tts.provider.as_str() {
+                        "cartesia" => "Cartesia voice",
+                        "kokoro" => "Kokoro voice",
+                        _ => "Voice",
+                    },
+                    &voice_id(s),
+                    Action::Edit(if s.tts.provider == "kokoro" {
+                        "tts.local-voice"
+                    } else {
+                        "tts.voice"
+                    }),
+                ),
+                row(
+                    "Speed",
+                    &format!("{:.2}×", s.tts.speed),
+                    Action::Edit("tts.speed"),
+                ),
+                row(
+                    "Local STT model",
+                    &engine_label(s),
+                    Action::Edit("stt.engine"),
+                ),
+                row(
+                    "After wake STT",
+                    if s.stt.conversation == "cartesia" {
+                        "external · Cartesia Ink-2"
+                    } else {
+                        "internal · same local model"
+                    },
+                    Action::Cycle("stt.conversation", STT_MODES),
+                ),
+                row(
+                    "Cartesia streaming",
+                    if s.stt.streaming {
+                        "on · uploads awake speech as you talk"
+                    } else {
+                        "off · local word check before upload"
+                    },
+                    Action::Toggle("stt.streaming"),
+                ),
+                row(
+                    "Compute saving",
+                    if s.stt.lazy {
+                        "load local STT on speech, free when asleep"
+                    } else {
+                        "keep local STT in RAM"
+                    },
+                    Action::Toggle("stt.lazy"),
+                ),
+                row(
+                    "Speech volume",
+                    &format!("{:.0}%", s.tts.volume * 100.0),
+                    Action::Edit("tts.volume"),
+                ),
+                row("Test voice", "play a sample", Action::Run("/tts test")),
+                row(
+                    "Stream Cartesia replies",
+                    on(s.tts.streaming),
+                    Action::Toggle("tts.streaming"),
+                ),
+                row("List / refresh voices", "", Action::Run("/tts voices")),
+                row(
+                    "Cartesia API key",
+                    "hidden credential",
+                    Action::Run("/tts key"),
+                ),
+            ];
+            if s.tts.provider == "cartesia" {
+                list.push(row(
+                    "Cartesia model",
+                    &s.tts.model,
+                    Action::Edit("tts.model"),
+                ));
+            }
+            list
+        }
         Page::Harnesses => vec![
             row(
                 "Main agent",
@@ -439,9 +453,13 @@ fn hint(action: &Action) -> &'static str {
             "Saved instructions sent to Codex, Claude, and Antigravity. Type default to restore the hands-free voice prompt."
         }
         Action::Edit("tts.provider") => "How replies are spoken: system, kokoro, cartesia, or off.",
-        Action::Edit("tts.voice") | Action::Edit("tts.local-voice") => {
-            "Voice id for the current TTS provider."
+        Action::Edit("tts.voice") => {
+            "Pick a Cartesia voice by number or name; run /tts voices to refresh the list."
         }
+        Action::Edit("tts.local-voice") => {
+            "Kokoro voice id, e.g. af_heart. Run /tts voices for the list."
+        }
+        Action::Edit("tts.model") => "Cartesia model id, e.g. sonic-3. Esc returns.",
         Action::Edit("tts.speed") => "Speaking speed 0.6–1.5 for Kokoro and Cartesia.",
         Action::Edit("stt.engine") => {
             "Opens the full local STT list. Esc backs out with no download. Only the model you pick is confirmed, and only if it is not already installed."
@@ -623,12 +641,37 @@ fn on(v: bool) -> &'static str {
         "off"
     }
 }
-fn voice_id(s: &Settings) -> &str {
+fn voice_id(s: &Settings) -> String {
     match s.tts.provider.as_str() {
-        "kokoro" => s.tts.local_voice.as_str(),
-        "cartesia" => s.tts.voice.as_str(),
-        _ => "OS default",
+        "kokoro" => s.tts.local_voice.clone(),
+        "cartesia" => crate::speech::voice_name(&s.tts.voice),
+        _ => "OS default".into(),
     }
+}
+fn voice_picker(s: &Settings) -> String {
+    let catalog = crate::speech::catalog_with_current(&s.tts.voice);
+    let mut text = format!(
+        "Cartesia voice — type a number or name. Current: {}\n",
+        voice_id(s)
+    );
+    for (i, v) in catalog.iter().enumerate() {
+        let current = if v.id == s.tts.voice { "  current" } else { "" };
+        let detail = if v.description.is_empty() {
+            String::new()
+        } else {
+            format!(" · {}", v.description)
+        };
+        text.push_str(&format!(
+            "{}  {} ({}){}{}\n",
+            i + 1,
+            v.name,
+            crate::speech::short_id(&v.id),
+            detail,
+            current
+        ));
+    }
+    text.push_str("Run /tts voices to refresh the list from Cartesia. Esc returns.");
+    text
 }
 fn chat_mode(s: &Settings) -> &'static str {
     match s.chat.as_str() {
@@ -1062,7 +1105,15 @@ impl Panel {
                 "idle-seconds" => "Wake-listening seconds (0–3600; 0 = no timeout). Esc returns.".into(),
                 "wake-code" => "Wake code (digits). Esc returns.".into(),
                 "tts.provider" => "system, kokoro, cartesia, or off. Esc returns.".into(),
-                "tts.local-voice" | "tts.voice" => "Voice ID. Esc returns.".into(),
+                "tts.local-voice" => {
+                    "Kokoro voice id (e.g. af_heart). Run /tts voices for the list. Esc returns."
+                        .into()
+                }
+                "tts.voice" => voice_picker(s),
+                "tts.model" => format!(
+                    "Cartesia model id (default {}). Esc returns.",
+                    crate::config::Tts::default().model
+                ),
                 "tts.speed" => "Speed 0.6–1.5. Esc returns.".into(),
                 "sounds.think" | "sounds.wake" | "sounds.sleep" | "sounds.alarm" | "tts.volume" => {
                     "Volume 0–1.5 (or 0–150%). 0 is silent, 1 is default. Esc returns.".into()
@@ -1246,6 +1297,21 @@ impl Panel {
                         "Choose a listed local STT model. Esc returns without downloading."
                     )
                 })?,
+                "tts.voice" => {
+                    let catalog = crate::speech::catalog_with_current(&s.tts.voice);
+                    if let Ok(n) = value.parse::<usize>() {
+                        catalog
+                            .get(n.saturating_sub(1))
+                            .map(|v| v.id.clone())
+                            .ok_or_else(|| anyhow::anyhow!("Choose a listed voice number."))?
+                    } else {
+                        crate::speech::resolve_voice(value, &catalog).ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Unknown Cartesia voice. Type a listed number or name, or run /tts voices."
+                            )
+                        })?
+                    }
+                }
                 _ => value.to_owned(),
             };
             self.field = None;
@@ -1630,6 +1696,27 @@ mod tests {
         assert_eq!(
             resolve_model("1", &chosen).as_deref(),
             Some("gemini-3.8-flash")
+        );
+    }
+    #[test]
+    fn cartesia_voice_picker_lists_names_and_resolves_them() {
+        let s = Settings {
+            tts: crate::config::Tts {
+                provider: "cartesia".into(),
+                ..crate::config::Tts::default()
+            },
+            ..Settings::default()
+        };
+        let mut speech = Panel::default();
+        speech.answer("2", &s, &[]).unwrap();
+        assert!(speech.display(&s, false, &[]).contains("Cartesia model"));
+        assert!(speech
+            .display(&s, false, &[])
+            .contains("Classy British Man"));
+        let catalog = crate::speech::catalog_with_current(&s.tts.voice);
+        assert_eq!(
+            crate::speech::resolve_voice("classy british man", &catalog).as_deref(),
+            Some(crate::speech::DEFAULT_CARTESIA_VOICE)
         );
     }
 }

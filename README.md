@@ -57,7 +57,7 @@ Everything needed day to day is available inside the screen:
 | `/setup` | Four-step setup wizard; Enter keeps defaults, Escape cancels |
 | `/config`, `/config set KEY VALUE` | Inspect and save settings |
 | `/tts`, `/tts provider kokoro`, `/tts voice af_heart` | Configure spoken replies |
-| `/tts test`, `/tts voices` | Audition or list voices |
+| `/tts test`, `/tts voices [search]` | Audition or list/search voices; the current one is marked |
 | `/tts key` | Masked Cartesia key entry; saved in the OS credential store |
 | `/stt test`, `/stt off` | Start/stop live transcription testing |
 | `/devices` | List microphones in the conversation area |
@@ -148,7 +148,7 @@ acc config set tts.local-voice af_heart
 
 The helper creates an isolated environment under runtime/kokoro and verifies the approximately 325 MB model plus 28 MB voice file by SHA-256. It supports Python 3.10–3.13 where upstream wheels are available. Initial loading can take several seconds. Performance on an old laptop needs measurement; no real-time guarantee is implied. [Piper](https://github.com/OHF-Voice/piper1-gpl) is a possible lighter future adapter, not bundled here.
 
-For Cartesia, choose it in `acc tts setup`; the password prompt hides the key. `acc tts voices --provider cartesia` lists up to 100 voices. `acc tts forget-key` deletes the saved key. Linux credential storage needs a running Secret Service such as GNOME Keyring; there is no plaintext fallback.
+For Cartesia, choose it in `acc tts setup`; the password prompt hides the key, then the setup lists your account voices by name so you can pick one instead of pasting a UUID. `acc tts voices --provider cartesia` lists up to 100 voices with descriptions and marks the current one; add a search term to filter (for example `acc tts voices --provider cartesia --search british`). The list is cached in `voices.json` under the settings folder so the in-screen picker works offline after the first fetch. `acc tts forget-key` deletes the saved key. Linux credential storage needs a running Secret Service such as GNOME Keyring; there is no plaintext fallback.
 
 Export a sample without playing it:
 
@@ -316,7 +316,7 @@ An agent can call `settings_read`, then `settings_update` with a `changes` objec
 
 Supported preferences include speech provider/voice/model/speed/volume, spoken replies/progress, wake/sleep/think/alarm volumes, barge-in, idle timeout, display mode, after-wake STT/streaming/relevance, and main/coding/plugin harness/model/reasoning. Speed accepts 0.6–1.5; volumes accept 0–1.5 (0 is silent, 1 is normal). Speech gain is applied at playback, before echo-reference submission, so cached voices use the selected volume too.
 
-The agent treats requests such as “speak more quietly” as settings changes: it reads the current settings, updates `tts.volume` through MCP, and waits for the receipt. The next spoken reply uses the new volume. Cartesia defaults to **Classy British Man** (`95856005-0332-41b0-935f-352e296aa0df`); existing profiles that still have the former built-in Skylar default migrate automatically, while explicitly selected voices are preserved.
+The agent treats requests such as “speak more quietly” as settings changes: it reads the current settings, updates `tts.volume` through MCP, and waits for the receipt. The next spoken reply uses the new volume. Cartesia defaults to **Classy British Man** (`95856005-0332-41b0-935f-352e296aa0df`); existing profiles that still have the former built-in Skylar default migrate automatically, while explicitly selected voices are preserved. Set a Cartesia voice by friendly name or id (`/tts voice Classy British Man`, `/settings tts.voice british`); the name is resolved against the cached account list, and an unknown multi-word name is rejected instead of being saved as a broken id.
 
 Main uses `routing.main`, `routing.main-model`, `routing.reasoning`; coding uses `routing.coding`, `model`, `routing.coding-reasoning`; plugin preferences use `agent`, `routing.plugin-model`, `routing.plugin-reasoning`, and `routing.plugin-use-main`. Set the last one to true to inherit main. Change harness and model together, or set a model to `default`; available harnesses are included in `settings_read`. Reasoning values are default/low/medium/high. This selects a connector preference; it does not install plugins or connect/authorize accounts.
 
