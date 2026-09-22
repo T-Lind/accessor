@@ -278,7 +278,177 @@ pub async fn cartesia_stt(samples: &[f32]) -> Result<String> {
     }
     anyhow::bail!("Cartesia Ink STT returned no transcript")
 }
-pub async fn voices() -> Result<()> {
+/// A selectable Cartesia voice. Cached locally so the settings picker works
+/// offline after the list has been fetched once.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct CartesiaVoice {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
+/// Cartesia's built-in default voice (Classy British Man).
+pub const DEFAULT_CARTESIA_VOICE: &str = "95856005-0332-41b0-935f-352e296aa0df";
+
+fn builtin_voices() -> Vec<CartesiaVoice> {
+    vec![CartesiaVoice {
+        id: DEFAULT_CARTESIA_VOICE.into(),
+        name: "Classy British Man".into(),
+        description: "Measured, polished British male; Accessor's default".into(),
+    }]
+}
+
+/// Voices fetched from Cartesia and cached under the settings directory.
+pub fn cached_voices() -> Vec<CartesiaVoice> {
+    config::home()
+        .ok()
+        .and_then(|p| std::fs::read(p.join("voices.json")).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+/// A short id for compact display, e.g. `95856005…`.
+pub fn short_id(id: &str) -> String {
+    let head: String = id.chars().take(8).collect();
+    if id.chars().count() > 8 {
+        format!("{head}…")
+    } else {
+        head
+    }
+}
+
+/// The full list used by pickers: cached account voices plus the built-in
+/// default, de-duplicated by id.
+pub fn voice_catalog() -> Vec<CartesiaVoice> {
+    let mut list = cached_voices();
+    if list.is_empty() {
+        list = builtin_voices();
+    }
+    for voice in builtin_voices() {
+        if !list.iter().any(|v| v.id == voice.id) {
+            list.push(voice);
+        }
+    }
+    list
+}
+
+/// A catalog that always includes `current`, even when it is a private voice
+/// that never appeared in the fetched list.
+pub fn catalog_with_current(current: &str) -> Vec<CartesiaVoice> {
+    let mut list = voice_catalog();
+    if !current.is_empty() && !list.iter().any(|v| v.id == current) {
+        list.insert(
+            0,
+            CartesiaVoice {
+                id: current.into(),
+                name: "Custom voice".into(),
+                description: String::new(),
+            },
+        );
+    }
+    list
+}
+
+/// Friendly name for a voice id, falling back to the id itself.
+pub fn voice_name(id: &str) -> String {
+    voice_catalog()
+        .into_iter()
+        .find(|v| v.id == id)
+        .map(|v| v.name)
+        .unwrap_or_else(|| id.to_owned())
+}
+
+fn normalized(text: &str) -> String {
+    text.to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect()
+}
+
+/// Resolve typed input to a Cartesia voice id. Accepts an exact id, a unique
+/// friendly name (or its last word), `default`, or a plausible raw id.
+pub fn resolve_voice(value: &str, catalog: &[CartesiaVoice]) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if value.eq_ignore_ascii_case("default") {
+        return Some(DEFAULT_CARTESIA_VOICE.into());
+    }
+    if let Some(voice) = catalog.iter().find(|v| v.id.eq_ignore_ascii_case(value)) {
+        return Some(voice.id.clone());
+    }
+    let needle = normalized(value);
+    let unique = |ok: Vec<&CartesiaVoice>| {
+        if ok.len() == 1 {
+            Some(ok[0].id.clone())
+        } else {
+            None
+        }
+    };
+    if let Some(id) = unique(
+        catalog
+            .iter()
+            .filter(|v| normalized(&v.name) == needle)
+            .collect(),
+    ) {
+        return Some(id);
+    }
+    if let Some(id) = unique(
+        catalog
+            .iter()
+            .filter(|v| {
+                v.name
+                    .split_whitespace()
+                    .last()
+                    .is_some_and(|w| normalized(w) == needle)
+            })
+            .collect(),
+    ) {
+        return Some(id);
+    }
+    // A private voice id the user pasted directly. Require an id-like shape
+    // (a hyphen or a long token) so a misspelled name cannot silently become a
+    // broken setting.
+    if value.len() <= 128
+        && !value.contains(char::is_whitespace)
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-._".contains(c))
+        && (value.contains('-') || value.len() >= 16)
+    {
+        return Some(value.to_owned());
+    }
+    None
+}
+
+fn parse_voices(data: &Value) -> Vec<CartesiaVoice> {
+    data["data"]
+        .as_array()
+        .or_else(|| data.as_array())
+        .map(|voices| {
+            voices
+                .iter()
+                .filter_map(|v| {
+                    let id = v["id"].as_str()?;
+                    Some(CartesiaVoice {
+                        id: id.into(),
+                        name: v["name"]
+                            .as_str()
+                            .filter(|n| !n.trim().is_empty())
+                            .unwrap_or(id)
+                            .into(),
+                        description: v["description"].as_str().unwrap_or("").trim().into(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Fetch the account's voices from Cartesia and cache them locally.
+pub async fn fetch_voices() -> Result<Vec<CartesiaVoice>> {
     let key = config::secret("cartesia", "CARTESIA_API_KEY")?;
     let response = crate::http::client()?
         .get("https://api.cartesia.ai/voices")
@@ -289,23 +459,57 @@ pub async fn voices() -> Result<()> {
         .await?;
     ensure!(
         response.status().is_success(),
-        "Cartesia voices returned HTTP {}",
+        "Cartesia voices returned HTTP {}. Check the API key in /tts key.",
         response.status()
     );
     let data: Value = response.json().await?;
-    let voices = data["data"]
-        .as_array()
-        .or_else(|| data.as_array())
-        .context("Unexpected voice list format")?;
-    for v in voices {
+    let voices = parse_voices(&data);
+    ensure!(!voices.is_empty(), "Cartesia returned no voices");
+    config::save_private(
+        &config::home()?.join("voices.json"),
+        &serde_json::to_vec(&voices)?,
+    )?;
+    Ok(voices)
+}
+
+/// Print the account's Cartesia voices, optionally filtered by a search term,
+/// marking the currently selected voice.
+pub async fn voices(search: Option<&str>) -> Result<()> {
+    let voices = fetch_voices().await?;
+    let current = config::Settings::load()
+        .map(|s| s.tts.voice)
+        .unwrap_or_default();
+    let needle = search.unwrap_or("").trim().to_lowercase();
+    let mut shown = 0;
+    for v in &voices {
+        if !needle.is_empty()
+            && !v.name.to_lowercase().contains(&needle)
+            && !v.id.to_lowercase().contains(&needle)
+            && !v.description.to_lowercase().contains(&needle)
+        {
+            continue;
+        }
+        shown += 1;
+        let marker = if v.id == current { "  ← current" } else { "" };
+        let description = if v.description.is_empty() {
+            String::new()
+        } else {
+            format!(" — {}", crate::ui::safe(&v.description))
+        };
         println!(
-            "{}  {}",
-            v["id"].as_str().unwrap_or(""),
-            crate::ui::safe(v["name"].as_str().unwrap_or(""))
+            "{}  {}  ({}){}{}",
+            shown,
+            crate::ui::safe(&v.name),
+            v.id,
+            description,
+            marker
         );
     }
-    if data["has_more"] == true {
-        println!("Showing the first 100 voices; additional voices are available in your Cartesia dashboard.");
+    if shown == 0 {
+        println!(
+            "No Cartesia voices matched \"{}\".",
+            crate::ui::safe(search.unwrap_or(""))
+        );
     }
     Ok(())
 }
@@ -636,5 +840,50 @@ mod tests {
         assert_eq!(v["output_format"]["encoding"], "pcm_s16le");
         assert_eq!(v["generation_config"]["speed"], 1.0);
         assert!(v.get("api_key").is_none());
+    }
+    #[test]
+    fn cartesia_voice_list_parses_names_and_descriptions() {
+        let data = json!({"data":[
+            {"id":"x","name":"Alpha","description":"calm and deep"},
+            {"id":"y"}
+        ]});
+        let list = parse_voices(&data);
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].name, "Alpha");
+        assert_eq!(list[0].description, "calm and deep");
+        assert_eq!(list[1].name, "y");
+    }
+    #[test]
+    fn cartesia_voice_resolution_accepts_ids_names_and_defaults() {
+        let catalog = vec![CartesiaVoice {
+            id: "abc-123".into(),
+            name: "Test Voice".into(),
+            description: String::new(),
+        }];
+        assert_eq!(
+            resolve_voice("test voice", &catalog).as_deref(),
+            Some("abc-123")
+        );
+        assert_eq!(resolve_voice("Voice", &catalog).as_deref(), Some("abc-123"));
+        assert_eq!(
+            resolve_voice("ABC-123", &catalog).as_deref(),
+            Some("abc-123")
+        );
+        assert_eq!(
+            resolve_voice("default", &catalog).as_deref(),
+            Some(DEFAULT_CARTESIA_VOICE)
+        );
+        assert_eq!(
+            resolve_voice("123e4567-e89b-12d3-a456-426614174000", &catalog).as_deref(),
+            Some("123e4567-e89b-12d3-a456-426614174000")
+        );
+        assert!(resolve_voice("not a real voice", &catalog).is_none());
+        assert!(resolve_voice("man", &catalog).is_none());
+    }
+    #[test]
+    fn catalog_with_current_keeps_private_voice_selectable() {
+        let list = catalog_with_current("private-custom-id");
+        assert!(list.iter().any(|v| v.id == "private-custom-id"));
+        assert!(list.iter().any(|v| v.id == DEFAULT_CARTESIA_VOICE));
     }
 }
