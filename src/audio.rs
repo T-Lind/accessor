@@ -669,6 +669,7 @@ pub fn listen(
             let mut resampler = FftFixedIn::<f32>::new(rate, 16_000, 1024, 2, 1)?;
             let mut raw = VecDeque::new();
             let mut frames = VecDeque::new();
+            let mut resample_in: Vec<f32> = Vec::new();
             let mut detector = earshot::Detector::default();
             let mut segments = Segmenter::new();
             let mut cloud_live: Option<crate::stt_stream::Live> = None;
@@ -723,16 +724,23 @@ pub fn listen(
                     }
                 }
                 raw.extend(chunk.samples);
-                while raw.len() >= resampler.input_frames_next() {
+                loop {
                     let n = resampler.input_frames_next();
-                    let data: Vec<f32> = raw.drain(..n).collect();
-                    let converted = resampler.process(&[data], None)?;
+                    if raw.len() < n {
+                        break;
+                    }
+                    resample_in.clear();
+                    resample_in.extend(raw.drain(..n));
+                    let converted = resampler.process(&[resample_in.as_slice()], None)?;
                     while let Ok(chunk) = reference.try_recv() {
                         canceller.render(chunk);
                     }
                     canceller.capture(&converted[0], &mut frames)?;
                     while frames.len() >= 256 {
-                        let frame: Vec<f32> = frames.drain(..256).collect();
+                        let mut frame = [0.0_f32; 256];
+                        for (slot, value) in frame.iter_mut().zip(frames.drain(..256)) {
+                            *slot = value;
+                        }
                         let speech = detector.predict_f32(&frame) >= 0.5;
                         let output_active = dsp_interrupting.load(Ordering::SeqCst)
                             || dsp_state.playback.load(Ordering::SeqCst);
@@ -1050,15 +1058,17 @@ where
             if muted.load(Ordering::SeqCst) {
                 return;
             }
-            let samples: Vec<f32> = data
-                .chunks_exact(channels)
-                .map(|frame| {
-                    frame.iter().map(|s| s.to_sample::<f32>()).sum::<f32>() / channels as f32
-                })
-                .collect();
-            let clipping = !samples.is_empty()
-                && samples.iter().filter(|sample| sample.abs() >= 0.98).count() * 20
-                    >= samples.len();
+            let mut samples: Vec<f32> = Vec::with_capacity(data.len() / channels.max(1));
+            let mut clipped = 0_usize;
+            for frame in data.chunks_exact(channels) {
+                let sample =
+                    frame.iter().map(|s| s.to_sample::<f32>()).sum::<f32>() / channels as f32;
+                if sample.abs() >= 0.98 {
+                    clipped += 1;
+                }
+                samples.push(sample);
+            }
+            let clipping = !samples.is_empty() && clipped * 20 >= samples.len();
             clipping_chunks = if clipping {
                 clipping_chunks.saturating_add(1)
             } else {
@@ -1207,7 +1217,9 @@ where
                 }
                 return;
             }
-            let mut rendered = Vec::with_capacity(data.len() / channels);
+            let mut rendered = reference
+                .as_ref()
+                .map(|_| Vec::with_capacity(data.len() / channels));
             for frame in data.chunks_mut(channels) {
                 let t = i as f32 / rate;
                 i += 1;
@@ -1221,12 +1233,14 @@ where
                         break;
                     }
                 }
-                rendered.push(sample);
+                if let Some(rendered) = &mut rendered {
+                    rendered.push(sample);
+                }
                 for s in frame {
                     *s = T::from_sample(sample);
                 }
             }
-            if let Some(tx) = &reference {
+            if let (Some(tx), Some(rendered)) = (&reference, rendered) {
                 let _ = tx.try_send(crate::echo::Render {
                     samples: rendered,
                     rate: rate as u32,
@@ -1262,17 +1276,21 @@ where
                 }
                 return;
             }
-            let mut rendered = Vec::with_capacity(data.len() / channels);
+            let mut rendered = reference
+                .as_ref()
+                .map(|_| Vec::with_capacity(data.len() / channels));
             for frame in data.chunks_mut(channels) {
                 let t = i as f32 / rate;
                 i += 1;
                 let sample = think_sample(&mut phase, t, 1.0 / rate, volume);
-                rendered.push(sample);
+                if let Some(rendered) = &mut rendered {
+                    rendered.push(sample);
+                }
                 for s in frame {
                     *s = T::from_sample(sample);
                 }
             }
-            if let Some(tx) = &reference {
+            if let (Some(tx), Some(rendered)) = (&reference, rendered) {
                 let _ = tx.try_send(crate::echo::Render {
                     samples: rendered,
                     rate: rate as u32,
@@ -1302,7 +1320,9 @@ where
     Ok(device.build_output_stream(
         config,
         move |data: &mut [T], _| {
-            let mut rendered = Vec::with_capacity(data.len() / channels);
+            let mut rendered = reference
+                .as_ref()
+                .map(|_| Vec::with_capacity(data.len() / channels));
             for frame in data.chunks_mut(channels) {
                 let t = i as f32 / rate;
                 i += 1;
@@ -1323,12 +1343,14 @@ where
                 } else {
                     0.0
                 };
-                rendered.push(sample);
+                if let Some(rendered) = &mut rendered {
+                    rendered.push(sample);
+                }
                 for output in frame {
                     *output = T::from_sample(sample);
                 }
             }
-            if let Some(tx) = &reference {
+            if let (Some(tx), Some(rendered)) = (&reference, rendered) {
                 let _ = tx.try_send(crate::echo::Render {
                     samples: rendered,
                     rate: rate as u32,
@@ -1643,7 +1665,9 @@ where
     Ok(device.build_output_stream(
         config,
         move |output: &mut [T], _| {
-            let mut rendered = Vec::with_capacity(output.len() / channels);
+            let mut rendered = reference
+                .as_ref()
+                .map(|_| Vec::with_capacity(output.len() / channels));
             let pause = paused.load(Ordering::SeqCst);
             for frame in output.chunks_mut(channels) {
                 let value = playback.next(pause).unwrap_or_else(|| {
@@ -1653,9 +1677,11 @@ where
                 for sample in frame {
                     *sample = T::from_sample(value);
                 }
-                rendered.push(value);
+                if let Some(rendered) = &mut rendered {
+                    rendered.push(value);
+                }
             }
-            if let Some(tx) = &reference {
+            if let (Some(tx), Some(rendered)) = (&reference, rendered) {
                 let _ = tx.try_send(crate::echo::Render {
                     samples: rendered,
                     rate: output_rate,

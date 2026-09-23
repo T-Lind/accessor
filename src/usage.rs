@@ -117,10 +117,16 @@ fn record(kind: &str, label: &str, units: f64, usd: f64) {
     accumulate(&event, &mut store.lifetime);
     store.session.push(event.clone());
     if store.session.len() > MAX_EVENTS {
-        store.session.remove(0);
+        let extra = store.session.len() - MAX_EVENTS;
+        store.session.drain(..extra);
     }
     store.events.push(event);
-    store.events.retain(|e| e.ts >= ts.saturating_sub(WEEK * 4));
+    // Events are appended in time order, so expiry only ever removes a prefix.
+    let cutoff = ts.saturating_sub(WEEK * 4);
+    let expired = store.events.partition_point(|e| e.ts < cutoff);
+    if expired > 0 {
+        store.events.drain(..expired);
+    }
     if store.events.len() > MAX_EVENTS {
         let extra = store.events.len() - MAX_EVENTS;
         store.events.drain(..extra);

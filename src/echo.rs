@@ -32,7 +32,7 @@ impl Canceller {
             echo_canceller: Some(sonora::config::EchoCanceller::default()),
             ..Default::default()
         };
-        Self {
+        let mut canceller = Self {
             apm: sonora::AudioProcessing::builder()
                 .config(config)
                 .capture_config(sonora::StreamConfig::new(16000, 1))
@@ -42,7 +42,11 @@ impl Canceller {
             capture: VecDeque::new(),
             position: 0.,
             previous: None,
-        }
+        };
+        // AEC3 estimates acoustic delay; the hint covers typical device buffering.
+        // It is a fixed constant, so set it once rather than on every frame.
+        let _ = canceller.apm.set_stream_delay_ms(60);
+        canceller
     }
     pub fn render(&mut self, chunk: Render) {
         if chunk.at.elapsed() > Duration::from_millis(500) || chunk.rate == 0 {
@@ -72,16 +76,22 @@ impl Canceller {
         self.capture.extend(input);
         while self.capture.len() >= 160 {
             // Render frames come from actual output callbacks, not synthesis time.
-            // AEC3 estimates acoustic delay; the hint covers typical device buffering.
             while self.render.len() >= 160 {
-                let r: Vec<_> = self.render.drain(..160).collect();
-                let mut dest = [0.; 160];
-                self.apm.process_render_f32(&[&r], &mut [&mut dest])?;
+                let mut r = [0.0_f32; 160];
+                for slot in &mut r {
+                    *slot = self.render.pop_front().unwrap_or(0.0);
+                }
+                let mut dest = [0.0_f32; 160];
+                self.apm
+                    .process_render_f32(&[r.as_slice()], &mut [dest.as_mut_slice()])?;
             }
-            let c: Vec<_> = self.capture.drain(..160).collect();
-            let mut dest = [0.; 160];
-            self.apm.set_stream_delay_ms(60)?;
-            self.apm.process_capture_f32(&[&c], &mut [&mut dest])?;
+            let mut c = [0.0_f32; 160];
+            for slot in &mut c {
+                *slot = self.capture.pop_front().unwrap_or(0.0);
+            }
+            let mut dest = [0.0_f32; 160];
+            self.apm
+                .process_capture_f32(&[c.as_slice()], &mut [dest.as_mut_slice()])?;
             out.extend(dest);
         }
         Ok(())

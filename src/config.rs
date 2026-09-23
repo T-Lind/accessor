@@ -1,6 +1,11 @@
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::{io::Write, path::PathBuf};
+use std::{
+    io::Write,
+    path::PathBuf,
+    sync::{Mutex, OnceLock},
+    time::SystemTime,
+};
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -269,6 +274,19 @@ pub fn home() -> Result<PathBuf> {
 pub fn path() -> Result<PathBuf> {
     Ok(home()?.join("config.json"))
 }
+struct CacheEntry {
+    path: PathBuf,
+    modified: Option<SystemTime>,
+    len: u64,
+    settings: Settings,
+}
+static SETTINGS_CACHE: OnceLock<Mutex<Option<CacheEntry>>> = OnceLock::new();
+fn file_stamp(path: &std::path::Path) -> (Option<SystemTime>, u64) {
+    match std::fs::metadata(path) {
+        Ok(meta) => (meta.modified().ok(), meta.len()),
+        Err(_) => (None, 0),
+    }
+}
 fn display_path(p: PathBuf) -> String {
     p.display()
         .to_string()
@@ -294,6 +312,18 @@ pub fn locations(settings: &Settings) -> String {
 impl Settings {
     pub fn load() -> Result<Self> {
         let p = path()?;
+        // Settings are read on per-utterance and per-synthesis paths. Cache the
+        // parsed value and invalidate on the file's mtime/size instead of
+        // re-reading and re-validating JSON every time.
+        let (modified, len) = file_stamp(&p);
+        let cache = SETTINGS_CACHE.get_or_init(|| Mutex::new(None));
+        if let Ok(guard) = cache.lock() {
+            if let Some(entry) = guard.as_ref() {
+                if entry.path == p && entry.modified == modified && entry.len == len {
+                    return Ok(entry.settings.clone());
+                }
+            }
+        }
         let mut value = if p.exists() {
             serde_json::from_slice(&std::fs::read(&p)?)
                 .with_context(|| format!("Invalid settings: {}", p.display()))?
@@ -302,6 +332,14 @@ impl Settings {
         };
         migrate_defaults(&mut value);
         value.validate()?;
+        if let Ok(mut guard) = cache.lock() {
+            *guard = Some(CacheEntry {
+                path: p,
+                modified,
+                len,
+                settings: value.clone(),
+            });
+        }
         Ok(value)
     }
     pub fn validate(&self) -> Result<()> {

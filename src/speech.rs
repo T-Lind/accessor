@@ -46,21 +46,29 @@ pub fn speak_chunks(text: &str) -> Vec<String> {
     }
     let mut out = Vec::new();
     let mut buf = String::new();
+    let mut buf_len = 0_usize;
     for word in text.split_whitespace() {
-        let trial = if buf.is_empty() {
-            word.to_string()
-        } else {
-            format!("{buf} {word}")
-        };
         let boundary = word.ends_with('.') || word.ends_with('?') || word.ends_with('!');
-        if trial.chars().count() > 220 && !buf.is_empty() {
-            out.push(std::mem::take(&mut buf));
-            buf = word.to_string();
+        let word_len = word.chars().count();
+        let trial_len = if buf.is_empty() {
+            word_len
         } else {
-            buf = trial;
-        }
-        if boundary && buf.chars().count() >= 24 {
+            buf_len + 1 + word_len
+        };
+        if trial_len > 220 && !buf.is_empty() {
             out.push(std::mem::take(&mut buf));
+            buf.push_str(word);
+            buf_len = word_len;
+        } else {
+            if !buf.is_empty() {
+                buf.push(' ');
+            }
+            buf.push_str(word);
+            buf_len = trial_len;
+        }
+        if boundary && buf_len >= 24 {
+            out.push(std::mem::take(&mut buf));
+            buf_len = 0;
         }
     }
     if !buf.is_empty() {

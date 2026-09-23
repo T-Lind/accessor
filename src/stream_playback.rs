@@ -187,24 +187,29 @@ where
     Ok(device.build_output_stream(
         config,
         move |output: &mut [T], _| {
-            let mut rendered = Vec::with_capacity(output.len() / channels);
+            let mut rendered = reference
+                .as_ref()
+                .map(|_| Vec::with_capacity(output.len() / channels));
             let paused = state.capture.holding() || state.stop.load(Ordering::SeqCst);
             for frame in output.chunks_mut(channels) {
                 let value = buffer.next(paused).unwrap_or_else(|| {
                     state.done.store(true, Ordering::SeqCst);
                     0.0
                 });
-                if buffer.ready && !paused {
-                    state.capture.playback(true);
-                    state.playing.store(true, Ordering::SeqCst);
-                }
                 let value = (value * volume.clamp(0.0, 1.5)).clamp(-1.0, 1.0);
                 for sample in frame {
                     *sample = T::from_sample(value);
                 }
-                rendered.push(value);
+                if let Some(rendered) = &mut rendered {
+                    rendered.push(value);
+                }
             }
-            if let Some(tx) = &reference {
+            // Set the playback gate once per callback rather than per frame.
+            if buffer.ready && !paused {
+                state.capture.playback(true);
+                state.playing.store(true, Ordering::SeqCst);
+            }
+            if let (Some(tx), Some(rendered)) = (&reference, rendered) {
                 let _ = tx.try_send(crate::echo::Render {
                     samples: rendered,
                     rate,
