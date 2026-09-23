@@ -77,17 +77,17 @@ impl Default for Routing {
             main: "codex".into(),
             main_model: None,
             plugin_model: None,
-            router: "keywords".into(),
+            router: "jev".into(),
             announce: true,
-            auto_model: false,
-            reasoning: "low".into(),
+            auto_model: true,
+            reasoning: "default".into(),
             coding_reasoning: "medium".into(),
             plugin_reasoning: "low".into(),
             compaction_reasoning: "low".into(),
             plugin_use_main: true,
             input_gate: "jev".into(),
-            compaction_model: "gpt-5.6-luna".into(),
-            compaction_harness: "codex".into(),
+            compaction_model: "gemini-3.8-flash-low".into(),
+            compaction_harness: "antigravity".into(),
             compact_tokens: 4000,
         }
     }
@@ -113,13 +113,13 @@ impl Default for Stt {
             endpoint_ms: 600,
             threads: 2,
             spin: false,
-            conversation: "local".into(),
-            streaming: false,
+            conversation: "cartesia".into(),
+            streaming: true,
             lazy: false,
             engine: "canary".into(),
             noise_gate: true,
             noise_floor_db: crate::noise::DEFAULT_FLOOR_DB,
-            denoise: "off".into(),
+            denoise: "highpass".into(),
         }
     }
 }
@@ -151,11 +151,11 @@ impl Default for Tts {
         Self {
             streaming: true,
             volume: 1.0,
-            provider: "system".into(),
+            provider: "cartesia".into(),
             voice: crate::speech::DEFAULT_CARTESIA_VOICE.into(),
             model: "sonic-3".into(),
             local_voice: "af_heart".into(),
-            speed: 1.0,
+            speed: 1.1,
         }
     }
 }
@@ -171,7 +171,7 @@ impl Default for Sounds {
     fn default() -> Self {
         Self {
             alarm: 1.0,
-            think: 1.0,
+            think: 1.5,
             wake: 1.0,
             sleep: 1.0,
         }
@@ -815,7 +815,7 @@ mod tests {
         let mut s = Settings::default();
         assert!(s.stt.noise_gate);
         assert_eq!(s.stt.noise_floor_db, crate::noise::DEFAULT_FLOOR_DB);
-        assert_eq!(s.stt.denoise, "off");
+        assert_eq!(s.stt.denoise, "highpass");
         s.assign("stt.noise-gate", "false").unwrap();
         assert!(!s.stt.noise_gate);
         s.assign("stt.noise-floor-db", "-48.5").unwrap();
@@ -838,13 +838,40 @@ mod tests {
     fn missing_prompt_and_compaction_use_defaults() {
         let s: Settings = serde_json::from_str(r#"{"wake_code":"29"}"#).unwrap();
         assert!(s.prompt.contains("hands-free"));
-        assert_eq!(s.routing.compaction_harness, "codex");
+        assert_eq!(s.routing.compaction_harness, "antigravity");
         assert_eq!(s.routing.compact_tokens, 4000);
-        assert_eq!(s.sounds.think, 1.0);
+        assert_eq!(s.sounds.think, 1.5);
         assert_eq!(
             harness_default_model("antigravity"),
             Some("gemini-3.8-flash")
         );
+    }
+    #[test]
+    fn new_profile_matches_portable_working_defaults() {
+        let s = Settings::default();
+        assert_eq!(s.stt.engine, "canary");
+        assert_eq!(s.stt.conversation, "cartesia");
+        assert!(s.stt.streaming);
+        assert_eq!(s.stt.denoise, "highpass");
+        assert_eq!(s.stt.noise_floor_db, crate::noise::DEFAULT_FLOOR_DB);
+        assert_eq!(s.tts.provider, "cartesia");
+        assert!(s.tts.streaming);
+        assert_eq!(s.tts.speed, 1.1);
+        assert_eq!(s.sounds.think, 1.5);
+        assert_eq!(s.routing.router, "jev");
+        assert!(s.routing.auto_model);
+        assert_eq!(s.routing.reasoning, "default");
+        assert_eq!(s.routing.compaction_harness, "antigravity");
+        assert_eq!(s.routing.compaction_model, "gemini-3.8-flash-low");
+        assert!(s.microphone.is_none());
+        assert!(s.assets_dir.is_none());
+        s.validate().unwrap();
+    }
+    #[test]
+    fn older_routing_without_compaction_harness_stays_on_codex() {
+        let s: Settings =
+            serde_json::from_str(r#"{"routing":{"compaction_model":"gpt-5.6-luna"}}"#).unwrap();
+        assert_eq!(s.routing.compaction_harness, "codex");
     }
 
     #[test]

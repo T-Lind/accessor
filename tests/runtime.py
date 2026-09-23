@@ -81,7 +81,8 @@ class RuntimeTests(unittest.TestCase):
         app.expect("fixture: and include Chicago please")
         self.assertNotIn("Agent: interrupted", "".join(app.seen))
 
-    def test_streaming_is_opt_in_and_does_not_select_cloud_implicitly(self):
+    def test_streaming_does_not_select_cloud_implicitly(self):
+        self.config("stt.conversation", "local")
         self.config("stt.streaming", "true")
         settings = json.loads((self.home / "settings" / "config.json").read_text(encoding="utf-8"))
         self.assertTrue(settings["stt"]["streaming"])

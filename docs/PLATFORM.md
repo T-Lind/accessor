@@ -13,11 +13,11 @@ Long speech is retained in overlapping 30-second chunks. Completed clips queue i
 | Stage | Default | Optional |
 | --- | --- | --- |
 | Wake word (`29`, `hey 29`) | **Internal** local STT (`stt.engine`, default Canary) | Always local — never cloud. Speech → Local STT model opens a list (Canary, Parakeet TDT 0.6B INT8, Whisper Tiny/Base/Small Q5). Esc leaves the list with no download. Only a missing model you then pick asks to confirm size. |
-| After the session is awake (GREEN) | Same local engine | **External** Cartesia **Ink-2** (`stt.conversation=cartesia`) |
+| After the session is awake (GREEN) | **External** Cartesia **Ink-2** (`stt.conversation=cartesia`) | Same local engine (`stt.conversation=local`) |
 
 `/tts provider cartesia` is **spoken output** (Sonic). `/stt provider cartesia` (aliases: `ink-2`, `external`) is **after-wake transcription**. `/stt engine parakeet` (or Speech → Local STT model) selects the on-device model. Wake spotting cannot use Ink-2.
 
-Cartesia has two modes after GREEN. The default waits for the locally segmented utterance and a local word check, then uploads the clip; failures fall back to that local transcript. Optional `stt.streaming=true` uploads detected awake audio in ~100 ms chunks while the user speaks, before words/relevance are known. It is active only when `stt.conversation=cartesia`, and is exposed under Speech → Cartesia streaming. Local endpointing sends `finalize`; only final transcript deltas acknowledged by `flush_done` become a prompt. Interim/partial results never trigger actions. Local transcription runs alongside the upload for wake controls and fallback. Wake-addressed commands do not wait for cloud results. Streaming is cancelled when capture is suppressed, the session sleeps, or speaker playback starts. Full local clips remain available after errors or overload; no automatic cloud retry replays a partial transcript.
+Cartesia has two modes after GREEN. New profiles enable `stt.streaming=true`, uploading detected awake audio in ~100 ms chunks while the user speaks, before words/relevance are known. Turn streaming off to wait for the locally segmented utterance and a local word check before uploading the clip. Streaming is active only when `stt.conversation=cartesia` and requires a Cartesia API key. It is exposed under Speech → Cartesia streaming. Local endpointing sends `finalize`; only final transcript deltas acknowledged by `flush_done` become a prompt. Interim/partial results never trigger actions. Local transcription runs alongside the upload for wake controls and fallback. Wake-addressed commands do not wait for cloud results. Streaming is cancelled when capture is suppressed, the session sleeps, or speaker playback starts. Full local clips remain available after errors or overload; no automatic cloud retry replays a partial transcript.
 
 Both modes retain 320 ms pre-roll, use a one-second silence endpoint, and chunk long utterances at 30 seconds with overlap. Noise can be mistaken for voice, especially in streaming mode; there is no claim that a VAD proves human intent. Only local wake detection runs during sleep/output. A rejected awake transcript appears in Activity with its reason, but is excluded from agent history and persisted analytics.
 
@@ -25,7 +25,7 @@ Both modes retain 320 ms pre-roll, use a one-second silence endpoint, and chunk 
 
 ## Harnesses
 
-The **Main agent** owns the conversation and defaults to Codex / gpt-5.6-luna / low reasoning. Coding and difficult analysis run in isolated workers, even when they use the same harness. Worker results return to main without copying their full tool logs.
+The **Main agent** owns the conversation and defaults to Codex / gpt-5.6-luna / harness-default reasoning (currently low in coordinator mode). Coding and difficult analysis run in isolated workers, even when they use the same harness. Worker results return to main without copying their full tool logs. New profiles use Antigravity / `gemini-3.8-flash-low` for Accessor compaction; the Antigravity CLI must be available for that path.
 
 Settings → **Harnesses** lists Main agent first, then Coding agent and Compaction agent. Each opens three pages: **harness → model → reasoning**. Arrow keys and Enter work on every page; Esc goes back. All three values save together on the final page. Old `routine` configuration fields migrate to `main` without losing preferences.
 
@@ -37,7 +37,7 @@ A wake code interrupts output and active work, then opens listening. Intent is i
 
 The older `routing.router` / `routing.auto-model` settings still support legacy routing with the coordinator disabled; they are no longer part of the main settings flow.
 
-Settings → Voice: **think warble**, **wake chime**, and **sleep chime** volumes (0 silent, 1 default). The warble follows unfinished work: it pauses during speech and resumes after progress speech, remaining active through tool calls until completion. Cancellation and pending approvals silence it. Status chrome — every box outline on the page — is **green** while the conversation is open, **light blue** while the agent works, and **purple** while TTS is speaking. Activity scrolls with the **mouse wheel** as well as PgUp/PgDn.
+Settings → Voice: **think warble**, **wake chime**, and **sleep chime** volumes (0 silent, 1 normal; the think warble defaults to 1.5 on new profiles). The warble follows unfinished work: it pauses during speech and resumes after progress speech, remaining active through tool calls until completion. Cancellation and pending approvals silence it. Status chrome — every box outline on the page — is **green** while the conversation is open, **light blue** while the agent works, and **purple** while TTS is speaking. Activity scrolls with the **mouse wheel** as well as PgUp/PgDn.
 
 ### Caching, compaction, and usage limits
 
@@ -63,7 +63,7 @@ Interactive dashboard: **↑/↓** move, **Enter** opens a category or toggles, 
 2. `acc` or `acc doctor` — downloads ONNX Runtime + the selected local STT model if missing
 3. `acc tts setup` — system / Kokoro / Cartesia
 4. At least one harness login: Codex (`acc agent`), optional `claude`, optional `agy`
-5. Optional: Cartesia key (TTS and Ink-2), TypeSafe or AI Gateway key (Jev / compaction)
+5. For new-profile cloud defaults: Cartesia key (TTS and Ink-2), TypeSafe key (Jev relevance, with local fallback), and Antigravity CLI for compaction. Alternatively select local STT, system TTS, and Codex compaction.
 6. `acc -wakecode 29 speak`
 
 ## Wake-once conversation

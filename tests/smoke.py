@@ -271,6 +271,8 @@ class SmokeTests(unittest.TestCase):
         self.assertNotIn("ambient after stop", "".join(app.seen))
 
     def test_analytics_context_and_compact(self):
+        subprocess.run([str(BINARY), "config", "set", "routing.compaction-harness", "codex"], cwd=ROOT, check=True, capture_output=True, text=True)
+        subprocess.run([str(BINARY), "config", "set", "routing.compaction-model", "gpt-5.6-luna"], cwd=ROOT, check=True, capture_output=True, text=True)
         app = self.app("--agent", "codex", "--codex-bin", str(self.shim))
         app.send("/analytics")
         app.expect("Lifetime")

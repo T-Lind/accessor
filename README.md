@@ -112,15 +112,15 @@ The activity pane shows user lines, formatted agent replies (bold, links), and l
 
 Each harness keeps its own native conversation alive. When routing moves to another harness and later returns, Accessor supplies the user-and-agent turns that harness missed. Together, its native history plus that synchronized delta represent the full Accessor conversation without resending every turn repeatedly.
 
-Local models decode completed speech segments after a configurable pause (`stt.endpoint-ms`, default 600 ms); long speech is delivered in overlapping 30-second chunks. Local recognition defaults to two CPU threads with spinning disabled; `stt.threads` and `stt.spin` tune the runtime after restart. Whisper uses the selected thread count with a low-beam decoder. Completed clips queue in order; explicit cancellation or sleep invalidates old capture. Optional Cartesia streaming overlaps upload with capture and local recognition.
+Local models decode completed speech segments after a configurable pause (`stt.endpoint-ms`, default 600 ms); long speech is delivered in overlapping 30-second chunks. Local recognition defaults to two CPU threads with spinning disabled; `stt.threads` and `stt.spin` tune the runtime after restart. Whisper uses the selected thread count with a low-beam decoder. Completed clips queue in order; explicit cancellation or sleep invalidates old capture. Cartesia streaming, enabled on new profiles, overlaps upload with capture and local recognition.
 
 ## Room noise calibration and suppression
 
 A room-noise gate removes steady ambient noise from a finished utterance just before it is recognized, which reduces noise-driven hallucinations without changing wake detection, barge-in timing, or segmentation. It is on by default and conservative: speech above the learned floor is untouched, steady noise near the floor is attenuated by at most 10 dB, and the gain always starts open so the first word is not clipped. It runs on the transcription path, not the capture hot path.
 
-The ambient floor is learned automatically from frames the VAD calls non-speech. For a faster, deliberate result, say `/noise calibrate` (or use Settings → Speech → **Calibrate room noise**) and stay quiet for three seconds; the measured floor is saved as `stt.noise-floor-db` and used from then on. `/noise` shows the current floor and gate state, `/noise reset` returns to the default and lets it re-learn, and `/noise on|off` toggles the gate (also `stt.noise-gate`). The floor is shown in `/audio` diagnostics. The gate applies to local and non-streaming cloud transcription; optional Cartesia streaming uploads audio as you speak, before an utterance exists, so it is not gated.
+The ambient floor is learned automatically from frames the VAD calls non-speech. For a faster, deliberate result, say `/noise calibrate` (or use Settings → Speech → **Calibrate room noise**) and stay quiet for three seconds; the measured floor is saved as `stt.noise-floor-db` and used from then on. `/noise` shows the current floor and gate state, `/noise reset` returns to the default and lets it re-learn, and `/noise on|off` toggles the gate (also `stt.noise-gate`). The floor is shown in `/audio` diagnostics. The gate applies to local and non-streaming cloud transcription; Cartesia streaming uploads audio as you speak, before an utterance exists, so it is not gated.
 
-`stt.denoise` adds an independent, optional 70 Hz high-pass filter. Set it to `highpass` under Settings → Speech or with `acc config set stt.denoise highpass`; `off` is the default. The filter runs after capture on both rolling wake probes and completed local or non-streaming cloud clips, so it can remove low rumble without changing VAD, segmentation, or the room-noise gate's calibration. It does not remove hiss or voices in the speech band, and it cannot recover speech lost to distance or room reverberation. Cartesia streaming bypasses this finished-clip filter. Use `acc config set stt.denoise off` to disable the rumble filter.
+`stt.denoise` adds an independent 70 Hz high-pass filter, enabled by default. The filter runs after capture on both rolling wake probes and completed local or non-streaming cloud clips, so it can remove low rumble without changing VAD, segmentation, or the room-noise gate's calibration. It does not remove hiss or voices in the speech band, and it cannot recover speech lost to distance or room reverberation. Cartesia streaming bypasses this finished-clip filter. Use `acc config set stt.denoise off` to disable the rumble filter.
 
 ## Test transcription separately
 
@@ -296,7 +296,7 @@ Memory search first filters global/current-project entries and ranks keyword mat
 
 An ignored awake input now appears in Activity as `Ignored (reason): words`, including Jev's addressed/actionable scores when available. Accepted input appears only once as `You`; there is no extra `Heard` line. The status line distinguishes hearing speech, local/cloud transcription, and relevance checking. Rejected words never enter agent history, shared memory, or analytics. Sleeping ambient speech stays hidden; `/stt-test` explicitly shows everything.
 
-Cartesia streaming is optional and off by default. Select Cartesia for **After wake STT**, then enable **Speech → Cartesia streaming**, or run:
+New profiles default to Cartesia after-wake STT with streaming enabled. This uploads detected awake speech before local relevance filtering; wake detection and spoken unlocking remain local. Cartesia requires an API key in the OS credential store. Existing saved profiles keep their choices. To enable streaming on a different profile, select Cartesia for **After wake STT** and enable **Speech → Cartesia streaming**, or run:
 
 ```sh
 acc config set stt.conversation cartesia
@@ -348,7 +348,7 @@ Agents should discover and use Accessor's MCP memory tools rather than shelling 
 | Kokoro TTS | Persistent local worker, sentence-sized synthesis and prefetch; completed WAV chunks before playback. |
 | System TTS | OS synthesis into a completed WAV chunk before playback. |
 
-Cartesia STT and TTS both support streaming in Accessor. Input streaming remains opt-in; TTS streaming is enabled by default for Cartesia. Local TTS still uses completed WAV chunks. See [Cartesia streaming bytes](https://docs.cartesia.ai/api-reference/tts/bytes).
+Cartesia STT and TTS both support streaming in Accessor, and new profiles enable both. Local TTS still uses completed WAV chunks. See [Cartesia streaming bytes](https://docs.cartesia.ai/api-reference/tts/bytes).
 
 
 ### Password and privacy controls

@@ -838,7 +838,7 @@ mod tests {
         assert!(v["voice"].is_object());
         assert_eq!(v["output_format"]["container"], "raw");
         assert_eq!(v["output_format"]["encoding"], "pcm_s16le");
-        assert_eq!(v["generation_config"]["speed"], 1.0);
+        assert!((v["generation_config"]["speed"].as_f64().unwrap() - 1.1).abs() < 0.0001);
         assert!(v.get("api_key").is_none());
     }
     #[test]

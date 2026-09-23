@@ -954,7 +954,12 @@ async fn tts_setup() -> Result<()> {
     let n = Select::new()
         .with_prompt("Spoken replies")
         .items(options)
-        .default(0)
+        .default(match s.tts.provider.as_str() {
+            "kokoro" => 1,
+            "cartesia" => 2,
+            "off" => 3,
+            _ => 0,
+        })
         .interact()?;
     s.tts.provider = ["system", "kokoro", "cartesia", "off"][n].into();
     if n == 1 {

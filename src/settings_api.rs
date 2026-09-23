@@ -93,7 +93,7 @@ mod tests {
     fn transactional_validation_and_no_security_settings() {
         let s = Settings::default();
         assert!(prepare(&s, &json!({"tts.speed":1.2,"sounds.alarm":-1})).is_err());
-        assert_eq!(s.tts.speed, 1.0);
+        assert_eq!(s.tts.speed, 1.1);
         for key in [
             "prompt",
             "approvals.reviewer",
