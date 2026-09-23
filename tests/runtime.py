@@ -98,6 +98,27 @@ class RuntimeTests(unittest.TestCase):
         self.assertNotIn("session", saved)
         self.assertNotIn("private analytics sentinel", json.dumps(saved))
 
+    def test_config_export_import_keeps_device_settings(self):
+        self.config("microphone", "Local Test Mic")
+        self.config("stt.threads", "3")
+        self.config("wake-code", "42")
+        export = self.home / "portable.json"
+        self.cli("config", "export", str(export))
+        exported = json.loads(export.read_text(encoding="utf-8"))
+        self.assertNotIn("microphone", exported)
+        self.assertNotIn("threads", exported["stt"])
+        self.assertEqual(exported["wake_code"], "42")
+        self.config("wake-code", "99")
+        self.config("stt.threads", "5")
+        self.cli("config", "import", str(export))
+        device = json.loads((self.home / "settings" / "device.json").read_text(encoding="utf-8"))
+        self.assertEqual(device["microphone"], "Local Test Mic")
+        self.assertEqual(device["stt"]["threads"], 5)  # Device-local tuning is kept.
+        settings = json.loads((self.home / "settings" / "config.json").read_text(encoding="utf-8"))
+        self.assertEqual(settings["wake_code"], "42")
+        self.assertNotIn("microphone", settings)
+        self.assertNotIn("threads", settings["stt"])
+
     def test_alarm_stop_is_an_agent_control_on_every_harness(self):
         for harness in ("codex", "claude", "antigravity"):
             with self.subTest(harness=harness):

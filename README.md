@@ -43,9 +43,13 @@ acc connectors setup
 acc agent login
 acc update
 acc config locations
+acc config export portable.json
+acc config import portable.json
 ```
 
 `acc` starts listening using saved settings. `acc -wakecode 29 speak` and `acc run --wake-code 29 --speak` are equivalent. Settings live in the OS user configuration directory shown by `acc config path` and `acc config locations`. `ACC_HOME` selects a different settings/event directory; `ACC_ASSETS` selects a model/runtime directory. Credentials are never stored in config.json.
+
+Settings are split so preferences can move between machines without dragging device details. `config.json` holds portable preferences (wake, harnesses, TTS, routing, volumes); `device.json` holds this machine's microphone, `assets-dir`/`codex-bin` paths, CPU tuning (`stt.threads`/`spin`/`lazy`/`engine`) and the calibrated `stt.noise_floor_db`. `acc config export FILE` writes only the portable subset and `acc config import FILE` merges it into the current profile, keeping the target's device settings. Copying the whole folder also works but carries device.json with it; delete it on the new machine or import instead.
 
 Interactive terminals use a fixed dashboard with status, a bounded conversation area, and a command field. Status changes update in place. Type `/` to open the command menu, filter by typing, use arrows to choose, and press Enter or Tab. You can type ordinary messages directly to the agent without a voice wake code (except in `--text` transcript simulation mode).
 

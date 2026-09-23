@@ -274,10 +274,57 @@ pub fn home() -> Result<PathBuf> {
 pub fn path() -> Result<PathBuf> {
     Ok(home()?.join("config.json"))
 }
+/// Device-local settings that should not travel when copying preferences to
+/// another machine: microphone/asset/binary paths, CPU tuning, and the
+/// room-calibrated noise floor.
+pub fn device_path() -> Result<PathBuf> {
+    Ok(home()?.join("device.json"))
+}
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct DeviceStt {
+    threads: Option<usize>,
+    spin: Option<bool>,
+    lazy: Option<bool>,
+    engine: Option<String>,
+    noise_floor_db: Option<f32>,
+}
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct DeviceFile {
+    microphone: Option<String>,
+    assets_dir: Option<PathBuf>,
+    codex_bin: Option<PathBuf>,
+    stt: DeviceStt,
+}
+fn strip_device_keys(value: &mut serde_json::Value) {
+    if let Some(object) = value.as_object_mut() {
+        object.remove("microphone");
+        object.remove("assets_dir");
+        object.remove("codex_bin");
+        if let Some(stt) = object.get_mut("stt").and_then(|v| v.as_object_mut()) {
+            for key in ["threads", "spin", "lazy", "engine", "noise_floor_db"] {
+                stt.remove(key);
+            }
+        }
+    }
+}
+fn merge_values(base: &mut serde_json::Value, overlay: serde_json::Value) {
+    match (base, overlay) {
+        (serde_json::Value::Object(base), serde_json::Value::Object(overlay)) => {
+            for (key, value) in overlay {
+                merge_values(base.entry(key).or_insert(serde_json::Value::Null), value);
+            }
+        }
+        (base, overlay) => *base = overlay,
+    }
+}
 struct CacheEntry {
     path: PathBuf,
     modified: Option<SystemTime>,
     len: u64,
+    device_modified: Option<SystemTime>,
+    device_len: u64,
     settings: Settings,
 }
 static SETTINGS_CACHE: OnceLock<Mutex<Option<CacheEntry>>> = OnceLock::new();
@@ -301,25 +348,35 @@ pub fn locations(settings: &Settings) -> String {
     let config = path()
         .map(display_path)
         .unwrap_or_else(|_| "(unavailable)".into());
+    let device = device_path()
+        .map(display_path)
+        .unwrap_or_else(|_| "(unavailable)".into());
     let assets = settings
         .assets()
         .map(display_path)
         .unwrap_or_else(|_| "(unavailable)".into());
     format!(
-        "Accessor home (copy this folder to replicate settings):\n  {home}\n  config.json          wake, harnesses, TTS, routing (no secrets)\n  analytics.json       optional usage totals\n  models.json          cached Codex model list\n  voices.json          cached Cartesia voice list\n  notes/               private Markdown notes\n  schedules.json       pending alarms and agent tasks\n  password.json        salted passphrase hash and retry counter\n  tts-cache/           legacy audio cache; acc tts clear-cache removes it\n  events/              local Gmail notification queue\nSettings file:\n  {config}\nSpeech models / ONNX runtime (large; copy or let `acc` re-download):\n  {assets}\n  Override with ACC_HOME (settings) or ACC_ASSETS (models).\nAPI keys are NOT in that folder. The optional password.json contains only a salted hash. Re-enter them on the new machine:\n  acc tts key     Cartesia (TTS + Ink-2)\n  acc jev key     TypeSafe / Jev\n  AI_GATEWAY_API_KEY or OS credential 'ai-gateway'\nWindows: Credential Manager, service name Accessor.\nHarness CLIs (Codex / Claude Code / agy) and their plugin logins live in those apps, not here.\nassets-dir in config.json is often an absolute path — set it again on the other machine if the checkout moved. Starting acc without speech files downloads ONNX Runtime and the selected local STT model automatically."
+        "Accessor home (copy this folder to replicate settings):\n  {home}\n  config.json          portable wake, harnesses, TTS, routing (no secrets)\n  device.json          device-local mic, asset/codex paths, CPU tuning, noise floor\n  analytics.json       optional usage totals\n  models.json          cached Codex model list\n  voices.json          cached Cartesia voice list\n  notes/               private Markdown notes\n  schedules.json       pending alarms and agent tasks\n  password.json        salted passphrase hash and retry counter\n  tts-cache/           legacy audio cache; acc tts clear-cache removes it\n  events/              local Gmail notification queue\nSettings file:\n  {config}\nDevice settings file:\n  {device}\nCopy preferences between machines with `acc config export FILE` and `acc config import FILE`; device.json is excluded so the target keeps its own mic, paths, threads and noise floor.\nSpeech models / ONNX runtime (large; copy or let `acc` re-download):\n  {assets}\n  Override with ACC_HOME (settings) or ACC_ASSETS (models).\nAPI keys are NOT in that folder. The optional password.json contains only a salted hash. Re-enter them on the new machine:\n  acc tts key     Cartesia (TTS + Ink-2)\n  acc jev key     TypeSafe / Jev\n  AI_GATEWAY_API_KEY or OS credential 'ai-gateway'\nWindows: Credential Manager, service name Accessor.\nHarness CLIs (Codex / Claude Code / agy) and their plugin logins live in those apps, not here.\nassets-dir is stored in device.json and is often an absolute path — set it again on the other machine if the checkout moved. Starting acc without speech files downloads ONNX Runtime and the selected local STT model automatically."
     )
 }
 impl Settings {
     pub fn load() -> Result<Self> {
         let p = path()?;
+        let d = device_path()?;
         // Settings are read on per-utterance and per-synthesis paths. Cache the
-        // parsed value and invalidate on the file's mtime/size instead of
+        // parsed value and invalidate on either file's mtime/size instead of
         // re-reading and re-validating JSON every time.
         let (modified, len) = file_stamp(&p);
+        let (device_modified, device_len) = file_stamp(&d);
         let cache = SETTINGS_CACHE.get_or_init(|| Mutex::new(None));
         if let Ok(guard) = cache.lock() {
             if let Some(entry) = guard.as_ref() {
-                if entry.path == p && entry.modified == modified && entry.len == len {
+                if entry.path == p
+                    && entry.modified == modified
+                    && entry.len == len
+                    && entry.device_modified == device_modified
+                    && entry.device_len == device_len
+                {
                     return Ok(entry.settings.clone());
                 }
             }
@@ -330,6 +387,11 @@ impl Settings {
         } else {
             Self::default()
         };
+        if d.exists() {
+            let device: DeviceFile = serde_json::from_slice(&std::fs::read(&d)?)
+                .with_context(|| format!("Invalid device settings: {}", d.display()))?;
+            value.apply_device(device);
+        }
         migrate_defaults(&mut value);
         value.validate()?;
         if let Ok(mut guard) = cache.lock() {
@@ -337,10 +399,83 @@ impl Settings {
                 path: p,
                 modified,
                 len,
+                device_modified,
+                device_len,
                 settings: value.clone(),
             });
         }
         Ok(value)
+    }
+    fn apply_device(&mut self, device: DeviceFile) {
+        if device.microphone.is_some() {
+            self.microphone = device.microphone;
+        }
+        if device.assets_dir.is_some() {
+            self.assets_dir = device.assets_dir;
+        }
+        if device.codex_bin.is_some() {
+            self.codex_bin = device.codex_bin;
+        }
+        if let Some(threads) = device.stt.threads {
+            self.stt.threads = threads;
+        }
+        if let Some(spin) = device.stt.spin {
+            self.stt.spin = spin;
+        }
+        if let Some(lazy) = device.stt.lazy {
+            self.stt.lazy = lazy;
+        }
+        if let Some(engine) = device.stt.engine {
+            self.stt.engine = engine;
+        }
+        if let Some(floor) = device.stt.noise_floor_db {
+            self.stt.noise_floor_db = floor;
+        }
+    }
+    fn device_file(&self) -> DeviceFile {
+        DeviceFile {
+            microphone: self.microphone.clone(),
+            assets_dir: self.assets_dir.clone(),
+            codex_bin: self.codex_bin.clone(),
+            stt: DeviceStt {
+                threads: Some(self.stt.threads),
+                spin: Some(self.stt.spin),
+                lazy: Some(self.stt.lazy),
+                engine: Some(self.stt.engine.clone()),
+                noise_floor_db: Some(self.stt.noise_floor_db),
+            },
+        }
+    }
+    /// Portable preferences only: device paths, CPU tuning and the calibrated
+    /// noise floor are omitted so a copy does not drag machine-specific values.
+    pub fn portable_value(&self) -> Result<serde_json::Value> {
+        let mut value = serde_json::to_value(self)?;
+        strip_device_keys(&mut value);
+        Ok(value)
+    }
+    /// Merge portable preferences from another machine into this profile,
+    /// leaving device-local settings untouched.
+    pub fn import_value(&mut self, imported: serde_json::Value) -> Result<Vec<String>> {
+        let keys = imported
+            .as_object()
+            .map(|o| o.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let merged = self.merged_import(imported)?;
+        merged.save()?;
+        *self = merged;
+        Ok(keys)
+    }
+    fn merged_import(&self, imported: serde_json::Value) -> Result<Settings> {
+        let mut merged = self.portable_value()?;
+        let mut overlay = imported;
+        strip_device_keys(&mut overlay);
+        merge_values(&mut merged, overlay);
+        let mut next: Settings =
+            serde_json::from_value(merged).context("Invalid imported settings")?;
+        // Restore device-local values that the portable export deliberately omits.
+        next.apply_device(self.device_file());
+        next.validate()?;
+        Ok(next)
     }
     pub fn validate(&self) -> Result<()> {
         ensure!((300..=2000).contains(&self.stt.endpoint_ms), "stt.endpoint-ms must be 300–2000; shorter pauses respond faster but can split hesitant speech");
@@ -470,7 +605,15 @@ impl Settings {
     }
     pub fn save(&self) -> Result<()> {
         self.validate()?;
-        save_private(&path()?, &serde_json::to_vec_pretty(self)?)
+        save_private(
+            &path()?,
+            &serde_json::to_vec_pretty(&self.portable_value()?)?,
+        )?;
+        save_private(
+            &device_path()?,
+            &serde_json::to_vec_pretty(&self.device_file())?,
+        )?;
+        Ok(())
     }
     pub fn assets(&self) -> Result<PathBuf> {
         if let Some(p) = std::env::var_os("ACC_ASSETS") {
@@ -957,8 +1100,71 @@ mod tests {
     fn locations_point_at_the_home_folder() {
         let text = locations(&Settings::default());
         assert!(text.contains("config.json"));
+        assert!(text.contains("device.json"));
         assert!(text.contains("ACC_HOME"));
         assert!(text.contains("Credential Manager") || text.contains("credential"));
+    }
+    #[test]
+    fn portable_export_excludes_device_local_settings() {
+        let s = Settings {
+            microphone: Some("Studio Mic".into()),
+            assets_dir: Some(PathBuf::from("/opt/models")),
+            wake_code: "42".into(),
+            tts: Tts {
+                volume: 0.8,
+                ..Default::default()
+            },
+            stt: Stt {
+                threads: 7,
+                noise_floor_db: -47.5,
+                engine: "parakeet".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let value = s.portable_value().unwrap();
+        assert!(value.get("microphone").is_none());
+        assert!(value.get("assets_dir").is_none());
+        assert!(value["stt"].get("threads").is_none());
+        assert!(value["stt"].get("noise_floor_db").is_none());
+        assert!(value["stt"].get("engine").is_none());
+        assert_eq!(value["wake_code"], "42");
+        assert!((value["tts"]["volume"].as_f64().unwrap() - 0.8).abs() < 1e-6);
+    }
+    #[test]
+    fn import_keeps_device_settings_and_applies_portable_ones() {
+        let local = Settings {
+            microphone: Some("Local Mic".into()),
+            stt: Stt {
+                threads: 3,
+                noise_floor_db: -55.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let imported = serde_json::json!({
+            "wake_code": "42",
+            "idle_seconds": 300,
+            "tts": {"volume": 0.5},
+            "microphone": "Other Machine Mic",
+            "stt": {"threads": 8, "lazy": true}
+        });
+        let next = local.merged_import(imported).unwrap();
+        assert_eq!(next.wake_code, "42");
+        assert_eq!(next.idle_seconds, 300);
+        assert_eq!(next.tts.volume, 0.5);
+        // Device-local values from the target profile are preserved.
+        assert_eq!(next.microphone.as_deref(), Some("Local Mic"));
+        assert_eq!(next.stt.threads, 3);
+        assert_eq!(next.stt.noise_floor_db, -55.0);
+        assert!(!next.stt.lazy);
+    }
+    #[test]
+    fn importing_an_unknown_key_is_rejected() {
+        let local = Settings::default();
+        assert!(local
+            .merged_import(serde_json::json!({"not_a_real_setting": true}))
+            .is_err());
     }
     #[test]
     fn volume_percents_map_to_unit_range() {

@@ -194,6 +194,14 @@ enum ConfigCommand {
         key: String,
         value: String,
     },
+    /// Write portable preferences (no device paths or CPU tuning) to FILE, or stdout.
+    Export {
+        file: Option<PathBuf>,
+    },
+    /// Merge portable preferences from FILE into this profile, keeping device settings.
+    Import {
+        file: PathBuf,
+    },
 }
 #[derive(Subcommand)]
 enum SttCommand {
@@ -623,6 +631,29 @@ pub async fn entry() -> Result<()> {
                 Ok(())
             }
             ConfigCommand::Set { key, value } => Settings::load()?.set(&key, &value),
+            ConfigCommand::Export { file } => {
+                let value = Settings::load()?.portable_value()?;
+                let text = serde_json::to_string_pretty(&value)?;
+                match file {
+                    Some(path) => {
+                        std::fs::write(&path, format!("{text}\n"))
+                            .with_context(|| format!("Cannot write {}", path.display()))?;
+                        println!("Exported portable preferences to {}. On the other machine run:\n  acc config import {}", path.display(), path.display());
+                    }
+                    None => println!("{text}"),
+                }
+                Ok(())
+            }
+            ConfigCommand::Import { file } => {
+                let bytes = std::fs::read(&file)
+                    .with_context(|| format!("Cannot read {}", file.display()))?;
+                let imported: serde_json::Value =
+                    serde_json::from_slice(&bytes).context("Imported file is not valid JSON")?;
+                let mut settings = Settings::load()?;
+                let keys = settings.import_value(imported)?;
+                println!("Imported portable preferences ({} top-level keys). Device settings (microphone, asset/codex paths, CPU tuning, noise floor) were kept. Restart Accessor to apply microphone, asset, engine and thread changes.", keys.len());
+                Ok(())
+            }
         },
         Commands::Doctor => doctor().await,
         Commands::Update { check } => {
