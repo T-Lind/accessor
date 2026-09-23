@@ -34,6 +34,7 @@ Python is needed only for the optional Kokoro worker. Canary and the gateway run
 acc setup
 acc doctor
 acc devices
+acc mic
 acc config show
 acc config set wake-code 29
 acc config set idle-seconds 120
@@ -141,6 +142,8 @@ The live STT test explicitly displays **all** recognized speech, without an agen
 `acc stt wake FILE...` runs the production wake matcher on recordings and, by default, prints the transcript and match result with the noise gate off and on (`--noise-gate on|off`, `--wake-code`, `--floor-db`, `--json`). `python scripts/test_wake.py [wav ...]` wraps it, building clean/quiet/noisy variants so the gate can be compared on the same phrase; pass your own "twenty nine" recording for a real wake match.
 
 To compare rumble removal on the same recording, run `acc stt wake room.wav --noise-gate off --denoise off` and then repeat with `--denoise highpass`. Keep the noise-gate setting the same in both runs; compare wake matches and the recognized words, including any quiet phrases lost by the filter.
+
+`acc mic [--device NAME] [--seconds N]` opens the microphone for a few seconds and reports the ambient floor, speech level, peak, clipping percentage and an estimated SNR, then suggests an `stt.noise-floor-db` value. It does not transcribe, save or send audio. Use it to pick a microphone, place it, or set gain before calibrating the room gate.
 
 ## Choose a voice
 

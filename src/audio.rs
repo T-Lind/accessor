@@ -203,11 +203,10 @@ pub struct MicFlags {
     pub engine: Arc<Mutex<String>>,
     pub noise: Arc<crate::noise::Control>,
 }
-pub fn transcribe(model: &mut CanaryModel, samples: &[f32]) -> Result<String> {
-    let samples = condition_for_asr(samples);
+fn transcribe_conditioned(model: &mut CanaryModel, samples: &[f32]) -> Result<String> {
     Ok(model
         .transcribe_with(
-            &samples,
+            samples,
             &CanaryParams {
                 language: Some("en".into()),
                 max_sequence_length: 256,
@@ -216,11 +215,15 @@ pub fn transcribe(model: &mut CanaryModel, samples: &[f32]) -> Result<String> {
         )?
         .text)
 }
+pub fn transcribe(model: &mut CanaryModel, samples: &[f32]) -> Result<String> {
+    let samples = condition_for_asr(samples);
+    transcribe_conditioned(model, &samples)
+}
 
 fn transcribe_asr(asr: &mut Asr, samples: &[f32]) -> Result<String> {
     let samples = condition_for_asr(samples);
     match asr {
-        Asr::Canary(model) => transcribe(model, &samples),
+        Asr::Canary(model) => transcribe_conditioned(model, &samples),
         Asr::Parakeet(model) => Ok(model
             .transcribe_with(&samples, &ParakeetParams::default())
             .map_err(|e| anyhow::anyhow!("{e}"))?
@@ -432,6 +435,199 @@ pub fn devices() -> Result<()> {
             }
         );
     }
+    Ok(())
+}
+
+/// Result of measuring a room: the ambient floor, the loud (speech) level, the
+/// peak, and the resulting signal-to-noise estimate, all in dBFS.
+pub struct LevelReport {
+    pub floor_db: f32,
+    pub speech_db: f32,
+    pub peak_db: f32,
+    pub snr_db: f32,
+}
+pub fn analyze_levels(levels: &[f32]) -> LevelReport {
+    let floor_db = crate::noise::estimate_floor_db(levels);
+    let mut sorted: Vec<f32> = levels.iter().copied().filter(|v| v.is_finite()).collect();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let pick = |fraction: f32| -> f32 {
+        if sorted.is_empty() {
+            return crate::noise::MIN_FLOOR_DB;
+        }
+        let index = ((sorted.len() as f32 * fraction).floor() as usize).min(sorted.len() - 1);
+        sorted[index]
+    };
+    let speech_db = pick(0.9);
+    let peak_db = *sorted.last().unwrap_or(&crate::noise::MIN_FLOOR_DB);
+    LevelReport {
+        floor_db,
+        speech_db,
+        peak_db,
+        snr_db: speech_db - floor_db,
+    }
+}
+
+fn level_stream<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    levels: Arc<Mutex<Vec<f32>>>,
+    clipped: Arc<AtomicUsize>,
+    samples: Arc<AtomicUsize>,
+    energy: Arc<Mutex<f64>>,
+) -> Result<cpal::Stream>
+where
+    T: cpal::SizedSample,
+    f32: cpal::FromSample<T>,
+{
+    let channels = config.channels as usize;
+    let mut frame: Vec<f32> = Vec::with_capacity(256);
+    Ok(device.build_input_stream(
+        config,
+        move |data: &[T], _| {
+            let mut sum_sq = 0.0_f64;
+            let mut clip = 0_usize;
+            let mut count = 0_usize;
+            for raw in data.chunks_exact(channels) {
+                let value = raw.iter().map(|s| s.to_sample::<f32>()).sum::<f32>() / channels as f32;
+                if value.abs() >= 0.98 {
+                    clip += 1;
+                }
+                sum_sq += (value as f64) * (value as f64);
+                count += 1;
+                frame.push(value);
+                if frame.len() == 256 {
+                    if let Ok(mut levels) = levels.lock() {
+                        levels.push(crate::noise::db(crate::noise::rms(&frame)));
+                    }
+                    frame.clear();
+                }
+            }
+            samples.fetch_add(count, Ordering::Relaxed);
+            clipped.fetch_add(clip, Ordering::Relaxed);
+            if let Ok(mut energy) = energy.lock() {
+                *energy += sum_sq;
+            }
+        },
+        |_| {},
+        None,
+    )?)
+}
+
+/// Open the microphone for a few seconds and report ambient floor, speech
+/// level, peak, clipping and an SNR estimate. Nothing is transcribed or sent.
+pub fn mic_check(name: Option<&str>, seconds: u64) -> Result<()> {
+    ensure!((1..=30).contains(&seconds), "seconds must be 1–30");
+    let host = cpal::default_host();
+    let device = if let Some(name) = name {
+        host.input_devices()?
+            .find(|d| d.name().ok().as_deref() == Some(name))
+            .context("Requested microphone not found; run acc devices")?
+    } else {
+        host.default_input_device()
+            .context("No default microphone; run acc devices")?
+    };
+    let device_name = device.name().unwrap_or_else(|_| "microphone".into());
+    let supported = device.default_input_config()?;
+    let config: cpal::StreamConfig = supported.clone().into();
+    let levels = Arc::new(Mutex::new(Vec::<f32>::new()));
+    let clipped = Arc::new(AtomicUsize::new(0));
+    let samples = Arc::new(AtomicUsize::new(0));
+    let energy = Arc::new(Mutex::new(0.0_f64));
+    let stream = match supported.sample_format() {
+        cpal::SampleFormat::F32 => level_stream::<f32>(
+            &device,
+            &config,
+            levels.clone(),
+            clipped.clone(),
+            samples.clone(),
+            energy.clone(),
+        )?,
+        cpal::SampleFormat::I16 => level_stream::<i16>(
+            &device,
+            &config,
+            levels.clone(),
+            clipped.clone(),
+            samples.clone(),
+            energy.clone(),
+        )?,
+        cpal::SampleFormat::U16 => level_stream::<u16>(
+            &device,
+            &config,
+            levels.clone(),
+            clipped.clone(),
+            samples.clone(),
+            energy.clone(),
+        )?,
+        format => bail!("Unsupported microphone sample format: {format:?}"),
+    };
+    stream.play()?;
+    println!(
+        "Measuring \"{device_name}\" for {seconds} s. Stay quiet to capture the room floor, then speak normally."
+    );
+    std::thread::sleep(Duration::from_secs(seconds));
+    drop(stream);
+
+    let levels = levels.lock().map(|l| l.clone()).unwrap_or_default();
+    let total_samples = samples.load(Ordering::Relaxed);
+    let total_energy = energy.lock().map(|e| *e).unwrap_or(0.0);
+    let report = analyze_levels(&levels);
+    let overall_rms = if total_samples > 0 {
+        (total_energy / total_samples as f64).sqrt()
+    } else {
+        0.0
+    };
+    let clip_count = clipped.load(Ordering::Relaxed);
+    let clip_pct = if total_samples > 0 {
+        clip_count as f64 * 100.0 / total_samples as f64
+    } else {
+        0.0
+    };
+    println!("Microphone:        {device_name}");
+    println!(
+        "Rate/format:       {} Hz, {} channel(s), {:?}",
+        config.sample_rate.0,
+        config.channels,
+        supported.sample_format()
+    );
+    println!(
+        "Ambient floor:     {:.1} dBFS (10th percentile)",
+        report.floor_db
+    );
+    println!(
+        "Speech level:      {:.1} dBFS (90th percentile)",
+        report.speech_db
+    );
+    println!("Peak level:        {:.1} dBFS", report.peak_db);
+    println!(
+        "Overall RMS:       {:.1} dBFS",
+        crate::noise::db(overall_rms as f32)
+    );
+    println!("Estimated SNR:     {:.1} dB", report.snr_db);
+    println!("Clipped samples:   {:.2}%", clip_pct);
+    println!(
+        "Suggested floor:   acc config set stt.noise-floor-db {:.1}",
+        report.floor_db
+    );
+    let mut advice = Vec::new();
+    if report.floor_db > -40.0 {
+        advice
+            .push("the room floor is high; reduce background noise or move the microphone closer");
+    }
+    if report.speech_db < -35.0 {
+        advice.push("speech is quiet; raise the input gain or move closer");
+    }
+    if report.snr_db < 15.0 {
+        advice.push("signal-to-noise is low; recognition may struggle");
+    }
+    if clip_pct > 0.1 {
+        advice.push("input is clipping; lower the input gain (PipeWire: wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 0.40)");
+    }
+    if advice.is_empty() {
+        println!("Assessment:        good levels for local wake and speech recognition.");
+    } else {
+        println!("Assessment:        {}.", advice.join("; "));
+    }
+    println!("No audio was transcribed, saved or sent.");
     Ok(())
 }
 
@@ -1718,6 +1914,28 @@ impl Playback {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn level_report_separates_floor_from_speech() {
+        let mut levels: Vec<f32> = vec![-72.0; 90];
+        levels.extend([
+            -30.0, -28.0, -31.0, -27.0, -29.0, -26.0, -32.0, -30.0, -28.0, -25.0,
+        ]);
+        let report = analyze_levels(&levels);
+        assert!(
+            (-74.0..=-68.0).contains(&report.floor_db),
+            "{}",
+            report.floor_db
+        );
+        assert!(report.speech_db > -35.0, "{}", report.speech_db);
+        assert!(report.peak_db >= report.speech_db);
+        assert!(report.snr_db > 30.0, "{}", report.snr_db);
+    }
+    #[test]
+    fn level_report_handles_silence() {
+        let report = analyze_levels(&[]);
+        assert_eq!(report.floor_db, crate::noise::DEFAULT_FLOOR_DB);
+        assert_eq!(report.speech_db, crate::noise::MIN_FLOOR_DB);
+    }
     #[test]
     #[ignore = "Requires local Canary assets plus synthetic 16kHz WAVs in ACC_WAKE_TEST_WAV and ACC_OUTPUT_TEST_WAV"]
     fn real_wake_recognition_with_thinking_audio_reference() {

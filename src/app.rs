@@ -371,6 +371,7 @@ pub async fn run(mut args: Run) -> Result<()> {
             let discard_pending = epoch.load(Ordering::SeqCst) != 0;
             lock_requested = false;
             access.lock();
+            crate::config::clear_secret_cache();
             // Revoke access before cancelling anything that can still produce output.
             awake.store(false, Ordering::SeqCst);
             cloud_stt.store(false, Ordering::SeqCst);

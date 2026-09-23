@@ -80,6 +80,13 @@ enum Commands {
     },
     /// List available microphones.
     Devices,
+    /// Measure microphone level, ambient floor and SNR without transcribing.
+    Mic {
+        #[arg(long)]
+        device: Option<String>,
+        #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u64).range(1..=30))]
+        seconds: u64,
+    },
     /// Test local speech recognition without contacting an agent.
     Stt {
         #[command(subcommand)]
@@ -616,6 +623,7 @@ pub async fn entry() -> Result<()> {
         },
         Commands::Run(args) => app::run(args).await,
         Commands::Devices => audio::devices(),
+        Commands::Mic { device, seconds } => audio::mic_check(device.as_deref(), seconds),
         Commands::Setup => setup().await,
         Commands::Config { action } => match action {
             ConfigCommand::Show => {
@@ -1137,7 +1145,7 @@ async fn doctor() -> Result<()> {
             "missing — acc jev key, or set TYPESAFE_API_KEY"
         }
     );
-    println!("Agent integrations: acc connectors status\nMicrophones: acc devices\nHarness updates: acc update   (acc update --check for versions only)\nNo microphone was opened and no provider request was sent.");
+    println!("Agent integrations: acc connectors status\nMicrophones: acc devices\nMicrophone levels: acc mic\nHarness updates: acc update  (acc update --check for versions only)\nNo microphone was opened and no provider request was sent.");
     println!("\n{}", config::locations(&s));
     Ok(())
 }

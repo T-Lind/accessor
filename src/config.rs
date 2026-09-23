@@ -1,6 +1,7 @@
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     io::Write,
     path::PathBuf,
     sync::{Mutex, OnceLock},
@@ -793,13 +794,34 @@ pub fn optional_secret(name: &str, environment: &str) -> Option<String> {
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty())
 }
+/// Successful credential-store reads are cached in memory because the keyring
+/// is consulted on cloud speech and synthesis paths. Environment overrides are
+/// always re-read. The cache is cleared on save/delete and on locking.
+static SECRETS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+pub fn clear_secret_cache() {
+    if let Some(cache) = SECRETS.get() {
+        if let Ok(mut cache) = cache.lock() {
+            cache.clear();
+        }
+    }
+}
 pub fn secret(name: &str, environment: &str) -> Result<String> {
     if let Ok(s) = std::env::var(environment) {
         if !s.trim().is_empty() {
             return Ok(s);
         }
     }
-    keyring::Entry::new("Accessor",name)?.get_password().context("Credential unavailable. Run the relevant acc setup command to save it in your OS credential store.")
+    let cache = SECRETS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(cache) = cache.lock() {
+        if let Some(value) = cache.get(name) {
+            return Ok(value.clone());
+        }
+    }
+    let value = keyring::Entry::new("Accessor",name)?.get_password().context("Credential unavailable. Run the relevant acc setup command to save it in your OS credential store.")?;
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(name.to_string(), value.clone());
+    }
+    Ok(value)
 }
 pub fn save_secret(name: &str, value: &str) -> Result<()> {
     ensure!(!value.trim().is_empty(), "Credential cannot be empty");
@@ -807,13 +829,17 @@ pub fn save_secret(name: &str, value: &str) -> Result<()> {
         .set_password(value)
         .context(
         "Could not save credential in the OS credential store; no plaintext fallback was written",
-    )
+    )?;
+    clear_secret_cache();
+    Ok(())
 }
 pub fn delete_secret(name: &str) -> Result<()> {
-    match keyring::Entry::new("Accessor", name)?.delete_credential() {
+    let result = match keyring::Entry::new("Accessor", name)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(e) => Err(e.into()),
-    }
+    };
+    clear_secret_cache();
+    result
 }
 pub(crate) fn conversation_stt(value: &str) -> String {
     match value.to_lowercase().as_str() {
