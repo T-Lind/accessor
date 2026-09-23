@@ -739,6 +739,26 @@ pub async fn run(mut args: Run) -> Result<()> {
                                     }
                                 }
                             },
+                            crate::control::Action::Delegate{prompt,role,mut harness,mut model,mut reasoning}=>{
+                                if role.as_deref()==Some("plugin") {
+                                    let (h,m,r)=settings.plugin_target();harness=h.into();model=m.into();
+                                    if reasoning=="default" {reasoning=r.into();}
+                                } else if reasoning=="default" {reasoning=settings.routing.coding_reasoning.clone();}
+                                let outcome:Result<String>=(||{
+                                    if worker.is_some() {anyhow::bail!("A worker is already running; wait for its result.");}
+                                    if let Some(message)=limits.blocked(&harness) {anyhow::bail!(message);}
+                                    let started=crate::worker::Worker::start(&harness,prompt,agent::Options {control:None, shared_memory: true,
+                                        executable:config::harness_bin(&harness,&settings,args.codex_bin.as_ref()),workspace:workspace.clone(),writable:args.workspace_write,
+                                        model:Some(model.clone()),reasoning:reasoning.clone(),auto_review:settings.approvals.reviewer=="auto",instructions:String::new(),
+                                    },event_tx.clone())?;
+                                    let id=started.id.clone();worker=Some(started);
+                                    Ok(format!("Started {id}: {harness} / {model} / {reasoning}."))
+                                })();
+                                match outcome {
+                                    Ok(message)=>{ui.message(format!("MCP: {message}"));serde_json::json!({"receipt":message,"harness":harness,"model":model,"reasoning":reasoning})},
+                                    Err(e)=>serde_json::json!({"error":format!("{e:#}")}),
+                                }
+                            },
                             crate::control::Action::Status=>serde_json::json!({"awake":session.active(),"busy":busy || worker.is_some(),"speaking":speaker.is_some(),"alarm_ringing":alarm.is_some(),"barge_in":settings.barge_in,"wake_checks":wake_checks,"wake_hits":wake_hits,"wake_echoes":wake_echoes,"wake_decode_ms":wake_decode_ms,"audio":audio_diagnostics.summary(),"speech":speech_state.summary(),"capture_paused":muted.load(Ordering::SeqCst),"wake_errors":wake_errors}),
                         };
                         let _=request.reply.send(result);continue;

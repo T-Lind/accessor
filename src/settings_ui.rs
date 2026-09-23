@@ -294,6 +294,15 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                 Action::Agent("main"),
             ),
             row(
+                "Lightweight main conversation",
+                if s.routing.coordinator {
+                    "on · delegate coding/plugin work"
+                } else {
+                    "off · keyword/Jev routing"
+                },
+                Action::Toggle("routing.coordinator"),
+            ),
+            row(
                 "Coding agent",
                 &format!(
                     "{} · {} · {}",
@@ -442,17 +451,11 @@ fn hint(action: &Action) -> &'static str {
             "Spoken letters (A. D.) at most once every 5 minutes. Replies in between skip the identity prefix."
         }
         Action::Toggle("routing.coordinator") => "Keep a lightweight main conversation and delegate plugin/coding/difficult work to isolated workers.",
-        Action::Toggle("routing.auto-model") => {
-            "In legacy routing (coordinator off), Jev uses recent conversation and the previous route to select plugin, coding, or main—and therefore that role's model."
-        }
         Action::Cycle("stt.conversation", _) => {
             "Wake detection stays on-device. Cartesia after-wake transcription uses finished clips by default; enable Cartesia streaming to upload speech as you talk."
         }
         Action::Cycle("chat", _) => {
             "Activity shows tools plus replies. Transcript shows everything. Off hides commentary."
-        }
-        Action::Cycle("routing.router", _) => {
-            "keywords: plugins (email/calendar/docs) then code-like turns then main. jev: TypeSafe classifies those three. off: always the main harness."
         }
         Action::Cycle("routing.reasoning", _) => {
             "Main reasoning effort for Codex, Claude, and Antigravity. The coordinator defaults to low; workers choose their own effort. Say “use high reasoning” to change it; agent replies cannot."
@@ -779,15 +782,7 @@ fn current_value<'a>(key: &str, s: &'a Settings) -> &'a str {
             }
         }
         "routing.input-gate" => &s.routing.input_gate,
-        "routing.auto-model" => {
-            if s.routing.auto_model {
-                "true"
-            } else {
-                "false"
-            }
-        }
         "chat" => s.chat.as_str(),
-        "routing.router" => s.routing.router.as_str(),
         "routing.reasoning" => s.routing.reasoning.as_str(),
         "approvals.reviewer" => s.approvals.reviewer.as_str(),
         "stt.conversation" => s.stt.conversation.as_str(),
@@ -1596,7 +1591,7 @@ mod tests {
         let s = Settings::default();
         let mut panel = Panel::default();
         panel.answer("3", &s, &[]).unwrap();
-        panel.answer("2", &s, &[]).unwrap();
+        panel.answer("3", &s, &[]).unwrap();
         assert!(panel
             .display(&s, false, &[])
             .contains("Coding agent  ·  Step 1 of 3"));

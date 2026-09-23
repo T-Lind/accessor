@@ -21,7 +21,16 @@ pub enum Action {
     StopAlarm,
     Status,
     SettingsRead,
-    SettingsUpdate { changes: Value },
+    SettingsUpdate {
+        changes: Value,
+    },
+    Delegate {
+        prompt: String,
+        role: Option<String>,
+        harness: String,
+        model: String,
+        reasoning: String,
+    },
 }
 pub struct Request {
     pub action: Action,
