@@ -19,6 +19,9 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     ("/noise", "Room-noise gate: /noise calibrate|on|off|reset"),
     ("/jev", "Save a TypeSafe API key for Jev: /jev key"),
+    ("/computer", "Desktop control: /computer test|on|off"),
+    ("/dictate", "Local-only private dictation: /dictate on|off"),
+    ("/journal", "Show the private dictation journal"),
     ("/devices", "List microphones"),
     ("/connectors", "Show agent connections"),
     ("/analytics", "Lifetime and past-week cost/call breakdown"),
@@ -79,6 +82,7 @@ pub enum LocalCommand {
     Speak(String),
     Secret(&'static str),
     Stt(bool),
+    Dictate(Option<bool>),
     Noise(String),
     Utility(Vec<String>),
     Native,
@@ -186,6 +190,16 @@ pub fn parse(text: &str, s: &Settings) -> Result<Option<LocalCommand>> {
         ["/noise", "off"] => LocalCommand::Set("stt.noise-gate".into(), "false".into()),
         ["/jev", "key"] | ["/typesafe", "key"] => LocalCommand::Secret("typesafe"),
         ["/jev"] => LocalCommand::Secret("typesafe"),
+        ["/computer"] | ["/computer", "test"] => {
+            LocalCommand::Utility(vec!["computer".into(), "test".into()])
+        }
+        ["/computer", "info"] => LocalCommand::Utility(vec!["computer".into(), "info".into()]),
+        ["/computer", "on"] => LocalCommand::Set("computer.enabled".into(), "true".into()),
+        ["/computer", "off"] => LocalCommand::Set("computer.enabled".into(), "false".into()),
+        ["/dictate"] | ["/dictate", "toggle"] => LocalCommand::Dictate(None),
+        ["/dictate", "on"] => LocalCommand::Dictate(Some(true)),
+        ["/dictate", "off"] => LocalCommand::Dictate(Some(false)),
+        ["/journal"] => LocalCommand::Utility(vec!["journal".into(), "show".into()]),
         _ => return Ok(None),
     };
     Ok(Some(value))
@@ -204,20 +218,24 @@ impl Wizard {
     pub fn question(&self) -> String {
         match self.step {
             0 => format!(
-                "Setup 1/4 · Wake code [{}] — Enter keeps the current value; /cancel exits.",
+                "Setup 1/5 · Wake code [{}] — Enter keeps the current value; /cancel exits.",
                 self.draft.wake_code
             ),
             1 => format!(
-                "Setup 2/4 · Wake-listening seconds [{}], 0 for no timeout.",
+                "Setup 2/5 · Wake-listening seconds [{}], 0 for no timeout.",
                 self.draft.idle_seconds
             ),
             2 => format!(
-                "Setup 3/4 · Voice: system, kokoro, cartesia, off [{}].",
+                "Setup 3/5 · Voice: system, kokoro, cartesia, off [{}].",
                 self.draft.tts.provider
             ),
-            _ => format!(
-                "Setup 4/4 · Speak replies? yes/no [{}].",
+            3 => format!(
+                "Setup 4/5 · Speak replies? yes/no [{}].",
                 if self.draft.speak { "yes" } else { "no" }
+            ),
+            _ => format!(
+                "Setup 5/5 · Let agents control this desktop (computer use)? yes/no [{}]. Off is safer; enable only if you want screen/mouse/keyboard access.",
+                if self.draft.computer.enabled { "yes" } else { "no" }
             ),
         }
     }
@@ -229,8 +247,15 @@ impl Wizard {
                 0 => candidate.wake_code = text.into(),
                 1 => candidate.idle_seconds = text.parse()?,
                 2 => candidate.tts.provider = text.into(),
-                _ => {
+                3 => {
                     candidate.speak = match text.to_lowercase().as_str() {
+                        "y" | "yes" | "true" => true,
+                        "n" | "no" | "false" => false,
+                        _ => bail!("Enter yes or no"),
+                    }
+                }
+                _ => {
+                    candidate.computer.enabled = match text.to_lowercase().as_str() {
                         "y" | "yes" | "true" => true,
                         "n" | "no" | "false" => false,
                         _ => bail!("Enter yes or no"),
@@ -241,7 +266,7 @@ impl Wizard {
         candidate.validate()?;
         self.draft = candidate;
         self.step += 1;
-        Ok(if self.step == 4 {
+        Ok(if self.step == 5 {
             Some(self.draft.clone())
         } else {
             None
@@ -322,13 +347,15 @@ mod tests {
         let mut w = Wizard::new(&Settings::default());
         w.answer("42").unwrap();
         assert!(w.answer("9000").is_err());
-        assert!(w.question().contains("2/4"));
+        assert!(w.question().contains("2/5"));
         w.answer("0").unwrap();
         w.answer("kokoro").unwrap();
+        assert!(w.answer("yes").unwrap().is_none());
         let s = w.answer("yes").unwrap().unwrap();
         assert_eq!(s.wake_code, "42");
         assert_eq!(s.idle_seconds, 0);
         assert_eq!(s.tts.provider, "kokoro");
+        assert!(s.computer.enabled);
     }
     #[test]
     fn voice_and_voice_search_commands_parse() {

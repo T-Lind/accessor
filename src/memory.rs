@@ -98,6 +98,30 @@ impl Store {
             ))
         })
     }
+    /// A short, bounded digest of the most recently updated in-scope facts for
+    /// the metaprompt, so an agent need not remember to search first.
+    pub fn digest(workspace: &Path, limit: usize) -> Result<String> {
+        let store = Store::open(workspace)?;
+        let entries = store.search("", limit)?;
+        let mut out = String::new();
+        for entry in entries.iter().filter(|e| !e.deleted) {
+            let line = format!(
+                "- [{}] {}: {}\n",
+                if entry.scope == "global" {
+                    "global"
+                } else {
+                    "project"
+                },
+                entry.key,
+                entry.text.split_whitespace().collect::<Vec<_>>().join(" ")
+            );
+            if out.len() + line.len() > 2000 {
+                break;
+            }
+            out.push_str(&line);
+        }
+        Ok(out)
+    }
     pub fn save(
         &self,
         scope: &str,

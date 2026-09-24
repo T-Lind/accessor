@@ -10,6 +10,7 @@ enum Page {
     Harnesses,
     Display,
     Tests,
+    Computer,
 }
 impl Page {
     fn title(self) -> &'static str {
@@ -21,6 +22,7 @@ impl Page {
             Self::Harnesses => "Harnesses",
             Self::Display => "Display",
             Self::Tests => "Tests",
+            Self::Computer => "Computer",
         }
     }
 }
@@ -86,6 +88,11 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                 "password and auto-lock",
                 Action::Open(Page::Security),
             ),
+            row(
+                "Computer",
+                "screen, mouse, keyboard",
+                Action::Open(Page::Computer),
+            ),
             row("Close", "Esc", Action::Close),
         ],
         Page::Security => vec![
@@ -143,6 +150,11 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                 "Alarm",
                 &format!("{:.0}%", s.sounds.alarm * 100.0),
                 Action::Edit("sounds.alarm"),
+            ),
+            row(
+                "Ready chime",
+                &format!("{:.0}%", s.sounds.ready * 100.0),
+                Action::Edit("sounds.ready"),
             ),
             row("Back", "categories", Action::Open(Page::Home)),
         ],
@@ -400,6 +412,33 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                 Action::Run("/update"),
             ),
         ],
+        Page::Computer => vec![
+            row(
+                "Computer use",
+                if s.computer.enabled {
+                    "on · agents can control this screen"
+                } else {
+                    "off · no desktop control"
+                },
+                Action::Toggle("computer.enabled"),
+            ),
+            row(
+                "Screenshot width cap",
+                &format!("{} px", s.computer.max_image_dimension),
+                Action::Edit("computer.max-image-dimension"),
+            ),
+            row(
+                "Zoom width cap",
+                &format!("{} px", s.computer.zoom_dimension),
+                Action::Edit("computer.zoom-dimension"),
+            ),
+            row(
+                "Test screen capture",
+                "capture now, no input",
+                Action::Run("/computer test"),
+            ),
+            row("Back", "categories", Action::Open(Page::Home)),
+        ],
     }
 }
 fn hint(action: &Action) -> &'static str {
@@ -422,6 +461,21 @@ fn hint(action: &Action) -> &'static str {
         }
         Action::Open(Page::Home) => "Return to the category list.",
         Action::Open(Page::Security) => "Local passphrase lock. Auto-lock counts from unlock, independent of speech or work. Spoken passwords can be overheard and replayed.",
+        Action::Open(Page::Computer) => {
+            "Desktop control through the MCP computer tool: screenshots plus mouse and keyboard. Off unless you enable it; it drives the real machine."
+        }
+        Action::Toggle("computer.enabled") => {
+            "Let connected agents capture the screen and control the mouse and keyboard through MCP. This drives the real machine, so enable it only when you want an agent to act on this desktop."
+        }
+        Action::Edit("computer.max-image-dimension") => {
+            "Longest edge in pixels for returned screenshots (256–3840). Smaller uses fewer tokens; click coordinates are mapped back automatically."
+        }
+        Action::Edit("computer.zoom-dimension") => {
+            "Longest edge in pixels for a zoom region (256–4096)."
+        }
+        Action::Run("/computer test") => {
+            "Capture the primary display now and report the result. No mouse or keyboard input is sent."
+        }
         Action::Edit("security.lock-seconds") => "Seconds since unlock before access is revoked (1–86400); default 3600. Running work is stopped.",
         Action::Toggle("security.spoken-unlock") => "Allow exact passphrase words after wake code + unlock, using only local transcription. Off requires keyboard entry.",
         Action::Toggle("barge-in") => {
@@ -512,6 +566,9 @@ fn hint(action: &Action) -> &'static str {
         }
         Action::Edit("sounds.wake") => "Volume of the wake chime. 0 silent, 1 default.",
         Action::Edit("sounds.sleep") => "Volume of the sleep chime. 0 silent, 1 default.",
+        Action::Edit("sounds.ready") => {
+            "Volume of the startup chime played once when Accessor is ready to listen. 0 silent, 1 default, 1.5 loud."
+        }
         Action::Run("/tts test") => "Play a short sample with the current TTS settings.",
         Action::Run("/tts voices") => "List neural voices for Kokoro or Cartesia.",
         Action::Run("/tts key") => "Save a Cartesia API key in the OS credential store (TTS and Ink-2).",
@@ -528,6 +585,39 @@ fn hint(action: &Action) -> &'static str {
         }
         Action::Run("/update") => {
             "Run each found harness's own updater (codex update, claude update, agy update). /update check only prints versions."
+        }
+        Action::Run("/password") => {
+            "Choose or change the local passphrase. Spoken unlock uses it after the wake code; masked keyboard entry is always available."
+        }
+        Action::Run("/lock") => {
+            "Immediately revoke access, stop work and playback, and hide the conversation until unlocked."
+        }
+        Action::Run("/password remove") => {
+            "Delete the saved passphrase hash so Accessor stops requiring a password. Requires an unlocked session."
+        }
+        Action::Run("/limits") => {
+            "Show observed provider failures and local retry backoff. These are conservative local delays, not verified quota resets."
+        }
+        Action::Edit("sounds.alarm") => {
+            "Volume of the repeating alarm cue. 0 silent, 1 default, 1.5 loud. Say “29 stop” or /stop to silence it."
+        }
+        Action::Edit("stt.endpoint-ms") => {
+            "Silence in milliseconds before a finished phrase is recognized (300–2000). Lower responds faster but can split hesitant speech."
+        }
+        Action::Edit("stt.threads") => {
+            "CPU threads for local speech recognition (1–8). Takes effect after restart; the default is 2."
+        }
+        Action::Toggle("stt.spin") => {
+            "Keep CPU threads spinning for slightly lower latency at the cost of more power and heat. Off is the default."
+        }
+        Action::Edit("tts.volume") => {
+            "Playback volume for spoken replies. 0 silent, 1 normal, 1.5 maximum; applies to the next reply."
+        }
+        Action::Toggle("tts.streaming") => {
+            "Cartesia only: play incoming audio packets as they arrive instead of waiting for each completed sentence. Off uses buffered sentence playback."
+        }
+        Action::Cycle("routing.input-gate", _) => {
+            "How awake speech is checked before it reaches the agent. local filters obvious filler offline; jev uses the TypeSafe classifier; off sends everything."
         }
         Action::Close => "Leave settings and resume voice input.",
         _ => "Enter to change this setting. Esc goes back.",
@@ -776,6 +866,13 @@ fn current_value<'a>(key: &str, s: &'a Settings) -> &'a str {
         }
         "routing.coordinator" => {
             if s.routing.coordinator {
+                "true"
+            } else {
+                "false"
+            }
+        }
+        "computer.enabled" => {
+            if s.computer.enabled {
                 "true"
             } else {
                 "false"
@@ -1155,8 +1252,15 @@ impl Panel {
                         .into()
                 }
                 "tts.speed" => "Speed 0.6–1.5. Esc returns.".into(),
-                "sounds.think" | "sounds.wake" | "sounds.sleep" | "sounds.alarm" | "tts.volume" => {
+                "sounds.think" | "sounds.wake" | "sounds.sleep" | "sounds.alarm" | "sounds.ready"
+                | "tts.volume" => {
                     "Volume 0–1.5 (or 0–150%). 0 is silent, 1 is default. Esc returns.".into()
+                }
+                "computer.max-image-dimension" => {
+                    "Longest edge in pixels for screenshots (256–3840). Esc returns.".into()
+                }
+                "computer.zoom-dimension" => {
+                    "Longest edge in pixels for a zoom region (256–4096). Esc returns.".into()
                 }
                 "stt.engine" => engine_picker(s),
                 _ => format!("Enter a new value for {key}. Esc returns."),

@@ -6,6 +6,39 @@ The stack is Rust/Tokio, Clap, Ratatui, CPAL, Earshot voice detection, and Canar
 
 See [local password locking](docs/SECURITY.md) and [voice performance, benchmarks, and deployment priorities](docs/VOICE_PERFORMANCE.md) for the latest security and latency work.
 
+## How it works
+
+![Accessor 29 core voice pipeline](docs/diagrams/29.png)
+
+*The end-to-end voice pipeline. The editable source is [`docs/diagrams/29.dot`](docs/diagrams/29.dot); regenerate the PNG with Graphviz `dot`.*
+
+- **Capture & wake.** The microphone is downmixed, resampled to 16 kHz, and echo-cancelled (WebRTC AEC3); Earshot VAD segments speech, and the local wake detector watches for "29" to open a conversation or unlock the session.
+- **Speech recognition.** Completed awake utterances are transcribed offline with Canary 180M Flash, Parakeet TDT, or Whisper, or streamed to Cartesia Ink-2 over a WebSocket that submits only the final transcript. Wake probes and dictation always stay local, with a non-streaming HTTP fallback.
+- **Relevance & routing.** A Jev (TypeSafe) classifier drops filler and decides whether speech is addressed to the agent; routing then picks the main, coding, or plugin role, or a lightweight coordinator model owns the conversation and delegates the rest.
+- **Harness & metaprompt.** The chosen harness (Codex App Server, Claude Code, or Antigravity) runs under the Accessor metaprompt — persona, handoff guide, and a shared-memory digest — with Accessor's MCP tools attached. Coding and difficult work runs in an isolated 15-minute worker that returns a bounded result.
+- **Local controls & memory.** Strict one-line JSON directives in a reply become notes, alarms, and schedules; shared memory and the encrypted dictation journal persist across harnesses, and `ACCESSOR_SWITCH` hands the conversation to another CLI.
+- **Playback.** Replies are synthesized by the system voice, a local Kokoro worker, or Cartesia, ordered in a single speech queue, and played back while feeding the echo canceller that keeps the microphone from hearing the agent.
+- **Events.** An authenticated email reply emitted by your own automation can start an agent turn even while Accessor is asleep.
+
+## Contents
+
+- [How it works](#how-it-works)
+- [Quick start](#quick-start)
+- [A CLI for main use](#a-cli-for-main-use)
+- [Settings and spoken switching](#settings-and-spoken-switching)
+- [Conversation behavior](#conversation-behavior)
+- [Room noise calibration and suppression](#room-noise-calibration-and-suppression)
+- [Test transcription separately](#test-transcription-separately)
+- [Choose a voice](#choose-a-voice)
+- [Reuse agent connectors](#reuse-agent-connectors)
+- [Notes, alarms, sleep, and scheduled tasks](#notes-alarms-sleep-and-scheduled-tasks)
+- [Incoming replies through an event trigger](#incoming-replies-through-an-event-trigger)
+- [Desktop control (computer use)](#desktop-control-computer-use)
+- [Local-only dictation](#local-only-dictation)
+- [Agent permissions and scope](#agent-permissions-and-scope)
+- [Platform and development status](#platform-and-development-status)
+- [Speech decisions, streaming, and latency](#speech-decisions-streaming-and-latency)
+
 ## Quick start
 
 On Windows, from this checkout:
@@ -43,6 +76,10 @@ acc connectors status
 acc connectors setup
 acc agent login
 acc update
+acc computer test
+acc computer screenshot --output shot.png
+acc computer enable
+acc journal show
 acc config locations
 acc config export portable.json
 acc config import portable.json
@@ -245,6 +282,37 @@ Duplicate message IDs are suppressed across restarts. A receipt is written befor
 
 **The upstream email automation is not installed or configured by this repository.** Connect that source to the local handoff before expecting replies to wake Accessor. No live email has been sent as part of development/testing.
 
+## Desktop control (computer use)
+
+Accessor can give a connected agent control of this computer's screen, mouse, and keyboard through an MCP `computer` tool. It is **off by default** because it drives the real machine.
+
+```sh
+acc computer test                          # capture a display and report; no input sent
+acc computer screenshot --output shot.png  # save a PNG
+acc computer info                          # displays and input support
+acc computer enable                        # expose the MCP computer tool
+acc computer disable
+```
+
+The tool mirrors the standard computer-use action set: `screenshot`, `zoom`, `left_click`, `right_click`, `middle_click`, `double_click`, `triple_click`, `left_click_drag`, `mouse_move`, `left_mouse_down`, `left_mouse_up`, `cursor_position`, `scroll`, `type`, `key`, `hold_key`, and `wait`. It adds reliable, semantic actions that avoid pixel guessing: `open_app` launches an application by name (the Windows path uses exact app URIs and executables, so "Calculator" cannot be mistaken for another icon), `list_windows` and `focus_window` switch between open windows, and `ui_snapshot` returns the focused window's accessibility tree while `ui_invoke`, `ui_set_value`, `ui_select` and `ui_expand` act on a named control through the platform accessibility API. The agent is told to prefer these over coordinate clicks and to fall back to screenshots only for surfaces with no named controls.
+
+The semantic backend is native per platform: **Windows** UI Automation; **macOS** the Accessibility API via System Events (grant Accessibility permission to the terminal/`acc` in System Settings → Privacy & Security → Accessibility); **Linux** AT-SPI2 via `python3-pyatspi`, with `wmctrl` as a window-focus fallback (`gsettings set org.gnome.desktop.interface toolkit-accessibility true` on GNOME if trees come back empty). `acc computer info` reports which backend is available. Screenshots are returned as PNG images, downscaled to `computer.max-image-dimension` (default 1280 px on the longest edge); click coordinates are in those screenshot pixels and are mapped back to native display pixels automatically, so the agent never needs the scale. Adjust the caps in Settings → Computer or with `acc config set computer.max-image-dimension 1600`. The `computer.enabled` toggle is intentionally outside the agent-editable settings surface: an agent cannot enable desktop control for itself.
+
+This is not a sandbox. Only the agent's own sandbox and permissions limit what the tool can do once enabled. Enable it only when you want an agent to act on this desktop, prefer typed approval for consequential steps, and disable it when you are done. Windows is the tested platform; macOS and Linux X11 use the same cross-platform capture/input libraries and need hardware testing. Wayland input requires a libei or `ydotool` bridge, and the process must run in an interactive desktop session rather than a service.
+
+## Local-only dictation
+
+Accessor can keep private speech entirely on this machine. While awake, say “start dictation” (or type `/dictate on`). Recognized speech is then transcribed locally and appended to an encrypted journal; it is never sent to an agent, a cloud service, or the conversation history. Unlike normal after-wake transcription, dictation forces local STT even if Cartesia is configured. Say “stop dictation”, type `/dictate off`, or let the conversation sleep to end it.
+
+```sh
+acc journal show                 # decrypt and print entries for this session
+acc journal add "A private note" # append without dictation
+acc journal path                 # the encrypted file
+acc journal clear                # delete all entries
+```
+
+The journal lives at `journal/journal.enc` under the settings folder and is encrypted at rest with XChaCha20-Poly1305. The key is generated on first use and kept in the OS credential store (or supplied as a base64 `JOURNAL_KEY`). The file is written with owner-only permissions. `/journal` prints entries in the console. This is local privacy, not a hardened vault: anything running as your OS user can ask the credential store for the key.
+
 ## Agent permissions and scope
 
 The default Codex sandbox is read-only. `--workspace-write --workspace PATH` permits workspace edits under Codex’s policy. Structured command/file approvals and empty-form MCP confirmations require a typed `/approve N` and expire after 60 seconds. No spoken transcript can approve. Authentication/device-verification requests, forms requiring field values, unknown protocol requests, and permission-profile grants are declined rather than guessed; complete those in the agent’s native interface.
@@ -257,7 +325,7 @@ One lightweight main agent owns the conversation; isolated workers return their 
 
 Windows x64 is the tested development platform. Linux x64/ARM64, Apple Silicon macOS, and Windows ARM64 use cross-platform libraries and have runtime download entries, but require testing on actual hardware. Intel macOS needs a separately supplied compatible ONNX Runtime 1.24+ build; 32-bit machines are not supported by the provided setup. Kokoro wheel availability is a separate platform constraint.
 
-Linux compilation needs ALSA headers, pkg-config, and D-Bus development headers (`libasound2-dev libdbus-1-dev pkg-config` on Debian/Ubuntu). Windows needs Rust MSVC/C++ build tools; macOS needs Xcode command-line tools. System TTS on Linux needs espeak-ng. A physical light, startup/service packaging, and additional agent adapters remain future work. Echo cancellation and spoken interruption are implemented; physical laptop testing is still needed.
+Linux compilation needs ALSA headers, pkg-config, and D-Bus development headers (`libasound2-dev libdbus-1-dev pkg-config` on Debian/Ubuntu). Desktop control additionally needs `libpipewire-0.3-dev libwayland-dev libxcb1-dev libxrandr-dev libclang-dev`. Windows needs Rust MSVC/C++ build tools; macOS needs Xcode command-line tools. System TTS on Linux needs espeak-ng. A physical light, startup/service packaging, and additional agent adapters remain future work. Echo cancellation and spoken interruption are implemented; physical laptop testing is still needed.
 
 ```sh
 cargo fmt --check
@@ -291,7 +359,7 @@ Wake interruption stops output/work and waits silently for your request. Ordinar
 
 ### Shared memory and MCP
 
-Accessor stores stable facts and preferences in `memory.json` alongside its settings, shared by all harnesses. Agents may save user-supported stable information automatically. Raw room speech, secrets, temporary guesses and permissions must not be saved as memories. Global scope is for cross-project preferences; project scope is tied to a canonical workspace directory. Repository instructions remain in native harness files. Memory is fallible context, never authority over current instructions.
+Accessor stores stable facts and preferences in `memory.json` alongside its settings, shared by all harnesses. Agents may save user-supported stable information automatically. Raw room speech, secrets, temporary guesses and permissions must not be saved as memories. Global scope is for cross-project preferences; project scope is tied to a canonical workspace directory. Repository instructions remain in native harness files. Memory is fallible context, never authority over current instructions. A bounded digest of the most recently updated in-scope facts is injected into a harness's instructions when it starts, so the agent has durable context without searching first; it refreshes on the next reconnect rather than every turn, so saving a memory does not restart a warm session or break prompt caching.
 
 Use `/memory` in the console to inspect shared facts. `acc memory list`, `acc memory search "query"`, `acc memory save key "fact" --source "user statement"`, and `acc memory forget key --revision N` inspect and maintain the store from any shell. Add `--scope global` for a personal preference. Corrections require the revision returned by search; new keys use revision 0. File locks and atomic replacement protect concurrent writers. Forget clears text/source and retains a key tombstone, which blocks old agents from recreating that key. It does not erase copies in provider history, backups, native memories, or previously compacted context. Do not mirror Accessor facts into those stores.
 

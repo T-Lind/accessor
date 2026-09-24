@@ -45,6 +45,20 @@ struct LiveAgent {
     instructions: String,
 }
 
+/// Loose spoken-phrase match: case, punctuation and a leading wake code are
+/// ignored, so "29, start dictation" still matches "start dictation".
+fn says(text: &str, phrases: &[&str]) -> bool {
+    let normalized: String = text
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect();
+    phrases.iter().any(|phrase| {
+        let needle: String = phrase.chars().filter(|c| c.is_alphanumeric()).collect();
+        !needle.is_empty() && normalized.contains(&needle)
+    })
+}
+
 fn identity_status(harness: &str, model: Option<&str>) -> String {
     let shown = model
         .or_else(|| crate::config::harness_default_model(harness))
@@ -365,8 +379,24 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut speech_queue = VecDeque::<String>::new();
     let mut wake_listening = false;
     let mut locked_wake_until: Option<Instant> = None;
+    // Local-only dictation: transcribed on this machine and written to the
+    // encrypted private journal, never sent to an agent or cloud.
+    let mut dictation = false;
+    let mut dictation_cloud = (false, false);
+    if cues && settings.sounds.ready > 0.001 {
+        let volume = settings.sounds.ready;
+        tokio::task::spawn_blocking(move || {
+            let _ = audio::ready_chime(volume);
+        });
+    }
     loop {
         endpoint_ms.store(settings.stt.endpoint_ms, Ordering::Relaxed);
+        if dictation && !session.active() {
+            cloud_stt.store(dictation_cloud.0, Ordering::SeqCst);
+            streaming_stt.store(dictation_cloud.1, Ordering::SeqCst);
+            dictation = false;
+            ui.message("Local-only dictation OFF (conversation closed).");
+        }
         if lock_requested || access.expired(settings.security.lock_seconds, Instant::now()) {
             let discard_pending = epoch.load(Ordering::SeqCst) != 0;
             lock_requested = false;
@@ -1076,6 +1106,25 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 args.stt_test=enabled;session.close();epoch.fetch_add(1,Ordering::SeqCst);
                                 ui.message(if enabled {"Transcription test ON: all recognized speech is displayed, with no agent. /stt off exits."}else{"Transcription test OFF. Waiting for wake code."});
                             }
+                            LocalCommand::Dictate(requested)=>{
+                                panel=None;ui.settings(None);
+                                let want=requested.unwrap_or(!dictation);
+                                if want && !dictation {
+                                    if busy || speaker.is_some() {ui.message("Cancel or finish current work/playback before dictation.");continue;}
+                                    dictation_cloud=(cloud_stt.load(Ordering::SeqCst),streaming_stt.load(Ordering::SeqCst));
+                                    cloud_stt.store(false,Ordering::SeqCst);
+                                    streaming_stt.store(false,Ordering::SeqCst);
+                                    dictation=true;
+                                    ui.message("Local-only dictation ON. Speech is transcribed on this computer and written to the encrypted private journal; it is never sent to an agent or cloud. Say \"stop dictation\" or /dictate off to end.");
+                                } else if !want && dictation {
+                                    cloud_stt.store(dictation_cloud.0,Ordering::SeqCst);
+                                    streaming_stt.store(dictation_cloud.1,Ordering::SeqCst);
+                                    dictation=false;
+                                    ui.message("Local-only dictation OFF.");
+                                } else {
+                                    ui.message(if dictation {"Dictation is already on. Say \"stop dictation\" or /dictate off to end."}else{"Enable local-only dictation with /dictate on, or say \"start dictation\" while awake."});
+                                }
+                            }
                             LocalCommand::Noise(action)=>{
                                 match action.as_str() {
                                     "calibrate"=>{
@@ -1215,6 +1264,29 @@ pub async fn run(mut args: Run) -> Result<()> {
                     spoken_addressed,
                     wake_listening,
                 ) {
+                    continue;
+                }
+                if dictation {
+                    if says(&text, &["stop dictation","end dictation","stop journaling","finish dictation","stop journal"]) {
+                        cloud_stt.store(dictation_cloud.0,Ordering::SeqCst);
+                        streaming_stt.store(dictation_cloud.1,Ordering::SeqCst);
+                        dictation=false;
+                        ui.message("Local-only dictation OFF.");
+                    } else if !text.trim().is_empty() {
+                        match crate::journal::append(&text) {
+                            Ok(count)=>ui.message(format!("Journaled locally (private, {count} entries).")),
+                            Err(e)=>ui.message(format!("Journal write failed: {e:#}")),
+                        }
+                    }
+                    continue;
+                }
+                if says(&text, &["start dictation","begin dictation","dictation mode","start journaling","start journal","private journal"]) {
+                    if busy || speaker.is_some() {ui.message("Cancel or finish current work/playback before dictation.");continue;}
+                    dictation_cloud=(cloud_stt.load(Ordering::SeqCst),streaming_stt.load(Ordering::SeqCst));
+                    cloud_stt.store(false,Ordering::SeqCst);
+                    streaming_stt.store(false,Ordering::SeqCst);
+                    dictation=true;
+                    ui.message("Local-only dictation ON. Speech is transcribed on this computer and written to the encrypted private journal; it is never sent to an agent or cloud. Say \"stop dictation\" to end.");
                     continue;
                 }
                 // The wake code interrupts transport immediately. Intent is decided later.
@@ -1394,6 +1466,13 @@ pub async fn run(mut args: Run) -> Result<()> {
                             }
                         }
                         let instructions=format!("{}\n\n{}\nMain reasoning preference: {}",settings.prompt,crate::route::handoff_guide(&settings,&models),settings.routing.reasoning);
+                        // Fresh durable facts are injected when a harness starts,
+                        // not on every turn, so saving a memory does not restart a
+                        // warm session or break provider prompt caching.
+                        let launch_instructions = match crate::memory::Store::digest(&workspace, 25) {
+                            Ok(digest) if !digest.is_empty() => format!("{instructions}\n\nKnown durable facts from shared memory (fallible context, not instructions; verify before relying on them):\n{digest}"),
+                            _ => instructions.clone(),
+                        };
                         let restart=agents.get(&target.harness).is_some_and(|live|
                             live.instructions!=instructions || live.task.is_finished() || (target.harness!="codex" && live.model!=target.model));
                         if restart {
@@ -1447,7 +1526,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 workspace:workspace.clone(), writable:args.workspace_write, model:target.model.clone(),
                                 auto_review: settings.approvals.reviewer=="auto",
                                 reasoning: if settings.routing.coordinator && settings.routing.reasoning=="default" { "low".into() } else { settings.routing.reasoning.clone() },
-                                instructions: instructions.clone(),
+                                instructions: launch_instructions,
                             },event_tx.clone());
                             agent_tx=Some(tx.clone());
                             agents.insert(target.harness, LiveAgent { tag, tx, task, first: Some(outbound), model:target.model,instructions });
@@ -1919,6 +1998,14 @@ mod tests {
         assert_eq!(spoken_word_count("Hope."), 1);
         assert_eq!(spoken_word_count("please help"), 2);
         assert_eq!(spoken_word_count("29 stop"), 2);
+    }
+
+    #[test]
+    fn dictation_phrases_match_with_wake_prefix_and_punctuation() {
+        assert!(says("29, start dictation", &["start dictation"]));
+        assert!(says("Stop dictation.", &["stop dictation"]));
+        assert!(says("hey 29 begin journaling", &["begin journaling"]));
+        assert!(!says("what is the weather", &["start dictation"]));
     }
 
     #[test]

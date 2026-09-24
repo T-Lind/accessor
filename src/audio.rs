@@ -1297,6 +1297,7 @@ where
 pub enum CueKind {
     Wake,
     Sleep,
+    Ready,
 }
 
 pub fn chime(volume: f32) -> Result<()> {
@@ -1304,6 +1305,11 @@ pub fn chime(volume: f32) -> Result<()> {
 }
 pub fn sleep_chime(volume: f32) -> Result<()> {
     play_cue(CueKind::Sleep, volume)
+}
+/// Rising arpeggio played once when Accessor has finished starting and is
+/// ready for the wake code.
+pub fn ready_chime(volume: f32) -> Result<()> {
+    play_cue(CueKind::Ready, volume)
 }
 pub fn play_cue(kind: CueKind, volume: f32) -> Result<()> {
     let notes: &[(f32, f32, f32)] = match kind {
@@ -1313,10 +1319,16 @@ pub fn play_cue(kind: CueKind, volume: f32) -> Result<()> {
             (0.14, 0.12, 392.0),
             (0.29, 0.16, 293.66),
         ],
+        CueKind::Ready => &[
+            (0.0, 0.10, 523.25),
+            (0.13, 0.10, 659.25),
+            (0.26, 0.18, 783.99),
+        ],
     };
     let hold = match kind {
         CueKind::Wake => 350,
         CueKind::Sleep => 520,
+        CueKind::Ready => 500,
     };
     let device = cpal::default_host()
         .default_output_device()

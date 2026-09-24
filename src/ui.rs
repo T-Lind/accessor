@@ -368,7 +368,10 @@ impl Ui {
                             .borders(Borders::ALL)
                             .border_type(BorderType::Rounded)
                             .border_style(border)
-                            .title(" ACCESSOR · voice & agents "),
+                            .title(format!(
+                                " ACCESSOR {} · voice & agents ",
+                                env!("CARGO_PKG_VERSION")
+                            )),
                     ),
                 layout[0],
             );

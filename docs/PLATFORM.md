@@ -37,7 +37,7 @@ A wake code interrupts output and active work, then opens listening. Intent is i
 
 The older `routing.router` / `routing.auto-model` settings still support legacy routing with the coordinator disabled; they are no longer part of the main settings flow.
 
-Settings → Voice: **think warble**, **wake chime**, and **sleep chime** volumes (0 silent, 1 normal; the think warble defaults to 1.5 on new profiles). The warble follows unfinished work: it pauses during speech and resumes after progress speech, remaining active through tool calls until completion. Cancellation and pending approvals silence it. Status chrome — every box outline on the page — is **green** while the conversation is open, **light blue** while the agent works, and **purple** while TTS is speaking. Activity scrolls with the **mouse wheel** as well as PgUp/PgDn.
+Settings → Voice: **think warble**, **wake chime**, **sleep chime**, and the startup **ready chime** (0 silent, 1 normal; wake and sleep chime default to 1.5 so they carry over speech, and the think warble defaults to 1.5 on new profiles). A rising ready arpeggio plays once when Accessor has finished starting and is listening for the wake code. The warble follows unfinished work: it pauses during speech and resumes after progress speech, remaining active through tool calls until completion. Cancellation and pending approvals silence it. Status chrome — every box outline on the page — is **green** while the conversation is open, **light blue** while the agent works, and **purple** while TTS is speaking. Activity scrolls with the **mouse wheel** as well as PgUp/PgDn.
 
 ### Caching, compaction, and usage limits
 
@@ -55,7 +55,9 @@ Codex default is **`approvalsReviewer: auto_review`** with `approvalPolicy: on-r
 
 ## Settings
 
-Interactive dashboard: **↑/↓** move, **Enter** opens a category or toggles, **Esc** goes up/closes. The selected row shows a cyan description of what that setting does. Harness pickers list which CLIs are actually on PATH. Categories: Voice, Speech, Harnesses, Display, Tests. Typed `/settings KEY VALUE` still works for scripts.
+Interactive dashboard: **↑/↓** move, **Enter** opens a category or toggles, **Esc** goes up/closes. The selected row shows a cyan description of what that setting does. Harness pickers list which CLIs are actually on PATH. Categories: Voice, Speech, Harnesses, Display, Tests, Security, Computer. Typed `/settings KEY VALUE` still works for scripts.
+
+**Computer** holds the desktop-control toggle plus the screenshot and zoom width caps. `acc computer test` captures a display without sending input; `acc computer enable` exposes the MCP `computer` tool to connected agents. It is off by default and is deliberately not agent-editable, so an agent cannot grant itself desktop control. The tool mirrors the standard computer-use action set and maps screenshot coordinates back to native pixels, and adds reliable semantic actions: `open_app` (launch by name), `list_windows`/`focus_window`, and `ui_snapshot`/`ui_invoke`/`ui_set_value`/`ui_select`/`ui_expand`, which drive apps through the platform accessibility tree instead of pixel clicks. The backend is Windows UI Automation, macOS Accessibility (System Events, after granting Accessibility permission), and Linux AT-SPI2 (via `python3-pyatspi`, with `wmctrl` for window focus). `acc computer info` reports which backend is available. The agent is steered to prefer these and use screenshots only as a fallback. See README for the full action list and platform caveats.
 
 ## What you need installed
 
@@ -64,7 +66,8 @@ Interactive dashboard: **↑/↓** move, **Enter** opens a category or toggles, 
 3. `acc tts setup` — system / Kokoro / Cartesia
 4. At least one harness login: Codex (`acc agent`), optional `claude`, optional `agy`
 5. For new-profile cloud defaults: Cartesia key (TTS and Ink-2), TypeSafe key (Jev relevance, with local fallback), and Antigravity CLI for compaction. Alternatively select local STT, system TTS, and Codex compaction.
-6. `acc -wakecode 29 speak`
+6. Optional desktop control: `acc computer enable` (then `acc computer test`), or enable it in the setup wizard.
+7. `acc -wakecode 29 speak`
 
 ## Wake-once conversation
 

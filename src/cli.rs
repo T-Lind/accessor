@@ -118,6 +118,16 @@ enum Commands {
         #[command(subcommand)]
         action: JevCommand,
     },
+    /// Test and configure local desktop control (screenshot plus mouse/keyboard).
+    Computer {
+        #[command(subcommand)]
+        action: ComputerCommand,
+    },
+    /// Read the private local-only dictation journal (encrypted at rest).
+    Journal {
+        #[command(subcommand)]
+        action: JournalCommand,
+    },
 }
 #[derive(Subcommand)]
 enum MemoryCommand {
@@ -296,6 +306,43 @@ enum JevCommand {
     Key,
     /// Remove the stored TypeSafe key.
     ForgetKey,
+}
+#[derive(Subcommand)]
+enum ComputerCommand {
+    /// Show display layout, input support, and whether computer use is enabled.
+    Info,
+    /// Capture a display and report the result; --output also saves a PNG.
+    Test {
+        #[arg(long)]
+        display: Option<usize>,
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    /// Capture a display to a PNG file.
+    Screenshot {
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        display: Option<usize>,
+    },
+    /// Allow connected agents to use the MCP `computer` tool.
+    Enable,
+    /// Disable the MCP `computer` tool.
+    Disable,
+}
+#[derive(Subcommand)]
+enum JournalCommand {
+    /// Print every entry (decrypted for this session).
+    Show,
+    /// Print the encrypted journal file path.
+    Path,
+    /// Append an entry directly, without dictation.
+    Add {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        text: Vec<String>,
+    },
+    /// Delete all journal entries. The encryption key is kept.
+    Clear,
 }
 #[derive(Subcommand)]
 enum ConnectorCommand {
@@ -836,6 +883,63 @@ pub async fn entry() -> Result<()> {
             }
             JevCommand::ForgetKey => config::delete_secret("typesafe"),
         },
+        Commands::Computer { action } => match action {
+            ComputerCommand::Info => {
+                println!("{}", crate::computer::status(&Settings::load()?));
+                Ok(())
+            }
+            ComputerCommand::Test { display, output } => {
+                let settings = Settings::load()?;
+                println!(
+                    "{}",
+                    crate::computer::test(&settings, display, output.as_deref())?
+                );
+                Ok(())
+            }
+            ComputerCommand::Screenshot { output, display } => {
+                let settings = Settings::load()?;
+                println!(
+                    "{}",
+                    crate::computer::test(&settings, display, Some(&output))?
+                );
+                Ok(())
+            }
+            ComputerCommand::Enable => {
+                Settings::load()?.set("computer.enabled", "true")?;
+                println!("Computer use enabled. Connected agents get the MCP `computer` tool when they reconnect. Verify with: acc computer test");
+                Ok(())
+            }
+            ComputerCommand::Disable => {
+                Settings::load()?.set("computer.enabled", "false")?;
+                println!("Computer use disabled.");
+                Ok(())
+            }
+        },
+        Commands::Journal { action } => match action {
+            JournalCommand::Show => {
+                print!("{}", crate::journal::render()?);
+                Ok(())
+            }
+            JournalCommand::Path => {
+                println!("{}", crate::journal::path()?.display());
+                Ok(())
+            }
+            JournalCommand::Add { text } => {
+                let joined = text.join(" ");
+                let count = crate::journal::append(&joined)?;
+                println!(
+                    "Journaled locally ({} entries). Stored at {}",
+                    count,
+                    crate::journal::path()?.display()
+                );
+                Ok(())
+            }
+            JournalCommand::Clear => {
+                crate::journal::clear()?;
+                println!("Journal cleared.");
+                Ok(())
+            }
+        },
     }
 }
 async fn transcribe(file: PathBuf, dir: Option<PathBuf>) -> Result<()> {
@@ -971,15 +1075,43 @@ async fn setup() -> Result<()> {
         .with_prompt("Speak agent replies?")
         .default(s.speak)
         .interact()?;
+    let voices = [
+        "System voice — installed on this computer",
+        "Kokoro — local neural speech",
+        "Cartesia — cloud speech (API key required)",
+        "Off",
+    ];
+    let voice = Select::new()
+        .with_prompt("Spoken replies")
+        .items(voices)
+        .default(match s.tts.provider.as_str() {
+            "kokoro" => 1,
+            "cartesia" => 2,
+            "off" => 3,
+            _ => 0,
+        })
+        .interact()?;
+    s.tts.provider = ["system", "kokoro", "cartesia", "off"][voice].into();
+    s.computer.enabled = dialoguer::Confirm::new()
+        .with_prompt("Let agents control this desktop (computer use)?")
+        .default(s.computer.enabled)
+        .interact()?;
     s.assets_dir = Some(s.assets()?);
     s.save()?;
     let assets = s.assets()?;
     crate::stt_models::ensure_ready(&assets, &s.stt.engine, |msg| println!("{msg}")).await?;
-    println!(
-        "Saved to {}. Speech files: {}. Next: acc tts setup; acc connectors setup; acc",
-        config::path()?.display(),
-        assets.display()
-    );
+    println!("Saved to {}.", config::path()?.display());
+    println!("Next steps:");
+    match s.tts.provider.as_str() {
+        "cartesia" => println!("  acc tts setup      add your Cartesia key and pick a voice"),
+        "kokoro" => println!("  python scripts/setup_tts.py   install the local voice"),
+        _ => {}
+    }
+    println!("  acc connectors setup   log in or add plugins");
+    if s.computer.enabled {
+        println!("  acc computer test      verify screen capture; input is enabled too");
+    }
+    println!("  acc                    start listening");
     Ok(())
 }
 async fn tts_setup() -> Result<()> {
@@ -1146,6 +1278,7 @@ async fn doctor() -> Result<()> {
         }
     );
     println!("Agent integrations: acc connectors status\nMicrophones: acc devices\nMicrophone levels: acc mic\nHarness updates: acc update  (acc update --check for versions only)\nNo microphone was opened and no provider request was sent.");
+    println!("\n{}", crate::computer::status(&s));
     println!("\n{}", config::locations(&s));
     Ok(())
 }

@@ -20,6 +20,7 @@ pub const KEYS: &[&str] = &[
     "sounds.wake",
     "sounds.sleep",
     "sounds.alarm",
+    "sounds.ready",
     "routing.main",
     "routing.main-model",
     "routing.reasoning",

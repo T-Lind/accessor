@@ -34,6 +34,27 @@ pub struct Settings {
     pub prompt: String,
     pub sounds: Sounds,
     pub security: Security,
+    pub computer: Computer,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Computer {
+    /// Desktop control (screenshot + mouse/keyboard) through the MCP `computer`
+    /// tool. Off by default: it lets a connected agent drive the real machine.
+    pub enabled: bool,
+    /// Longest edge of a returned screenshot; coordinates are mapped back.
+    pub max_image_dimension: u32,
+    /// Longest edge of a `zoom` region image.
+    pub zoom_dimension: u32,
+}
+impl Default for Computer {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_image_dimension: 1280,
+            zoom_dimension: 1280,
+        }
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -172,14 +193,16 @@ pub struct Sounds {
     pub think: f32,
     pub wake: f32,
     pub sleep: f32,
+    pub ready: f32,
 }
 impl Default for Sounds {
     fn default() -> Self {
         Self {
             alarm: 1.0,
             think: 1.5,
-            wake: 1.0,
-            sleep: 1.0,
+            wake: 1.5,
+            sleep: 1.5,
+            ready: 1.0,
         }
     }
 }
@@ -206,6 +229,7 @@ impl Default for Settings {
             prompt: default_prompt(),
             sounds: Sounds::default(),
             security: Security::default(),
+            computer: Computer::default(),
         }
     }
 }
@@ -582,6 +606,7 @@ impl Settings {
                 && (0.0..=1.5).contains(&self.sounds.wake)
                 && (0.0..=1.5).contains(&self.sounds.sleep)
                 && (0.0..=1.5).contains(&self.sounds.alarm)
+                && (0.0..=1.5).contains(&self.sounds.ready)
                 && (0.0..=1.5).contains(&self.tts.volume),
             "sound volumes must be 0–1.5 (0 silent, 1 default)"
         );
@@ -601,6 +626,14 @@ impl Settings {
         ensure!(
             self.prompt.len() <= 8000 && !self.prompt.chars().any(|c| c.is_control() && c != '\n'),
             "prompt must be plain text up to 8000 characters"
+        );
+        ensure!(
+            (256..=3840).contains(&self.computer.max_image_dimension),
+            "computer.max-image-dimension must be 256–3840"
+        );
+        ensure!(
+            (256..=4096).contains(&self.computer.zoom_dimension),
+            "computer.zoom-dimension must be 256–4096"
         );
         Ok(())
     }
@@ -703,6 +736,7 @@ impl Settings {
             "sounds.think" => self.sounds.think = parse_level(value)?,
             "sounds.wake" => self.sounds.wake = parse_level(value)?,
             "sounds.sleep" => self.sounds.sleep = parse_level(value)?,
+            "sounds.ready" => self.sounds.ready = parse_level(value)?,
             "chat" => self.chat = value.to_lowercase(),
             "routing.coding" => self.routing.coding = value.to_lowercase(),
             "routing.main" | "routing.routine" => self.routing.main = value.to_lowercase(),
@@ -756,6 +790,9 @@ impl Settings {
             "stt.noise-floor-db" => self.stt.noise_floor_db = value.parse()?,
             "stt.denoise" => self.stt.denoise = value.to_lowercase(),
             "approvals.reviewer" => self.approvals.reviewer = value.to_lowercase(),
+            "computer.enabled" => self.computer.enabled = value.parse()?,
+            "computer.max-image-dimension" => self.computer.max_image_dimension = value.parse()?,
+            "computer.zoom-dimension" => self.computer.zoom_dimension = value.parse()?,
             "microphone" => self.microphone = Some(value.into()),
             "codex-bin" => self.codex_bin = Some(PathBuf::from(value).canonicalize()?),
             "assets-dir" => self.assets_dir = Some(PathBuf::from(value).canonicalize()?),
