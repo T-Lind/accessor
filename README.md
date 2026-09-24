@@ -196,6 +196,8 @@ acc agent mcp login SERVER_NAME
 
 Accessor uses the same local Codex configuration and login. Plugins limited to the desktop UI may not work in a standalone App Server. Custom MCP setup remains provider-specific. A Gmail tool connection permits on-demand email tasks; it does not by itself deliver incoming-email notifications.
 
+For a user-requested notification, or when a requested task needs an out-of-band message, the metaprompt directs the agent to ask the connected mail plugin for its signed-in account/profile and send to that address when the plugin supports it. This needs no separate general email-address setting and never guesses an address. If the plugin cannot identify its account or send mail, the agent reports that limitation. Requests to check or search the user's mail remain ordinary mailbox tasks through the plugin. The `event_owner` setting is still a separate allowlist for incoming-event replies.
+
 ## Notes, alarms, sleep, and scheduled tasks
 
 The voice metaprompt tells every supported harness about Accessor's structured local controls. You can say things such as “make a note that the filter size is 20 by 25,” “set an alarm for five minutes,” “run this every morning using Codex and Sol,” or “go to sleep.” The agent emits a strict one-line JSON directive; Accessor removes it from the reply, validates it, performs the local action, and reports what was saved. A sleep directive closes voice access after the reply and waits for the wake code again.
