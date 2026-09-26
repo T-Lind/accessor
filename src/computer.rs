@@ -275,6 +275,7 @@ pub(crate) fn input_handle() -> Result<Enigo> {
     input()
 }
 
+#[allow(dead_code)]
 pub(crate) fn click_point(x: i32, y: i32) -> Result<()> {
     let mut enigo = input()?;
     enigo.move_mouse(x, y, Coordinate::Abs)?;
@@ -282,11 +283,13 @@ pub(crate) fn click_point(x: i32, y: i32) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 pub(crate) fn type_at_focus(text: &str) -> Result<()> {
     input()?.text(text)?;
     Ok(())
 }
 
+#[allow(dead_code)]
 pub(crate) fn key_combo(enigo: &mut Enigo, combo: &str, repeat: u32) -> Result<()> {
     let keys = parse_combo(combo)?;
     for _ in 0..repeat.clamp(1, 100) {

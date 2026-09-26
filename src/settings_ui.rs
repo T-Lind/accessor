@@ -132,6 +132,11 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
             ),
             row("Barge-in", on(s.barge_in), Action::Toggle("barge-in")),
             row(
+                "Wake display",
+                on(s.wake_display),
+                Action::Toggle("wake-display"),
+            ),
+            row(
                 "Think warble",
                 &format!("{:.0}%", s.sounds.think * 100.0),
                 Action::Edit("sounds.think"),
@@ -480,6 +485,9 @@ fn hint(action: &Action) -> &'static str {
         Action::Toggle("security.spoken-unlock") => "Allow exact passphrase words after wake code + unlock, using only local transcription. Off requires keyboard entry.",
         Action::Toggle("barge-in") => {
             "When on, new speech can interrupt the agent. When off, wait or /cancel."
+        }
+        Action::Toggle("wake-display") => {
+            "Turn on sleeping or blanked displays during Accessor interactions."
         }
         Action::Toggle("speak") => "Speak agent replies out loud. Off keeps them on screen only.",
         Action::Toggle("speak-progress") => {
@@ -838,6 +846,13 @@ fn current_value<'a>(key: &str, s: &'a Settings) -> &'a str {
         }
         "barge-in" => {
             if s.barge_in {
+                "true"
+            } else {
+                "false"
+            }
+        }
+        "wake-display" => {
+            if s.wake_display {
                 "true"
             } else {
                 "false"

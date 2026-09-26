@@ -8,6 +8,7 @@ pub const KEYS: &[&str] = &[
     "speak-progress",
     "barge-in",
     "idle-seconds",
+    "wake-display",
     "chat",
     "tts.provider",
     "tts.streaming",

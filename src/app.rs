@@ -45,6 +45,14 @@ struct LiveAgent {
     instructions: String,
 }
 
+fn wake_display(enabled: bool, last: &mut Option<Instant>) {
+    if !enabled || last.is_some_and(|at| at.elapsed() < Duration::from_secs(1)) {
+        return;
+    }
+    *last = Some(Instant::now());
+    tokio::task::spawn_blocking(crate::desktop::wake_display);
+}
+
 /// Loose spoken-phrase match: case, punctuation and a leading wake code are
 /// ignored, so "29, start dictation" still matches "start dictation".
 fn says(text: &str, phrases: &[&str]) -> bool {
@@ -378,6 +386,7 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut utility: Option<tokio::task::JoinHandle<Result<String>>> = None;
     let mut speech_queue = VecDeque::<String>::new();
     let mut wake_listening = false;
+    let mut last_display_wake = None;
     let mut locked_wake_until: Option<Instant> = None;
     // Local-only dictation: transcribed on this machine and written to the
     // encrypted private journal, never sent to an agent or cloud.
@@ -578,6 +587,9 @@ pub async fn run(mut args: Run) -> Result<()> {
                 if gate_job.is_none() && cloud_job.is_none() && !voice_inbox.is_empty() {voice_inbox.pop_front()} else {input_rx.recv().await}
             }, if !eof || !input_rx.is_empty() || !voice_inbox.is_empty() => {
                 let Some(input) = input else { break; };
+                if !args.text && matches!(&input,Input::Text(text) if !text.trim().is_empty()) {
+                    wake_display(settings.wake_display,&mut last_display_wake);
+                }
                 // The authorization gate precedes every diagnostic, cloud call, command,
                 // queue and transcript path. Only locally decoded speech can unlock.
                 let auth_wake = wake::WakeCode::new(&settings.wake_code, &args.wake_alias)?;
@@ -1312,6 +1324,9 @@ pub async fn run(mut args: Run) -> Result<()> {
                     let tx=input_tx.clone();
                     tokio::task::spawn_blocking(move || {if let Err(e)=audio::chime(volume) {let _=tx.blocking_send(Input::Error(format!("Wake chime unavailable: {e}; kept listening")));}});
                 }
+                if !typed && !is_automatic && !args.text && (matches!(&action,Action::Open) || spoken_addressed) {
+                    wake_display(settings.wake_display,&mut last_display_wake);
+                }
                 match action {
                     Action::Ignore => continue,
                     Action::Open => {
@@ -1375,6 +1390,9 @@ pub async fn run(mut args: Run) -> Result<()> {
                         if !typed && !is_automatic && !spoken_addressed && !wake_followup && !was_active && spoken_word_count(&text) < 2 {
                             ui.ignored(&text,"one-word transcript outside an established follow-up; say 29 first");
                             continue;
+                        }
+                        if !typed && !is_automatic && !args.text {
+                            wake_display(settings.wake_display,&mut last_display_wake);
                         }
                         if pending_stt.is_some() {
                             match stt_confirm(&text) {
@@ -1539,6 +1557,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                 if access.locked() { continue; }
                 if harness.starts_with("worker:") {
                     let Some(w)=worker.as_mut().filter(|w|w.id==harness) else {continue;};
+                    wake_display(settings.wake_display && !args.text,&mut last_display_wake);
                     match event {
                         agent::Event::Ready=>{if let Some(prompt)=w.first.take() {crate::usage::record_harness(&w.harness,crate::usage::approx_tokens(&prompt));let _=w.tx.send(agent::CommandMessage::Prompt(prompt)).await;}},
                         agent::Event::Reply(text)=>w.append(&text),
@@ -1563,6 +1582,9 @@ pub async fn run(mut args: Run) -> Result<()> {
                     continue;
                 }
                 let Some(harness)=agents.iter().find_map(|(name,live)|(live.tag==harness).then(||name.clone())) else {continue;};
+                if harness == active_harness {
+                    wake_display(settings.wake_display && !args.text,&mut last_display_wake);
+                }
                 match event {
                     agent::Event::Ready => {
                         if harness == active_harness { connected=true; }
@@ -1773,6 +1795,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                     }) {
                         Ok(items)=>{organizer_error_warned=false;for item in items {match item {
                             crate::organizer::Due::Alarm(item)=>{
+                                wake_display(settings.wake_display && !args.text,&mut last_display_wake);
                                 alarm=None;
                                 match audio::alarm(settings.sounds.alarm) {
                                     Ok(cue)=>{alarm=Some(cue);ui.message(format!("[ALARM {}: {}] Say 29 stop the alarm.",item.id,item.label));}

@@ -13,6 +13,7 @@ use std::{
 pub struct Settings {
     pub wake_code: String,
     pub idle_seconds: u64,
+    pub wake_display: bool,
     pub speak: bool,
     pub barge_in: bool,
     /// Deprecated compatibility field; active conversations accept follow-ups.
@@ -211,6 +212,7 @@ impl Default for Settings {
         Self {
             wake_code: "29".into(),
             idle_seconds: 120,
+            wake_display: true,
             speak: true,
             barge_in: true,
             _addressed: false,
@@ -708,6 +710,7 @@ impl Settings {
             "security.spoken-unlock" => self.security.spoken_unlock = value.parse()?,
             "event-owner" => self.event_owner = Some(value.into()),
             "wake-code" => self.wake_code = value.into(),
+            "wake-display" => self.wake_display = value.parse()?,
             "idle-seconds" => self.idle_seconds = value.parse()?,
             "speak" => self.speak = value.parse()?,
             "barge-in" => self.barge_in = value.parse()?,

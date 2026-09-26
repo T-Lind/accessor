@@ -32,6 +32,11 @@ every commit.
 
 - Match the surrounding code style; this codebase favors compact, idiomatic Rust.
 - Prefer editing existing files and patterns over introducing new abstractions.
+- Accessor may create worker tasks itself; spin them off appropriately so they
+  do not block the speech or UI hot path.
+- Agents may also start Codex, Antigravity, or another appropriate agent
+  harness and monitor those full threads directly; they are not necessarily
+  sub-agents.
 - Settings live in `config.json`; credentials never do. Secrets go in the OS
   credential store (see `config::save_secret`).
 - Wake detection, STT, and playback are latency-sensitive: keep new work off the

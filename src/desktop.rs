@@ -444,6 +444,14 @@ mod platform {
         ui_invoke(reference, name, control_type)
     }
 
+    pub fn wake_display() {
+        if let Ok(mut enigo) = crate::computer::input_handle() {
+            use enigo::{Coordinate, Mouse};
+            let _ = enigo.move_mouse(1, 0, Coordinate::Rel);
+            let _ = enigo.move_mouse(-1, 0, Coordinate::Rel);
+        }
+    }
+
     pub fn capabilities() -> String {
         "Semantic UI: Windows UI Automation (snapshot, invoke, set, select, expand).".into()
     }
@@ -509,6 +517,12 @@ mod platform {
     ) -> Result<String> {
         run(&["set", name, text])
     }
+    pub fn wake_display() {
+        let _ = std::process::Command::new("caffeinate")
+            .args(["-u", "-t", "1"])
+            .spawn();
+    }
+
     pub fn capabilities() -> String {
         "Semantic UI: macOS Accessibility via System Events. Grant Accessibility permission to the terminal/acc; use open_app to launch apps.".into()
     }
@@ -608,6 +622,88 @@ mod platform {
     ) -> Result<String> {
         atspi(&["set", name, text])
     }
+    pub fn wake_display() {
+        let gnome = std::process::Command::new("busctl")
+            .args([
+                "--user",
+                "call",
+                "org.gnome.ScreenSaver",
+                "/org/gnome/ScreenSaver",
+                "org.gnome.ScreenSaver",
+                "SetActive",
+                "b",
+                "false",
+            ])
+            .output()
+            .or_else(|_| {
+                std::process::Command::new("dbus-send")
+                    .args([
+                        "--session",
+                        "--dest=org.gnome.ScreenSaver",
+                        "--type=method_call",
+                        "/org/gnome/ScreenSaver",
+                        "org.gnome.ScreenSaver.SetActive",
+                        "boolean:false",
+                    ])
+                    .output()
+            });
+        if gnome.as_ref().map(|o| o.status.success()).unwrap_or(false) {
+            let _ = std::process::Command::new("busctl")
+                .args([
+                    "--user",
+                    "set-property",
+                    "org.gnome.Mutter.DisplayConfig",
+                    "/org/gnome/Mutter/DisplayConfig",
+                    "org.gnome.Mutter.DisplayConfig",
+                    "PowerSaveMode",
+                    "i",
+                    "0",
+                ])
+                .output();
+            return;
+        }
+
+        let kde = std::process::Command::new("busctl")
+            .args([
+                "--user",
+                "call",
+                "org.freedesktop.ScreenSaver",
+                "/org/freedesktop/ScreenSaver",
+                "org.freedesktop.ScreenSaver",
+                "SimulateUserActivity",
+            ])
+            .output()
+            .or_else(|_| {
+                std::process::Command::new("dbus-send")
+                    .args([
+                        "--session",
+                        "--dest=org.freedesktop.ScreenSaver",
+                        "--type=method_call",
+                        "/org/freedesktop/ScreenSaver",
+                        "org.freedesktop.ScreenSaver.SimulateUserActivity",
+                    ])
+                    .output()
+            });
+        if kde.as_ref().map(|o| o.status.success()).unwrap_or(false) {
+            return;
+        }
+
+        if std::env::var_os("DISPLAY").is_some() {
+            let xset = std::process::Command::new("xset")
+                .args(["dpms", "force", "on"])
+                .output();
+            if xset.as_ref().map(|o| o.status.success()).unwrap_or(false) {
+                return;
+            }
+        }
+
+        if let Ok(mut enigo) = crate::computer::input_handle() {
+            use enigo::{Coordinate, Mouse};
+            let _ = enigo.move_mouse(1, 0, Coordinate::Rel);
+            let _ = enigo.move_mouse(-1, 0, Coordinate::Rel);
+        }
+    }
+
     pub fn capabilities() -> String {
         let available = std::process::Command::new("python3")
             .args([
