@@ -135,10 +135,13 @@ pub async fn run(mut args: Run) -> Result<()> {
         settings.routing.coding = name.into();
         settings.routing.main = name.into();
     }
-    // Refresh the connector inventory once per launch in the background. It is
-    // snapshotted into launch instructions when a harness starts, so a slow
-    // native probe never delays speech setup or the UI.
-    if !args.text {
+    // Refresh the connector inventory in the background, but reuse a recent
+    // snapshot so a fresh launch is not delayed by another harness probe. A
+    // stale or missing cache is rebuilt; `acc connectors refresh` forces it
+    // now. It is snapshotted into launch instructions when a harness starts, so
+    // a slow native probe never delays speech setup or the UI.
+    if !args.text && crate::connectors::inventory_age().is_none_or(|age| age.as_secs() >= 6 * 3600)
+    {
         let refresh = settings.clone();
         let codex = args.codex_bin.clone();
         tokio::spawn(async move {

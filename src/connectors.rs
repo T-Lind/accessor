@@ -38,6 +38,17 @@ pub fn cached_inventory() -> Vec<Connector> {
         .unwrap_or_default()
 }
 
+/// Age of the cached inventory, or None when it has never been probed.
+pub fn inventory_age() -> Option<std::time::Duration> {
+    let path = config::home().ok()?.join("connectors.json");
+    std::fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .elapsed()
+        .ok()
+}
+
 fn save_inventory(list: &[Connector]) -> Result<()> {
     config::save_private(
         &config::home()?.join("connectors.json"),
