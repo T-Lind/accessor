@@ -579,7 +579,7 @@ fn hint(action: &Action) -> &'static str {
             "Kokoro voice id, e.g. af_heart. Run /tts voices for the list."
         }
         Action::Edit("tts.model") => "Pick a Cartesia model with the arrow keys. Sonic 3 is the current default. Esc keeps the current model.",
-        Action::Edit("tts.speed") => "Speaking speed 0.6–1.5 for Kokoro and Cartesia.",
+        Action::Edit("tts.speed") => "Speaking speed 0.6–1.5 for Piper, Kokoro, the system voice, and Cartesia.",
         Action::Edit("stt.engine") => {
             "Opens the full local STT list. Esc backs out with no download. Only the model you pick is confirmed, and only if it is not already installed."
         },
@@ -2329,7 +2329,7 @@ mod tests {
         };
         let step2 = speech.display(&s, false, &[]);
         assert!(step2.contains("Step 2 of 2"));
-        assert!(step2.contains("Lewis"));
+        assert!(step2.contains("Alan"));
         let Answer::Command(_) = speech.answer("enter", &s, &[]).unwrap() else {
             panic!("choose voice");
         };
@@ -2444,9 +2444,9 @@ mod tests {
     #[test]
     fn voice_chooser_steps_through_provider_then_voice() {
         let s = Settings::default();
-        assert_eq!(s.tts.provider, "kokoro");
+        assert_eq!(s.tts.provider, "piper");
         assert_eq!(s.tts.local_voice, "bm_lewis");
-        assert!(voice_persona_label(&s).contains("Lewis"));
+        assert!(voice_persona_label(&s).contains("Alan"));
         let mut edit = VoiceEdit::new(&s);
         let step1 = edit.display();
         assert!(step1.contains("Step 1 of 2"));

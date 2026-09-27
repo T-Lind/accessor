@@ -247,7 +247,7 @@ pub async fn run(mut args: Run) -> Result<()> {
         .workspace
         .canonicalize()
         .context("Workspace must exist")?;
-    // A fresh profile defaults to the local Kokoro voice; install it once on
+    // A fresh profile defaults to the local Piper voice; install it once on
     // first interactive launch so speech works without a manual setup step.
     if !args.text && settings.tts.provider == "kokoro" && !crate::speech::kokoro_ready(&settings) {
         ui.message("Kokoro is the default voice and is not installed yet. Downloading the local runtime and voice model now; this is a one-time install.");

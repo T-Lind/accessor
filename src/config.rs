@@ -187,7 +187,7 @@ impl Default for Tts {
         Self {
             streaming: true,
             volume: 1.0,
-            provider: "kokoro".into(),
+            provider: "piper".into(),
             voice: crate::speech::DEFAULT_CARTESIA_VOICE.into(),
             model: "sonic-3".into(),
             local_voice: "bm_lewis".into(),
@@ -1194,7 +1194,8 @@ mod tests {
         assert!(s.stt.streaming);
         assert_eq!(s.stt.denoise, "highpass");
         assert_eq!(s.stt.noise_floor_db, crate::noise::DEFAULT_FLOOR_DB);
-        assert_eq!(s.tts.provider, "kokoro");
+        assert_eq!(s.tts.provider, "piper");
+        assert_eq!(s.tts.piper_voice, "en_GB-alan-medium");
         assert_eq!(s.tts.local_voice, "bm_lewis");
         assert!(s.tts.streaming);
         assert_eq!(s.tts.speed, 1.1);
