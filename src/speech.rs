@@ -39,23 +39,33 @@ pub fn spoken_text(markdown: &str) -> String {
         .collect()
 }
 
-pub fn speak_chunks(text: &str) -> Vec<String> {
+/// Split spoken text into synthesis chunks. Local engines get a short first
+/// chunk so audio starts sooner, then larger chunks to limit per-call overhead;
+/// cloud providers keep larger chunks throughout. Later chunks synthesize while
+/// the current one plays.
+fn speak_chunks_for(text: &str, provider: &str) -> Vec<String> {
     let text = spoken_text(text);
     if text.is_empty() {
         return Vec::new();
     }
+    let (first_len, rest_len, local) = match provider {
+        "kokoro" | "system" => (48, 220, true),
+        _ => (220, 220, false),
+    };
     let mut out = Vec::new();
     let mut buf = String::new();
     let mut buf_len = 0_usize;
     for word in text.split_whitespace() {
-        let boundary = word.ends_with('.') || word.ends_with('?') || word.ends_with('!');
+        let max_len = if out.is_empty() { first_len } else { rest_len };
+        let sentence = word.ends_with('.') || word.ends_with('?') || word.ends_with('!');
+        let clause = local && (word.ends_with(',') || word.ends_with(';'));
         let word_len = word.chars().count();
         let trial_len = if buf.is_empty() {
             word_len
         } else {
             buf_len + 1 + word_len
         };
-        if trial_len > 220 && !buf.is_empty() {
+        if trial_len > max_len && !buf.is_empty() {
             out.push(std::mem::take(&mut buf));
             buf.push_str(word);
             buf_len = word_len;
@@ -66,7 +76,12 @@ pub fn speak_chunks(text: &str) -> Vec<String> {
             buf.push_str(word);
             buf_len = trial_len;
         }
-        if boundary && buf_len >= 24 {
+        let boundary = if out.is_empty() && local {
+            (sentence && buf_len >= 16) || (clause && buf_len >= 24)
+        } else {
+            sentence && buf_len >= 24
+        };
+        if boundary {
             out.push(std::mem::take(&mut buf));
             buf_len = 0;
         }
@@ -633,7 +648,7 @@ pub fn start(text: String, settings: Tts, capture: Arc<crate::audio::SpeechState
     let playing = Arc::new(AtomicBool::new(false));
     let playback = playing.clone();
     let task = tokio::spawn(async move {
-        let parts = speak_chunks(&text);
+        let parts = speak_chunks_for(&text, &settings.provider);
         if parts.is_empty() || settings.provider == "off" {
             return Ok(());
         }
@@ -875,6 +890,19 @@ async fn render_uncached(text: &str, settings: &Tts) -> Result<Vec<u8>> {
         synthesize(text, settings).await
     }
 }
+/// Load the local Kokoro worker and warm its ONNX kernels so the first reply is
+/// not delayed by model startup. Uses the normal synthesis path (no worker
+/// protocol change) and discards the tiny sample. Best-effort.
+pub async fn warm_local(settings: &Tts) -> Result<()> {
+    local_request(json!({
+        "text":"Ready.",
+        "voice":settings.local_voice,
+        "speed":settings.speed.clamp(0.6,1.5),
+    }))
+    .await?;
+    Ok(())
+}
+
 pub async fn local_voices(_settings: &config::Settings) -> Result<()> {
     let (header, _) = local_request(json!({"action":"voices"})).await?;
     if let Some(voices) = header["voices"].as_array() {
@@ -902,12 +930,23 @@ mod tests {
             "Hello world."
         );
         assert_eq!(spoken_text("east | west *now*"), "east , west now");
-        assert_eq!(speak_chunks("A. F.").len(), 1);
-        let parts = speak_chunks(
+        assert_eq!(speak_chunks_for("A. F.", "cartesia").len(), 1);
+        let parts = speak_chunks_for(
             "The time is 2:41 AM. It is Saturday. The community office opens at nine.",
+            "cartesia",
         );
         assert!(parts.len() >= 2);
         assert!(parts[0].contains("2:41"));
+    }
+    #[test]
+    fn local_engine_chunks_split_clauses_for_faster_first_audio() {
+        let text = "Good morning, sir, the meeting has been moved to half past four, and the agenda is attached.";
+        let local = speak_chunks_for(text, "kokoro");
+        let cloud = speak_chunks_for(text, "cartesia");
+        assert!(local.len() >= 2);
+        assert!(local.iter().all(|chunk| chunk.chars().count() <= 220));
+        assert!(local[0].chars().count() <= 48);
+        assert!(cloud.len() <= local.len());
     }
     #[test]
     fn cartesia_payload_has_current_shape() {

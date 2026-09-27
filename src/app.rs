@@ -252,6 +252,11 @@ pub async fn run(mut args: Run) -> Result<()> {
     if !args.text && settings.tts.provider == "kokoro" && !crate::speech::kokoro_ready(&settings) {
         ui.message("Kokoro is the default voice and is not installed yet. Downloading the local runtime and voice model now; this is a one-time install.");
         tts_install = Some(crate::speech::install_kokoro(&settings, &workspace));
+    } else if !args.text && settings.tts.provider == "kokoro" {
+        let tts = settings.tts.clone();
+        tokio::spawn(async move {
+            let _ = crate::speech::warm_local(&tts).await;
+        });
     }
     let mut session = Session::new(wake, Duration::from_secs(idle));
     let epoch = Arc::new(AtomicU64::new(0));
@@ -1146,6 +1151,10 @@ pub async fn run(mut args: Run) -> Result<()> {
                                             ui.message("Kokoro isn't installed yet. Downloading the local runtime and voice model now; this is a one-time install.");
                                             tts_install=Some(crate::speech::install_kokoro(&settings,&workspace));
                                         }
+                                        if settings.tts.provider=="kokoro" && crate::speech::kokoro_ready(&settings) {
+                                            let tts=settings.tts.clone();
+                                            tokio::spawn(async move { let _ = crate::speech::warm_local(&tts).await; });
+                                        }
                                         if spoken_setting && speak {speech_queue.push_back(format!("Selected {key}: {value}."));}
                                         if let Some(menu)=&panel {ui.settings(Some(menu.display(&settings,connected,&models)));}
                                         if ["microphone","assets-dir","codex-bin","stt.threads","stt.spin"].contains(&key.as_str()) {ui.message("Restart Accessor to apply this device/runtime change.");}
@@ -1169,6 +1178,10 @@ pub async fn run(mut args: Run) -> Result<()> {
                                         if settings.tts.provider=="kokoro" && !crate::speech::kokoro_ready(&settings) && tts_install.is_none() {
                                             ui.message("Kokoro isn't installed yet. Downloading the local runtime and voice model now; this is a one-time install.");
                                             tts_install=Some(crate::speech::install_kokoro(&settings,&workspace));
+                                        }
+                                        if settings.tts.provider=="kokoro" && crate::speech::kokoro_ready(&settings) {
+                                            let tts=settings.tts.clone();
+                                            tokio::spawn(async move { let _ = crate::speech::warm_local(&tts).await; });
                                         }
                                         if settings.tts.provider=="cartesia" && voice_lookup.is_none() && config::optional_secret("cartesia","CARTESIA_API_KEY").is_some() {
                                             voice_lookup=Some(tokio::spawn(crate::speech::fetch_voices()));
@@ -1945,7 +1958,10 @@ pub async fn run(mut args: Run) -> Result<()> {
                 }
                 if tts_install.as_ref().is_some_and(|task|task.is_finished()) {
                     match tts_install.take().unwrap().await {
-                        Ok(Ok(text))=>{ui.message(text);if settings.tts.provider=="kokoro" {ui.message("Kokoro is ready. Use Voice persona → Kokoro, or /tts provider kokoro.");}
+                        Ok(Ok(text))=>{ui.message(text);if settings.tts.provider=="kokoro" {ui.message("Kokoro is ready. Use Voice persona → Kokoro, or /tts provider kokoro.");
+                            let tts=settings.tts.clone();
+                            tokio::spawn(async move { let _ = crate::speech::warm_local(&tts).await; });
+                        }
                             if speak && intro_marker.as_ref().is_some_and(|path|!path.exists()) {
                                 speech_queue.push_back(crate::settings_ui::device_intro(&settings));
                                 if let Some(path)=&intro_marker {let _=std::fs::write(path,"1");}
