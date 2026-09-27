@@ -36,6 +36,7 @@ class MemoryRuntimeTests(unittest.TestCase):
         instructions = replies[0]["result"]["instructions"]
         self.assertIn("notes_search", instructions)
         self.assertIn("note_read", instructions)
+        self.assertIn("note_delete", instructions)
         self.assertIn("device timezone", instructions)
         self.assertIn("harness_health", instructions)
         return [reply["result"] for reply in replies[1:]]
@@ -87,6 +88,14 @@ class MemoryRuntimeTests(unittest.TestCase):
         document = json.loads(note["content"][0]["text"])["note"]
         self.assertEqual(document["title"], "Room test")
         self.assertIn("wake recall", document["markdown"])
+        invalid = self.mcp(self.a, [("note_delete", {"id": "../" + found[0]["id"]})])[0]
+        self.assertTrue(invalid["isError"])
+        deleted = self.mcp(self.a, [("note_delete", {"id": found[0]["id"]})])[0]
+        receipt = json.loads(deleted["content"][0]["text"])
+        self.assertFalse(deleted["isError"])
+        self.assertEqual(receipt, {"deleted": True, "id": found[0]["id"]})
+        missing = self.mcp(self.a, [("note_read", {"id": found[0]["id"]})])[0]
+        self.assertTrue(missing["isError"])
         health = json.loads(results[2]["content"][0]["text"])
         self.assertIn("timezone", health["device_time"])
         self.assertTrue(any(row["id"] == "mock" and row["available"] for row in health["harnesses"]))

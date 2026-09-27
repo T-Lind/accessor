@@ -32,6 +32,7 @@ pub struct Panel {
     cursor: usize,
     field: Option<&'static str>,
     agent_edit: Option<AgentEdit>,
+    choice_edit: Option<ChoiceEdit>,
 }
 impl Default for Panel {
     fn default() -> Self {
@@ -40,6 +41,7 @@ impl Default for Panel {
             cursor: 0,
             field: None,
             agent_edit: None,
+            choice_edit: None,
         }
     }
 }
@@ -187,22 +189,9 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                     Action::Toggle("speak-progress"),
                 ),
                 row(
-                    "TTS provider",
-                    &s.tts.provider,
-                    Action::Edit("tts.provider"),
-                ),
-                row(
-                    match s.tts.provider.as_str() {
-                        "cartesia" => "Cartesia voice",
-                        "kokoro" => "Kokoro voice",
-                        _ => "Voice",
-                    },
-                    &voice_id(s),
-                    Action::Edit(if s.tts.provider == "kokoro" {
-                        "tts.local-voice"
-                    } else {
-                        "tts.voice"
-                    }),
+                    "Voice persona",
+                    &voice_persona_label(s),
+                    Action::Edit("voice.persona"),
                 ),
                 row(
                     "Speed",
@@ -413,7 +402,7 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
             ),
             row(
                 "Harness updates",
-                "check Codex / Claude / agy",
+                "update found harness CLIs",
                 Action::Run("/update"),
             ),
         ],
@@ -558,6 +547,7 @@ fn hint(action: &Action) -> &'static str {
             "Saved instructions sent to Codex, Claude, and Antigravity. Type default to restore the hands-free voice prompt."
         }
         Action::Edit("tts.provider") => "How replies are spoken: system, kokoro, cartesia, or off.",
+        Action::Edit("voice.persona") => "One list of ready voices: the recommended British default first, then other Cartesia voices, local Kokoro voices, the system voice, and off. Choosing Kokoro installs it on first use.",
         Action::Edit("tts.voice") => {
             "Pick a Cartesia voice by number or name; run /tts voices to refresh the list."
         }
@@ -940,6 +930,279 @@ fn cycle_next(current: &str, options: &[&str]) -> String {
     options[(i + 1) % options.len()].to_string()
 }
 
+/// One row in an arrow-key chooser. `command` overrides the default
+/// `/config set key value`, which lets one picker set several fields (persona).
+#[derive(Clone)]
+struct PickChoice {
+    value: String,
+    label: String,
+    command: Option<String>,
+}
+fn pick(value: &str, label: &str) -> PickChoice {
+    PickChoice {
+        value: value.into(),
+        label: label.into(),
+        command: None,
+    }
+}
+struct ChoiceEdit {
+    key: Option<&'static str>,
+    title: String,
+    footer: String,
+    choices: Vec<PickChoice>,
+    cursor: usize,
+}
+impl ChoiceEdit {
+    fn new(
+        key: &'static str,
+        title: &str,
+        footer: &str,
+        choices: Vec<PickChoice>,
+        current: &str,
+    ) -> Self {
+        let cursor = choices.iter().position(|c| c.value == current).unwrap_or(0);
+        Self {
+            key: Some(key),
+            title: title.into(),
+            footer: footer.into(),
+            choices,
+            cursor,
+        }
+    }
+    fn display(&self) -> String {
+        let mut out = format!(
+            "{}\n↑/↓ move · Enter choose · Esc back · or type a number\n\n",
+            self.title
+        );
+        for (i, choice) in self.choices.iter().enumerate() {
+            out.push_str(&format!(
+                "{}{}  {}\n",
+                if i == self.cursor { "› " } else { "  " },
+                i + 1,
+                choice.label
+            ));
+        }
+        if !self.footer.is_empty() {
+            out.push('\n');
+            out.push_str(&self.footer);
+        }
+        out
+    }
+    fn nav(&mut self, dir: i32) {
+        if self.choices.is_empty() {
+            return;
+        }
+        self.cursor = (self.cursor as i32 + dir).rem_euclid(self.choices.len() as i32) as usize;
+    }
+    fn answer(&mut self, value: &str) -> Result<Answer> {
+        let index = if value.is_empty() || value == "enter" {
+            Some(self.cursor)
+        } else if let Ok(n) = value.parse::<usize>() {
+            n.checked_sub(1)
+        } else {
+            let needle = value.to_lowercase();
+            self.choices
+                .iter()
+                .position(|c| c.value.eq_ignore_ascii_case(value))
+                .or_else(|| {
+                    self.choices
+                        .iter()
+                        .position(|c| c.label.to_lowercase().contains(&needle))
+                })
+        };
+        let Some(index) = index.filter(|i| *i < self.choices.len()) else {
+            bail!("Choose a listed option.");
+        };
+        self.cursor = index;
+        let choice = &self.choices[index];
+        let command = choice.command.clone().unwrap_or_else(|| {
+            format!(
+                "/config set {} {}",
+                self.key.unwrap_or_default(),
+                choice.value
+            )
+        });
+        Ok(Answer::Command(command))
+    }
+}
+
+pub fn voice_persona_label(s: &Settings) -> String {
+    match s.tts.provider.as_str() {
+        "cartesia" => format!("{} · Cartesia", crate::speech::voice_name(&s.tts.voice)),
+        "kokoro" => {
+            let label = crate::speech::KOKORO_VOICES
+                .iter()
+                .find(|(id, _)| *id == s.tts.local_voice)
+                .map(|(_, label)| *label)
+                .unwrap_or(s.tts.local_voice.as_str());
+            format!("{label} · Kokoro")
+        }
+        "off" => "Off · silent".into(),
+        _ => "System voice · this computer".into(),
+    }
+}
+
+/// A short, spoken-safe introduction used once after speech is first configured.
+pub fn device_intro(s: &Settings) -> String {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(0);
+    let cpu = if cores > 0 {
+        format!(" with {cores} CPU threads")
+    } else {
+        String::new()
+    };
+    format!(
+        "Accessor is set up on this {} machine{}. I'll speak as {}, and send work to {}. Say {} when you'd like to talk.",
+        std::env::consts::OS,
+        cpu,
+        voice_persona_label(s),
+        s.routing.main,
+        s.wake_code
+    )
+}
+
+fn voice_persona_edit(s: &Settings) -> ChoiceEdit {
+    let mut choices: Vec<PickChoice> = Vec::new();
+    let catalog = crate::speech::catalog_with_current(&s.tts.voice);
+    let mut cartesia: Vec<PickChoice> = catalog
+        .iter()
+        .map(|voice| {
+            let detail = if voice.description.is_empty() {
+                crate::speech::short_id(&voice.id)
+            } else {
+                voice.description.clone()
+            };
+            PickChoice {
+                value: voice.id.clone(),
+                label: format!("{} · Cartesia · {}", voice.name, detail),
+                command: Some(format!("/tts persona cartesia {}", voice.id)),
+            }
+        })
+        .collect();
+    // Best/most typical first: the recommended British default leads, then the
+    // local Kokoro voices stay reachable before the long account catalog.
+    if let Some(index) = cartesia
+        .iter()
+        .position(|c| c.value == crate::speech::DEFAULT_CARTESIA_VOICE)
+    {
+        choices.push(cartesia.remove(index));
+    }
+    for (id, label) in crate::speech::KOKORO_VOICES {
+        choices.push(PickChoice {
+            value: (*id).into(),
+            label: format!("{label} · Kokoro"),
+            command: Some(format!("/tts persona kokoro {id}")),
+        });
+    }
+    choices.extend(cartesia);
+    choices.push(PickChoice {
+        value: "system".into(),
+        label: "System voice · this computer".into(),
+        command: Some("/config set tts.provider system".into()),
+    });
+    choices.push(PickChoice {
+        value: "off".into(),
+        label: "Off · silent".into(),
+        command: Some("/config set tts.provider off".into()),
+    });
+    let cursor = match s.tts.provider.as_str() {
+        "kokoro" => choices
+            .iter()
+            .position(|c| c.value == s.tts.local_voice)
+            .unwrap_or(0),
+        "cartesia" => choices
+            .iter()
+            .position(|c| c.value == s.tts.voice)
+            .unwrap_or(0),
+        "off" => choices.iter().position(|c| c.value == "off").unwrap_or(0),
+        _ => choices
+            .iter()
+            .position(|c| c.value == "system")
+            .unwrap_or(0),
+    };
+    ChoiceEdit {
+        key: None,
+        title: "Voice persona".into(),
+        footer: "Best matches are first. Cartesia is cloud; Kokoro and the system voice are local. Kokoro installs on first use.".into(),
+        choices,
+        cursor,
+    }
+}
+
+/// Discrete settings that should be chosen with the arrow keys instead of typed.
+fn choice_for(key: &str, s: &Settings) -> Option<ChoiceEdit> {
+    match key {
+        "tts.provider" => Some(ChoiceEdit::new(
+            "tts.provider",
+            "Spoken replies — choose a provider",
+            "Cartesia is cloud and needs a key; Kokoro and the system voice are local. Kokoro installs on first use.",
+            vec![
+                pick("cartesia", "Cartesia · cloud neural"),
+                pick("kokoro", "Kokoro · local neural"),
+                pick("system", "System voice · this computer"),
+                pick("off", "Off · silent"),
+            ],
+            &s.tts.provider,
+        )),
+        "tts.voice" => {
+            let mut catalog = crate::speech::catalog_with_current(&s.tts.voice);
+            catalog.sort_by_key(|v| u8::from(v.id != crate::speech::DEFAULT_CARTESIA_VOICE));
+            let choices = catalog
+                .iter()
+                .map(|v| {
+                    let detail = if v.description.is_empty() {
+                        crate::speech::short_id(&v.id)
+                    } else {
+                        v.description.clone()
+                    };
+                    pick(&v.id, &format!("{} · {}", v.name, detail))
+                })
+                .collect();
+            Some(ChoiceEdit::new(
+                "tts.voice",
+                "Cartesia voice",
+                "Run /tts voices to refresh the list from your account.",
+                choices,
+                &s.tts.voice,
+            ))
+        }
+        "tts.local-voice" => {
+            let choices = crate::speech::KOKORO_VOICES
+                .iter()
+                .map(|(id, label)| pick(id, label))
+                .collect();
+            Some(ChoiceEdit::new(
+                "tts.local-voice",
+                "Kokoro voice",
+                "Kokoro is local and installs on first use.",
+                choices,
+                &s.tts.local_voice,
+            ))
+        }
+        "stt.engine" => {
+            let choices = crate::stt_models::OFFERS
+                .iter()
+                .map(|offer| {
+                    pick(
+                        offer.id,
+                        &format!("{} ({}) · {}", offer.name, offer.id, engine_status(s, offer)),
+                    )
+                })
+                .collect();
+            Some(ChoiceEdit::new(
+                "stt.engine",
+                "Local speech recognition model",
+                "Only a missing model you pick downloads. Esc keeps the current one.",
+                choices,
+                &s.stt.engine,
+            ))
+        }
+        "voice.persona" => Some(voice_persona_edit(s)),
+        _ => None,
+    }
+}
+
 struct AgentEdit {
     role: &'static str,
     step: usize,
@@ -1215,6 +1478,9 @@ impl Panel {
         if let Some(edit) = &self.agent_edit {
             return edit.display();
         }
+        if let Some(edit) = &self.choice_edit {
+            return edit.display();
+        }
         if let Some(key) = self.field {
             return match key {
                 "model" | "routing.plugin-model" | "routing.main-model" => {
@@ -1327,6 +1593,10 @@ impl Panel {
             edit.cursor = (edit.cursor as i32 + dir).rem_euclid(edit.choices.len() as i32) as usize;
             return;
         }
+        if let Some(edit) = &mut self.choice_edit {
+            edit.nav(dir);
+            return;
+        }
         if self.field.is_some() {
             return;
         }
@@ -1347,6 +1617,10 @@ impl Panel {
             }
             return Answer::Show;
         }
+        if self.choice_edit.is_some() {
+            self.choice_edit = None;
+            return Answer::Show;
+        }
         if self.field.is_some() {
             self.field = None;
             return Answer::Show;
@@ -1361,6 +1635,9 @@ impl Panel {
     }
     pub fn activate(&mut self, s: &Settings, models: &[Model], connected: bool) -> Result<Answer> {
         if self.agent_edit.is_some() {
+            return self.answer("", s, models);
+        }
+        if self.choice_edit.is_some() {
             return self.answer("", s, models);
         }
         if self.field.is_some() {
@@ -1394,7 +1671,10 @@ impl Panel {
                 Ok(Answer::Command(format!("/config set {key} {next}")))
             }
             Action::Edit(key) => {
-                self.field = Some(*key);
+                match choice_for(key, s) {
+                    Some(edit) => self.choice_edit = Some(edit),
+                    None => self.field = Some(*key),
+                }
                 Ok(Answer::Show)
             }
             Action::Run(cmd) => Ok(Answer::Command((*cmd).into())),
@@ -1410,13 +1690,22 @@ impl Panel {
             self.nav(1, s, false);
             return Ok(Answer::Show);
         }
-        if self.agent_edit.is_some() && matches!(value, "esc" | "back") {
+        if (self.agent_edit.is_some() || self.choice_edit.is_some())
+            && matches!(value, "esc" | "back")
+        {
             return Ok(self.back());
         }
         if let Some(edit) = &mut self.agent_edit {
             let result = edit.answer(value)?;
             if matches!(result, Answer::Command(_)) {
                 self.agent_edit = None;
+            }
+            return Ok(result);
+        }
+        if let Some(edit) = &mut self.choice_edit {
+            let result = edit.answer(value)?;
+            if matches!(result, Answer::Command(_)) {
+                self.choice_edit = None;
             }
             return Ok(result);
         }
@@ -1856,13 +2145,13 @@ mod tests {
         assert!(picker.contains("Mock"));
         let mut speech = Panel::default();
         speech.answer("2", &s, &[]).unwrap();
-        let Answer::Show = speech.answer("9", &s, &[]).unwrap() else {
+        let Answer::Show = speech.answer("8", &s, &[]).unwrap() else {
             panic!("open local STT list");
         };
         let list = speech.display(&s, false, &[]);
         assert!(list.contains("Parakeet"));
         assert!(list.contains("whisper-tiny"));
-        assert!(list.contains("Esc returns with no download"));
+        assert!(list.contains("Only a missing model you pick downloads"));
         let Answer::Show = speech.back() else {
             panic!("esc list");
         };
@@ -1907,5 +2196,47 @@ mod tests {
             crate::speech::resolve_voice("classy british man", &catalog).as_deref(),
             Some(crate::speech::DEFAULT_CARTESIA_VOICE)
         );
+    }
+
+    #[test]
+    fn voice_persona_leads_with_the_default_and_emits_persona_commands() {
+        let s = Settings::default();
+        let mut edit = choice_for("voice.persona", &s).expect("persona picker");
+        assert_eq!(edit.choices[0].value, crate::speech::DEFAULT_CARTESIA_VOICE);
+        let text = edit.display();
+        assert!(text.contains("Classy British Man"));
+        assert!(text.contains("Kokoro"));
+        assert!(matches!(edit.answer("enter").unwrap(), Answer::Command(_)));
+        let kokoro = edit
+            .choices
+            .iter()
+            .find(|c| c.value == "bm_george")
+            .expect("kokoro george");
+        assert_eq!(
+            kokoro.command.as_deref(),
+            Some("/tts persona kokoro bm_george")
+        );
+        assert!(voice_persona_label(&s).contains("Classy British Man"));
+    }
+
+    #[test]
+    fn provider_chooser_uses_arrows_and_offers_local_kokoro() {
+        let s = Settings::default();
+        let mut provider = choice_for("tts.provider", &s).expect("provider picker");
+        let start = provider.cursor;
+        provider.nav(1);
+        assert_ne!(provider.cursor, start);
+        assert!(provider.display().contains("↑/↓ move"));
+        let kokoro = Settings {
+            tts: crate::config::Tts {
+                provider: "kokoro".into(),
+                ..crate::config::Tts::default()
+            },
+            ..Settings::default()
+        };
+        assert!(choice_for("tts.provider", &kokoro)
+            .unwrap()
+            .display()
+            .contains("Kokoro"));
     }
 }

@@ -155,6 +155,9 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut voice_lookup: Option<
         tokio::task::JoinHandle<Result<Vec<crate::speech::CartesiaVoice>>>,
     > = None;
+    let mut tts_install: Option<tokio::task::JoinHandle<Result<String>>> = None;
+    // One-time spoken introduction once speech is first configured.
+    let intro_marker = config::home().ok().map(|home| home.join("intro-spoken"));
     let mut panel: Option<crate::settings_ui::Panel> = None;
     let mut connected = false;
     let mut pending_prompt: Option<String> = None;
@@ -979,7 +982,11 @@ pub async fn run(mut args: Run) -> Result<()> {
                         match w.answer(&text) {
                             Ok(Some(next))=>{
                                 match next.save() {
-                                    Ok(())=>{settings=next;speak=settings.speak;display.set_enabled(settings.wake_display);auth_wake=wake::WakeCode::new(&settings.wake_code,&args.wake_alias)?;session=Session::new(wake::WakeCode::new(&settings.wake_code,&args.wake_alias)?,Duration::from_secs(settings.idle_seconds));ui.message("Setup saved. Use /tts test to hear the selected voice; /tts key adds a Cartesia key.");},
+                                    Ok(())=>{settings=next;speak=settings.speak;display.set_enabled(settings.wake_display);auth_wake=wake::WakeCode::new(&settings.wake_code,&args.wake_alias)?;session=Session::new(wake::WakeCode::new(&settings.wake_code,&args.wake_alias)?,Duration::from_secs(settings.idle_seconds));ui.message("Setup saved. Use /tts test to hear the selected voice; /tts key adds a Cartesia key.");
+                                        if speak && intro_marker.as_ref().is_some_and(|path|!path.exists()) {
+                                            speech_queue.push_back(crate::settings_ui::device_intro(&settings));
+                                            if let Some(path)=&intro_marker {let _=std::fs::write(path,"1");}
+                                        }},
                                     Err(e)=>ui.message(format!("Could not save settings: {e:#}")),
                                 }
                                 wizard=None;muted.store(panel.is_some() || (speaker.is_some() && !settings.barge_in),Ordering::SeqCst);epoch.fetch_add(1,Ordering::SeqCst);
@@ -1005,7 +1012,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                     let local=match crate::dashboard::parse(&text,&settings) {Ok(command)=>command,Err(e)=>{ui.message(format!("{e:#}"));continue;}};
                     if let Some(command)=local {
                         use crate::dashboard::LocalCommand;
-                        if !matches!(&command,LocalCommand::Settings|LocalCommand::SettingsNav(_)|LocalCommand::Set(..)) {panel=None;ui.settings(None);muted.store(speaker.is_some() && !settings.barge_in,Ordering::SeqCst);}
+                        if !matches!(&command,LocalCommand::Settings|LocalCommand::SettingsNav(_)|LocalCommand::Set(..)|LocalCommand::Persona(..)) {panel=None;ui.settings(None);muted.store(speaker.is_some() && !settings.barge_in,Ordering::SeqCst);}
                         match command {
                             LocalCommand::Settings=>{
                                 panel=Some(crate::settings_ui::Panel::default());
@@ -1119,11 +1126,51 @@ pub async fn run(mut args: Run) -> Result<()> {
                                                 ui.message("Refreshing available Cartesia voices...");
                                             }
                                         }
+                                        if settings.tts.provider=="kokoro" && !crate::speech::kokoro_ready(&settings) && tts_install.is_none() {
+                                            ui.message("Kokoro isn't installed yet. Downloading the local runtime and voice model now; this is a one-time install.");
+                                            tts_install=Some(crate::speech::install_kokoro(&settings,&workspace));
+                                        }
                                         if spoken_setting && speak {speech_queue.push_back(format!("Selected {key}: {value}."));}
                                         if let Some(menu)=&panel {ui.settings(Some(menu.display(&settings,connected,&models)));}
                                         if ["microphone","assets-dir","codex-bin","stt.threads","stt.spin"].contains(&key.as_str()) {ui.message("Restart Accessor to apply this device/runtime change.");}
                                     }
                                     Err(e)=>ui.message(format!("Setting not changed: {e:#}")),
+                                }
+                            }
+                            LocalCommand::Persona(provider,voice)=>{
+                                let voice_key=if provider=="kokoro"{"tts.local-voice"}else{"tts.voice"};
+                                let mut candidate=settings.clone();
+                                let mut applied=candidate.set("tts.provider",&provider);
+                                if applied.is_ok() && !voice.is_empty() && provider!="system" && provider!="off" {
+                                    applied=candidate.set(voice_key,&voice);
+                                }
+                                match applied {
+                                    Ok(())=>{
+                                        settings=candidate;
+                                        cloud_stt.store(settings.stt.conversation=="cartesia",Ordering::SeqCst);
+                                        let label=crate::settings_ui::voice_persona_label(&settings);
+                                        ui.message(format!("Voice persona set: {label}."));
+                                        if settings.tts.provider=="kokoro" && !crate::speech::kokoro_ready(&settings) && tts_install.is_none() {
+                                            ui.message("Kokoro isn't installed yet. Downloading the local runtime and voice model now; this is a one-time install.");
+                                            tts_install=Some(crate::speech::install_kokoro(&settings,&workspace));
+                                        }
+                                        if settings.tts.provider=="cartesia" && voice_lookup.is_none() && config::optional_secret("cartesia","CARTESIA_API_KEY").is_some() {
+                                            voice_lookup=Some(tokio::spawn(crate::speech::fetch_voices()));
+                                        }
+                                        if speak {speech_queue.push_back(format!("Voice set to {label}."));}
+                                        if let Some(menu)=&panel {ui.settings(Some(menu.display(&settings,connected,&models)));}
+                                    }
+                                    Err(e)=>ui.message(format!("Voice not changed: {e:#}")),
+                                }
+                            }
+                            LocalCommand::InstallKokoro=>{
+                                if crate::speech::kokoro_ready(&settings) {
+                                    ui.message("Kokoro is already installed. Choose it under Voice persona, or /tts provider kokoro.");
+                                } else if tts_install.is_some() {
+                                    ui.message("A Kokoro install is already running.");
+                                } else {
+                                    ui.message("Installing the local Kokoro runtime and voice model. This is a one-time download.");
+                                    tts_install=Some(crate::speech::install_kokoro(&settings,&workspace));
                                 }
                             }
                             LocalCommand::Speak(text)=>{
@@ -1880,6 +1927,17 @@ pub async fn run(mut args: Run) -> Result<()> {
                         Err(e)=>ui.message(format!("Cartesia voice list stopped: {e}")),
                     }
                 }
+                if tts_install.as_ref().is_some_and(|task|task.is_finished()) {
+                    match tts_install.take().unwrap().await {
+                        Ok(Ok(text))=>{ui.message(text);if settings.tts.provider=="kokoro" {ui.message("Kokoro is ready. Use Voice persona → Kokoro, or /tts provider kokoro.");}
+                            if speak && intro_marker.as_ref().is_some_and(|path|!path.exists()) {
+                                speech_queue.push_back(crate::settings_ui::device_intro(&settings));
+                                if let Some(path)=&intro_marker {let _=std::fs::write(path,"1");}
+                            }},
+                        Ok(Err(e))=>ui.message(format!("{e:#}")),
+                        Err(e)=>ui.message(format!("Kokoro install stopped: {e}")),
+                    }
+                }
                 if utility.as_ref().is_some_and(|task|task.is_finished()) {
                     match utility.take().unwrap().await {Ok(Ok(text))=>ui.message(text),Ok(Err(e))=>ui.message(format!("Diagnostic failed: {e:#}")),Err(e)=>ui.message(format!("Diagnostic stopped: {e}"))}
                 }
@@ -1892,6 +1950,10 @@ pub async fn run(mut args: Run) -> Result<()> {
                                         *engine = settings.stt.engine.clone();
                                     }
                                     ui.message(msg);
+                                    if speak && intro_marker.as_ref().is_some_and(|path|!path.exists()) {
+                                        speech_queue.push_back(crate::settings_ui::device_intro(&settings));
+                                        if let Some(path)=&intro_marker {let _=std::fs::write(path,"1");}
+                                    }
                                     if let Some(menu)=&panel {ui.settings(Some(menu.display(&settings,connected,&models)));}
                                 }
                                 Err(e) => ui.message(format!("Downloaded, but could not save stt.engine: {e:#}")),
@@ -1958,6 +2020,9 @@ pub async fn run(mut args: Run) -> Result<()> {
         task.abort();
     }
     if let Some(task) = stt_download {
+        task.abort();
+    }
+    if let Some(task) = tts_install {
         task.abort();
     }
     muted.store(true, Ordering::SeqCst);

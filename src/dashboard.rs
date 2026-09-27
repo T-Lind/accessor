@@ -79,6 +79,10 @@ pub enum LocalCommand {
     Locations,
     Tts,
     Set(String, String),
+    /// Choose a TTS provider and its voice together, e.g. from the persona picker.
+    Persona(String, String),
+    /// Install the local Kokoro runtime and voice model.
+    InstallKokoro,
     Speak(String),
     Secret(&'static str),
     Stt(bool),
@@ -89,7 +93,9 @@ pub enum LocalCommand {
     Analytics,
     Context,
     Compact,
-    Update { check: bool },
+    Update {
+        check: bool,
+    },
 }
 pub fn parse(text: &str, s: &Settings) -> Result<Option<LocalCommand>> {
     let text = text.trim();
@@ -119,6 +125,10 @@ pub fn parse(text: &str, s: &Settings) -> Result<Option<LocalCommand>> {
             LocalCommand::Set((*key).into(), value.trim_matches('"').into())
         }
         ["/tts"] | ["/tts", "setup"] => LocalCommand::Tts,
+        ["/tts", "persona", provider, rest @ ..] => {
+            LocalCommand::Persona((*provider).into(), rest.join(" "))
+        }
+        ["/tts", "install"] => LocalCommand::InstallKokoro,
         ["/tts", "provider", provider] => {
             LocalCommand::Set("tts.provider".into(), (*provider).into())
         }
@@ -391,5 +401,28 @@ mod tests {
             panic!("noise off")
         };
         assert_eq!((key.as_str(), value.as_str()), ("stt.noise-gate", "false"));
+    }
+    #[test]
+    fn tts_persona_selects_provider_and_voice_together() {
+        let s = Settings::default();
+        let Some(LocalCommand::Persona(provider, voice)) =
+            parse("/tts persona kokoro bm_george", &s).unwrap()
+        else {
+            panic!("persona command")
+        };
+        assert_eq!((provider.as_str(), voice.as_str()), ("kokoro", "bm_george"));
+        assert!(matches!(
+            parse("/tts install", &s).unwrap(),
+            Some(LocalCommand::InstallKokoro)
+        ));
+        let Some(LocalCommand::Persona(provider, voice)) = parse(
+            "/tts persona cartesia 95856005-0332-41b0-935f-352e296aa0df",
+            &s,
+        )
+        .unwrap() else {
+            panic!("cartesia persona")
+        };
+        assert_eq!(provider, "cartesia");
+        assert!(voice.starts_with("95856005"));
     }
 }

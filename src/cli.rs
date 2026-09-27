@@ -72,7 +72,7 @@ enum Commands {
     },
     /// Check local dependencies without opening the microphone.
     Doctor,
-    /// Check Codex / Claude Code / Antigravity CLI versions and apply updates.
+    /// Check harness CLI versions and apply updates where supported.
     Update {
         /// Print versions only; do not install.
         #[arg(long)]

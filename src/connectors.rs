@@ -58,7 +58,7 @@ pub fn provenance_line(list: &[Connector]) -> String {
         .collect::<Vec<_>>()
         .join("; ");
     format!(
-        "Connected connectors, cached best-effort snapshot (owner -> name [kind]; availability does not prove authorization, and this list can be stale): {items}. Route a connector task to the harness that owns it; the plugin preference below is only a default when no owner is listed.\n"
+        "Connected connectors, cached best-effort snapshot (owner -> name [kind]; availability does not prove authorization, and this list can be stale): {items}. Route a connector task to the harness that owns it; the configured plugin preference is only a default when no owner is listed.\n"
     )
 }
 
@@ -409,7 +409,11 @@ async fn codex_status(executable: std::path::PathBuf) -> Result<()> {
 /// metaprompt and the `harness_health` MCP tool read. Empty stays empty.
 pub async fn refresh() -> Result<()> {
     let settings = Settings::load()?;
-    let list = refresh_inventory(&settings, None).await;
+    // Bound the whole probe so a harness that never answers cannot hang the
+    // command the way the launch-time refresh is already bounded.
+    let list = tokio::time::timeout(Duration::from_secs(45), refresh_inventory(&settings, None))
+        .await
+        .unwrap_or_default();
     if list.is_empty() {
         println!("No connectors found. Connect plugins or MCP servers in a harness, then retry. The metaprompt is unchanged while the inventory is empty.");
     } else {

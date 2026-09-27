@@ -149,6 +149,10 @@ fn play(
         _ => bail!("Unsupported speaker format"),
     };
     stream.play()?;
+    // Allow a longer grace before the first audible frame so a slow first TTS
+    // chunk cannot be mistaken for a stall; after playback starts, only a
+    // genuine mid-stream gap (15s without progress) is fatal.
+    let mut first_frame = true;
     let mut last_progress = Instant::now();
     while !state.stop.load(Ordering::SeqCst) && !state.done.load(Ordering::SeqCst) {
         ensure!(
@@ -156,12 +160,15 @@ fn play(
             "Streaming audio output failed"
         );
         if state.playing.load(Ordering::SeqCst) {
+            first_frame = false;
             last_progress = Instant::now();
         }
-        ensure!(
-            last_progress.elapsed() < Duration::from_secs(15),
-            "Streaming audio stalled"
-        );
+        let limit = if first_frame {
+            Duration::from_secs(45)
+        } else {
+            Duration::from_secs(15)
+        };
+        ensure!(last_progress.elapsed() < limit, "Streaming audio stalled");
         std::thread::sleep(Duration::from_millis(10));
     }
     for _ in 0..15 {

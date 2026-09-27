@@ -307,6 +307,75 @@ fn builtin_voices() -> Vec<CartesiaVoice> {
     }]
 }
 
+/// Curated Kokoro voices, best/most typical first, for the voice-persona picker.
+/// Ids match the kokoro-onnx `voices.bin` keys.
+pub const KOKORO_VOICES: &[(&str, &str)] = &[
+    ("bm_george", "George · British male, formal"),
+    ("bm_lewis", "Lewis · British male, brisk"),
+    ("bf_emma", "Emma · British female, warm"),
+    ("af_heart", "Heart · American female, warm"),
+    ("af_bella", "Bella · American female, bright"),
+    ("am_michael", "Michael · American male, calm"),
+    ("am_adam", "Adam · American male, plain"),
+];
+
+/// True once the isolated Kokoro runtime and model files are present.
+pub fn kokoro_ready(settings: &config::Settings) -> bool {
+    let Ok(assets) = settings.assets() else {
+        return false;
+    };
+    let python = assets.join("runtime/kokoro").join(if cfg!(windows) {
+        "Scripts/python.exe"
+    } else {
+        "bin/python"
+    });
+    python.is_file()
+        && assets.join("models/kokoro/kokoro.onnx").is_file()
+        && assets.join("models/kokoro/voices.bin").is_file()
+}
+
+/// Run the isolated Kokoro installer in the background and report its result.
+pub fn install_kokoro(
+    settings: &config::Settings,
+    workspace: &std::path::Path,
+) -> tokio::task::JoinHandle<Result<String>> {
+    let script = workspace.join("scripts").join("setup_tts.py");
+    let assets = settings.assets();
+    tokio::spawn(async move {
+        let assets = assets?;
+        anyhow::ensure!(
+            script.is_file(),
+            "Kokoro installer not found at {}. Run: python scripts/setup_tts.py",
+            script.display()
+        );
+        let python = if cfg!(windows) { "python" } else { "python3" };
+        let mut command = tokio::process::Command::new(python);
+        command
+            .arg(&script)
+            .env("ACC_ASSETS", &assets)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        let output = tokio::time::timeout(std::time::Duration::from_secs(1800), command.output())
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!("Kokoro install timed out; check your network and retry")
+            })??;
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        anyhow::ensure!(
+            output.status.success(),
+            "Kokoro install failed: {}",
+            text.trim()
+        );
+        Ok("Kokoro is installed and ready.".to_string())
+    })
+}
+
 /// Voices fetched from Cartesia and cached under the settings directory.
 pub fn cached_voices() -> Vec<CartesiaVoice> {
     config::home()
