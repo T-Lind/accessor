@@ -215,11 +215,6 @@ fn transcribe_conditioned(model: &mut CanaryModel, samples: &[f32]) -> Result<St
         )?
         .text)
 }
-pub fn transcribe(model: &mut CanaryModel, samples: &[f32]) -> Result<String> {
-    let samples = condition_for_asr(samples);
-    transcribe_conditioned(model, &samples)
-}
-
 fn transcribe_asr(asr: &mut Asr, samples: &[f32]) -> Result<String> {
     let samples = condition_for_asr(samples);
     match asr {
@@ -229,6 +224,82 @@ fn transcribe_asr(asr: &mut Asr, samples: &[f32]) -> Result<String> {
             .map_err(|e| anyhow::anyhow!("{e}"))?
             .text),
         Asr::Whisper { cli, model } => whisper_cli_transcribe(cli, model, &samples),
+    }
+}
+
+/// Canary decoding confidence for one utterance (0-1). These are the model's
+/// own greedy-decoding probabilities, not calibrated correctness rates.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Confidence {
+    /// Mean chosen-token probability across generated tokens.
+    pub mean: f32,
+    /// Lowest chosen-token probability; low values flag a weak word.
+    pub min: f32,
+}
+
+/// Canary's per-token probability, the real decoding confidence (0-1).
+fn transcribe_conditioned_confidence(
+    model: &mut CanaryModel,
+    samples: &[f32],
+) -> Result<(String, Confidence)> {
+    let (text, confidence) = model.transcribe_with_confidence(
+        samples,
+        &CanaryParams {
+            language: Some("en".into()),
+            max_sequence_length: 256,
+            ..Default::default()
+        },
+    )?;
+    Ok((
+        text,
+        Confidence {
+            mean: confidence.mean,
+            min: confidence.min,
+        },
+    ))
+}
+
+/// Transcribe a WAV's samples with confidence when the engine provides it.
+pub fn transcribe_with_confidence(
+    model: &mut CanaryModel,
+    samples: &[f32],
+) -> Result<(String, Confidence)> {
+    let samples = condition_for_asr(samples);
+    transcribe_conditioned_confidence(model, &samples)
+}
+
+/// Like [`transcribe_asr`] but reports confidence for engines that expose it.
+fn transcribe_asr_confidence(
+    asr: &mut Asr,
+    samples: &[f32],
+) -> Result<(String, Option<Confidence>)> {
+    let samples = condition_for_asr(samples);
+    match asr {
+        Asr::Canary(model) => {
+            let (text, confidence) = transcribe_conditioned_confidence(model, &samples)?;
+            Ok((text, Some(confidence)))
+        }
+        Asr::Parakeet(model) => Ok((
+            model
+                .transcribe_with(&samples, &ParakeetParams::default())
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+                .text,
+            None,
+        )),
+        Asr::Whisper { cli, model } => Ok((whisper_cli_transcribe(cli, model, &samples)?, None)),
+    }
+}
+
+fn transcribe_utterance_confidence(
+    asr: &mut Asr,
+    samples: &[f32],
+    gate: Option<&crate::noise::Gate>,
+    highpass: bool,
+) -> Result<(String, Option<Confidence>)> {
+    if gate.is_some() || highpass {
+        transcribe_asr_confidence(asr, &crate::noise::prepare_for_stt(samples, gate, highpass))
+    } else {
+        transcribe_asr_confidence(asr, samples)
     }
 }
 
@@ -257,13 +328,13 @@ impl Recognizer {
             asr: load_asr(assets, engine)?,
         })
     }
-    pub fn recognize(
+    pub fn recognize_with_confidence(
         &mut self,
         samples: &[f32],
         gate: Option<&crate::noise::Gate>,
         highpass: bool,
-    ) -> Result<String> {
-        transcribe_utterance(&mut self.asr, samples, gate, highpass)
+    ) -> Result<(String, Option<Confidence>)> {
+        transcribe_utterance_confidence(&mut self.asr, samples, gate, highpass)
     }
 }
 
@@ -285,7 +356,7 @@ pub fn benchmark(
         ensure!(rate == 16_000, "Benchmark inputs must be 16 kHz WAVs");
         let seconds = samples.len() as f64 / 16_000.0;
         let first = Instant::now();
-        let first_text = transcribe_asr(&mut asr, &samples)?;
+        let (first_text, first_confidence) = transcribe_asr_confidence(&mut asr, &samples)?;
         let first_ms = first.elapsed().as_secs_f64() * 1000.0;
         let mut timings = Vec::new();
         let mut texts = Vec::new();
@@ -298,7 +369,7 @@ pub fn benchmark(
         ordered.sort_by(f64::total_cmp);
         let median = ordered[ordered.len() / 2];
         let p95 = ordered[(ordered.len() as f64 * 0.95).ceil() as usize - 1];
-        rows.push(serde_json::json!({"file":file,"audio_seconds":seconds,"first_decode_ms":first_ms,"first_text":first_text,"warm_ms":timings,"median_ms":median,"p95_ms":p95,"real_time_factor":median/(seconds*1000.0),"texts":texts}));
+        rows.push(serde_json::json!({"file":file,"audio_seconds":seconds,"first_decode_ms":first_ms,"first_text":first_text,"confidence":first_confidence.map(|c|serde_json::json!({"mean":c.mean,"min":c.min})),"warm_ms":timings,"median_ms":median,"p95_ms":p95,"real_time_factor":median/(seconds*1000.0),"texts":texts}));
     }
     let settings = crate::config::Settings::load()?;
     Ok(
@@ -1184,7 +1255,7 @@ pub fn listen(
                 break;
             };
             let began = Instant::now();
-            let decoded = transcribe_utterance(
+            let decoded = transcribe_utterance_confidence(
                 loaded,
                 &u.samples,
                 asr_noise.gate().as_ref(),
@@ -1193,7 +1264,7 @@ pub fn listen(
             crate::usage::record_stt(&loaded_engine, u.samples.len() as f64 / 16_000.0);
             crate::usage::record_latency("Local transcription", began.elapsed());
             match decoded {
-                Ok(text)
+                Ok((text, confidence))
                     if heard_transcript(&text)
                         && u.epoch == epoch.load(Ordering::SeqCst)
                         && !muted.load(Ordering::SeqCst) =>
@@ -1203,9 +1274,10 @@ pub fn listen(
                         text,
                         epoch: u.epoch,
                         captured_at: u.started,
+                        confidence,
                     });
                 }
-                Ok(text) => {
+                Ok((text, _)) => {
                     if asr_awake.load(Ordering::SeqCst) {
                         crate::usage::record_diagnostic("No words recognized");
                         let _ = output.blocking_send(crate::Input::IgnoredVoice {

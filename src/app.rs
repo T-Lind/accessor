@@ -771,6 +771,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                 let is_internal=matches!(&input,Input::Internal(_));
                 let is_automatic=matches!(&input,Input::Trigger(_) | Input::Scheduled(_) | Input::Internal(_));
                 let spoken_setting=matches!(&input,Input::Configure{spoken:true,..});
+                let mut voice_confidence: Option<audio::Confidence> = None;
                 let (mut text, typed, spoken_addressed, captured_during_output, route_override) = match input {
                     Input::Control(request)=>{
                         if request.reply.is_closed() {continue;}
@@ -881,13 +882,19 @@ pub async fn run(mut args: Run) -> Result<()> {
                         wake_hits+=1;
                         (settings.wake_code.clone(),false,true,true,None)
                     }
-                    Input::Voice { text, epoch: captured_epoch, .. } | Input::GatedVoice { text, epoch: captured_epoch, .. } | Input::CloudVoice { text, epoch: captured_epoch, .. } => {
+                    Input::Voice { text, confidence, epoch: captured_epoch, .. } => {
+                        if muted.load(Ordering::SeqCst) || captured_epoch != epoch.load(Ordering::SeqCst) { continue; }
+                        if text.trim().is_empty() {if session.active() {ui.ignored(&text,"transcription produced no usable words");}continue;}
+                        voice_confidence = confidence;
+                        let captured_during_output = false;
+                        let addressed=session.addressed(&text);
+                        (text, false, addressed, captured_during_output, None)
+                    }
+                    Input::GatedVoice { text, epoch: captured_epoch, .. } | Input::CloudVoice { text, epoch: captured_epoch, .. } => {
                         if muted.load(Ordering::SeqCst) || captured_epoch != epoch.load(Ordering::SeqCst) { continue; }
                         if text.trim().is_empty() {if session.active() {ui.ignored(&text,"transcription produced no usable words");}continue;}
                         let captured_during_output = false;
                         let addressed=session.addressed(&text);
-
-
                         (text, false, addressed, captured_during_output, None)
                     }
                     Input::Pcm { streamed, samples, local_text, epoch: captured_epoch, captured_at } => {
@@ -1341,7 +1348,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                 }
                 if text.trim().is_empty() {continue;}
                 if text.len() > 32_000 { ui.message("Input too long; discarded."); continue; }
-                if args.stt_test {ui.message(format!("Transcript: {}",safe(&text)));continue;}
+                if args.stt_test {ui.message(format!("Transcript{}: {}",confidence_suffix(voice_confidence),safe(&text)));continue;}
                 // Classify by capture time, not by whether a reply started before
                 // recognition finished. Clean continuations remain valid while thinking.
                 if !spoken_input_allowed(
@@ -1503,7 +1510,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                         }
                         if !typed && !is_automatic {crate::usage::record_diagnostic("Voice accepted");}
                         if busy {
-                            ui.chat(Kind::User, &text);
+                            ui.chat(Kind::User, format!("{text}{}", confidence_suffix(voice_confidence)));
                             transcript.push_back(("User".into(),text.clone()));
                             silence_reply=true;event_cancelled=true;
                             if agents.get(&active_harness).is_some_and(|l| l.first.is_some()) {
@@ -1516,7 +1523,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                         }
                         if is_event {ui.message("Gmail notification received; asking the agent to handle the reply.");}
                         else if is_internal {ui.message("Returning the local result to the main conversation.");}
-                        else {ui.chat(Kind::User, &text);}
+                        else {ui.chat(Kind::User, format!("{text}{}", confidence_suffix(voice_confidence)));}
                         silence_reply=is_event || mic_unavailable || (is_internal && !session.active());
                         cancelled_turn=false;cancel_started=None;
                         let target = if let Some(target) = route_override {
@@ -2082,6 +2089,18 @@ fn spoken_input_allowed(
     wake_listening: bool,
 ) -> bool {
     typed || event || wake_listening || !captured_during_output || addressed
+}
+
+/// Short UI annotation of local speech confidence, or empty when unavailable.
+fn confidence_suffix(confidence: Option<audio::Confidence>) -> String {
+    match confidence {
+        Some(value) => format!(
+            "  ·  {:.0}% confident (min {:.0}%)",
+            (value.mean * 100.0).clamp(0.0, 100.0),
+            (value.min * 100.0).clamp(0.0, 100.0)
+        ),
+        None => String::new(),
+    }
 }
 
 fn stt_confirm(text: &str) -> Option<bool> {

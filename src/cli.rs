@@ -960,12 +960,14 @@ async fn transcribe(file: PathBuf, dir: Option<PathBuf>) -> Result<()> {
     println!("Model loaded in {:.2}s", start.elapsed().as_secs_f64());
     let samples = transcribe_rs::audio::read_wav_samples(&file)?;
     let start = Instant::now();
-    let text = audio::transcribe(&mut model, &samples)?;
+    let (text, confidence) = audio::transcribe_with_confidence(&mut model, &samples)?;
     println!(
-        "{}\n{:.2}s audio, {:.2}s inference",
+        "{}\n{:.2}s audio, {:.2}s inference, {:.0}% mean / {:.0}% min token confidence",
         ui::safe(&text),
         samples.len() as f64 / 16000.,
-        start.elapsed().as_secs_f64()
+        start.elapsed().as_secs_f64(),
+        confidence.mean * 100.0,
+        confidence.min * 100.0
     );
     Ok(())
 }
@@ -999,13 +1001,18 @@ async fn wake_test(
         for (label, gated) in &modes {
             let gate = gated.then(|| crate::noise::Gate::new(floor_db));
             let began = Instant::now();
-            let text = recognizer.recognize(&samples, gate.as_ref(), denoise == "highpass")?;
+            let (text, confidence) = recognizer.recognize_with_confidence(
+                &samples,
+                gate.as_ref(),
+                denoise == "highpass",
+            )?;
             let command = wake.strip(&text).map(str::to_owned);
             let probe = wake.in_probe(&text);
             results.insert(
                 (*label).into(),
                 serde_json::json!({
                     "text": text,
+                    "confidence": confidence.map(|c|serde_json::json!({"mean":c.mean,"min":c.min})),
                     "wake": command.is_some(),
                     "command": command,
                     "probe": probe,

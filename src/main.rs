@@ -76,6 +76,8 @@ pub enum Input {
         text: String,
         epoch: u64,
         captured_at: std::time::Instant,
+        /// Canary decoding confidence when the local engine reports it.
+        confidence: Option<audio::Confidence>,
     },
     Pcm {
         streamed: Option<stt_stream::Transcript>,

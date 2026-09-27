@@ -1,6 +1,6 @@
 [package]
 name = "accessor"
-version = "0.21.1"
+version = "0.22.0"
 edition = "2021"
 description = "Local voice gateway for command-line agents"
 license = "MIT"
@@ -67,3 +67,8 @@ keyring = { version = "3.6.3", features = ["sync-secret-service", "crypto-rust"]
 [profile.release]
 lto = "thin"
 strip = true
+
+# Local fork of transcribe-rs that exposes Canary per-token decoding
+# confidence. Same version and features; only the Canary decoder changed.
+[patch.crates-io]
+transcribe-rs = { path = "vendor/transcribe-rs" }

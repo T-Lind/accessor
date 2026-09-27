@@ -3,7 +3,7 @@
 Accessor uses these projects as dependencies; it is not affiliated with their authors.
 
 - [Handy](https://github.com/cjpais/Handy), MIT: architectural reference. No Handy desktop code is bundled.
-- [transcribe-rs](https://github.com/cjpais/transcribe-rs), MIT: local transcription engine.
+- [transcribe-rs](https://github.com/cjpais/transcribe-rs), MIT: local transcription engine. Accessor vendors a small fork under `vendor/transcribe-rs` that exposes Canary per-token decoding confidence; the upstream engine is otherwise unchanged.
 - [NVIDIA Canary 180M Flash](https://huggingface.co/nvidia/canary-180m-flash), CC BY 4.0: original speech model.
 - [istupakov Canary ONNX conversion](https://huggingface.co/istupakov/canary-180m-flash-onnx), CC BY 4.0: quantized encoder/decoder and vocabulary. Downloaded artifacts are converted/quantized versions of NVIDIA's model, not changes made by Accessor.
 - [istupakov NeMo preprocessing export](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx): shared `nemo128.onnx` preprocessing graph used by transcribe-rs. See that repository's model card/license.
