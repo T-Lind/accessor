@@ -39,33 +39,30 @@ pub fn spoken_text(markdown: &str) -> String {
         .collect()
 }
 
-/// Split spoken text into synthesis chunks. Local engines get a short first
-/// chunk so audio starts sooner, then larger chunks to limit per-call overhead;
-/// cloud providers keep larger chunks throughout. Later chunks synthesize while
-/// the current one plays.
+/// Split spoken text into synthesis chunks. Cartesia streams a whole reply, so
+/// it is left intact to keep prosody and avoid opening a request mid-sentence.
+/// Local engines split at sentence boundaries; later chunks synthesize while the
+/// current one plays.
 fn speak_chunks_for(text: &str, provider: &str) -> Vec<String> {
     let text = spoken_text(text);
     if text.is_empty() {
         return Vec::new();
     }
-    let (first_len, rest_len, local) = match provider {
-        "kokoro" | "system" => (48, 220, true),
-        _ => (220, 220, false),
-    };
+    if provider == "cartesia" {
+        return vec![text];
+    }
     let mut out = Vec::new();
     let mut buf = String::new();
     let mut buf_len = 0_usize;
     for word in text.split_whitespace() {
-        let max_len = if out.is_empty() { first_len } else { rest_len };
-        let sentence = word.ends_with('.') || word.ends_with('?') || word.ends_with('!');
-        let clause = local && (word.ends_with(',') || word.ends_with(';'));
+        let boundary = word.ends_with('.') || word.ends_with('?') || word.ends_with('!');
         let word_len = word.chars().count();
         let trial_len = if buf.is_empty() {
             word_len
         } else {
             buf_len + 1 + word_len
         };
-        if trial_len > max_len && !buf.is_empty() {
+        if trial_len > 220 && !buf.is_empty() {
             out.push(std::mem::take(&mut buf));
             buf.push_str(word);
             buf_len = word_len;
@@ -76,12 +73,7 @@ fn speak_chunks_for(text: &str, provider: &str) -> Vec<String> {
             buf.push_str(word);
             buf_len = trial_len;
         }
-        let boundary = if out.is_empty() && local {
-            (sentence && buf_len >= 16) || (clause && buf_len >= 24)
-        } else {
-            sentence && buf_len >= 24
-        };
-        if boundary {
+        if boundary && buf_len >= 24 {
             out.push(std::mem::take(&mut buf));
             buf_len = 0;
         }
@@ -652,6 +644,30 @@ pub fn start(text: String, settings: Tts, capture: Arc<crate::audio::SpeechState
         if parts.is_empty() || settings.provider == "off" {
             return Ok(());
         }
+        // speech-dispatcher speaks directly and cannot return WAV bytes.
+        if settings.provider == "system" && crate::audio::system_voice_direct() {
+            while capture.holding() {
+                if flag.load(Ordering::SeqCst) {
+                    return Ok(());
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            let capture = capture.clone();
+            let pause = pause.clone();
+            let flag = flag.clone();
+            let playback = playback.clone();
+            let speed = settings.speed;
+            tokio::task::spawn_blocking(move || {
+                capture.playback(true);
+                playback.store(true, Ordering::SeqCst);
+                let result = crate::audio::speak_system_direct(&text, speed, &flag, &pause);
+                playback.store(false, Ordering::SeqCst);
+                capture.playback(false);
+                result
+            })
+            .await??;
+            return Ok(());
+        }
         if settings.provider == "cartesia" && settings.streaming {
             for part in parts {
                 if flag.load(Ordering::SeqCst) {
@@ -935,18 +951,24 @@ mod tests {
             "The time is 2:41 AM. It is Saturday. The community office opens at nine.",
             "cartesia",
         );
-        assert!(parts.len() >= 2);
+        assert_eq!(parts.len(), 1);
         assert!(parts[0].contains("2:41"));
+        assert!(parts[0].contains("Saturday. The community"));
     }
     #[test]
-    fn local_engine_chunks_split_clauses_for_faster_first_audio() {
-        let text = "Good morning, sir, the meeting has been moved to half past four, and the agenda is attached.";
+    fn local_chunks_keep_sentence_prosody_and_cartesia_stays_whole() {
+        let text =
+            "The first sentence is long enough to stand alone. The second sentence is also long enough.";
         let local = speak_chunks_for(text, "kokoro");
-        let cloud = speak_chunks_for(text, "cartesia");
-        assert!(local.len() >= 2);
+        assert_eq!(local.len(), 2);
+        assert_eq!(
+            local[0],
+            "The first sentence is long enough to stand alone."
+        );
         assert!(local.iter().all(|chunk| chunk.chars().count() <= 220));
-        assert!(local[0].chars().count() <= 48);
-        assert!(cloud.len() <= local.len());
+        let cartesia = speak_chunks_for(text, "cartesia");
+        assert_eq!(cartesia.len(), 1);
+        assert!(cartesia[0].contains("The second sentence"));
     }
     #[test]
     fn cartesia_payload_has_current_shape() {

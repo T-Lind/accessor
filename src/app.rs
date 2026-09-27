@@ -1400,7 +1400,9 @@ pub async fn run(mut args: Run) -> Result<()> {
                 if !is_automatic && session.addressed(&text) && (busy || worker.is_some() || speaker.is_some()) {
                     think=None;silence_reply=true;event_cancelled=true;
                     speech_queue.clear();speaker=None;echo_guard.finish();
-                    worker=None;worker_approval=false;feedback.clear();
+                    // Keep any isolated worker running; it reports back later and
+                    // only an explicit stop/cancel ends it.
+                    feedback.clear();
                     pending_prompt=None;wake_listening=true;
                     if busy {if let Some(tx)=&agent_tx {cancelled_turn=true;cancel_started=Some(Instant::now());let _=tx.try_send(agent::CommandMessage::Cancel);}}
                     if let Some(live)=agents.get_mut(&active_harness) {live.first=None;}
@@ -1427,7 +1429,9 @@ pub async fn run(mut args: Run) -> Result<()> {
                     Action::Open => {
                         wake_listening = true;
                         think=None;silence_reply=true;event_cancelled=true;
-                        worker=None;worker_approval=false;feedback.clear();
+                        // A bare wake does not end an isolated worker; it keeps
+                        // running and reports back.
+                        feedback.clear();
                         speech_queue.clear();speaker=None;echo_guard.finish();
                         pending_prompt=None;pending_setting=None;pending_stt=None;
                         if let Some(job)=cloud_job.take() {job.abort();}

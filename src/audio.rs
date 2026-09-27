@@ -1676,6 +1676,51 @@ fn system_wpm(speed: f32) -> u32 {
 }
 
 /// Speech text travels over stdin, never interpolated into a shell command.
+/// True when `name` is a file on PATH.
+fn on_path(name: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(name).is_file()))
+}
+
+/// On Linux with speech-dispatcher but no espeak, the system voice has to speak
+/// directly instead of returning WAV bytes.
+pub fn system_voice_direct() -> bool {
+    cfg!(target_os = "linux") && !on_path("espeak-ng") && !on_path("espeak") && on_path("spd-say")
+}
+
+/// Speak through speech-dispatcher, blocking until done or stopped. No WAV is
+/// produced, so this cannot feed the echo canceller.
+pub fn speak_system_direct(
+    text: &str,
+    speed: f32,
+    stop: &std::sync::atomic::AtomicBool,
+    _pause: &std::sync::atomic::AtomicBool,
+) -> Result<()> {
+    use std::sync::atomic::Ordering;
+    let rate = ((speed - 1.0) * 100.0).clamp(-100.0, 100.0) as i32;
+    let spoken: String = text.chars().take(6000).collect();
+    let mut child = std::process::Command::new("spd-say")
+        .args(["-w", "-r", &rate.to_string()])
+        .arg(spoken)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("Could not start spd-say")?;
+    loop {
+        if stop.load(Ordering::SeqCst) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(());
+        }
+        match child.try_wait()? {
+            Some(status) if status.success() => return Ok(()),
+            Some(_) => anyhow::bail!("System voice (spd-say) failed"),
+            None => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
+    }
+}
+
 pub async fn synthesize_system(text: &str, speed: f32) -> Result<Vec<u8>> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("speech.wav");
@@ -1694,7 +1739,16 @@ pub async fn synthesize_system(text: &str, speed: f32) -> Result<Vec<u8>> {
             .arg("-r")
             .arg(system_wpm(speed).to_string());
     } else {
-        cmd = tokio::process::Command::new("espeak-ng");
+        let engine = if on_path("espeak-ng") {
+            "espeak-ng"
+        } else if on_path("espeak") {
+            "espeak"
+        } else {
+            anyhow::bail!(
+                "System voice needs espeak-ng (install: sudo apt install espeak-ng) or speech-dispatcher. Kokoro and Cartesia do not."
+            );
+        };
+        cmd = tokio::process::Command::new(engine);
         cmd.arg("--stdin");
         cmd.arg("-s").arg(system_wpm(speed).to_string());
         cmd.arg("-w").arg(&path);
