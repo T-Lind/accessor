@@ -204,6 +204,7 @@ pub struct Sounds {
     pub wake: f32,
     pub sleep: f32,
     pub ready: f32,
+    pub notify: f32,
 }
 impl Default for Sounds {
     fn default() -> Self {
@@ -213,6 +214,7 @@ impl Default for Sounds {
             wake: 1.5,
             sleep: 1.5,
             ready: 1.0,
+            notify: 1.0,
         }
     }
 }
@@ -650,6 +652,7 @@ impl Settings {
                 && (0.0..=1.5).contains(&self.sounds.sleep)
                 && (0.0..=1.5).contains(&self.sounds.alarm)
                 && (0.0..=1.5).contains(&self.sounds.ready)
+                && (0.0..=1.5).contains(&self.sounds.notify)
                 && (0.0..=1.5).contains(&self.tts.volume),
             "sound volumes must be 0–1.5 (0 silent, 1 default)"
         );
@@ -782,6 +785,7 @@ impl Settings {
             "sounds.wake" => self.sounds.wake = parse_level(value)?,
             "sounds.sleep" => self.sounds.sleep = parse_level(value)?,
             "sounds.ready" => self.sounds.ready = parse_level(value)?,
+            "sounds.notify" => self.sounds.notify = parse_level(value)?,
             "chat" => self.chat = value.to_lowercase(),
             "routing.coding" => self.routing.coding = value.to_lowercase(),
             "routing.main" | "routing.routine" => self.routing.main = value.to_lowercase(),

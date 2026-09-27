@@ -61,6 +61,11 @@ enum Commands {
         #[command(subcommand)]
         action: OrganizerCommand,
     },
+    /// Review notifications raised by watches and the agent.
+    Notifications {
+        #[command(subcommand)]
+        action: NotificationCommand,
+    },
     /// Start the voice gateway (also the default when no command is given).
     Run(Run),
     /// Save wake, voice, and speech-file settings interactively.
@@ -370,6 +375,23 @@ enum EventCommand {
 }
 
 #[derive(Subcommand)]
+enum NotificationCommand {
+    /// List notifications, newest first.
+    List {
+        #[arg(long)]
+        unread: bool,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Mark one notification read and print it.
+    Read { id: String },
+    /// Mark every notification read.
+    ReadAll,
+    /// Permanently delete one notification.
+    Dismiss { id: String },
+}
+
+#[derive(Subcommand)]
 enum OrganizerCommand {
     /// Show the notes folder and pending alarms/tasks.
     Status,
@@ -595,6 +617,7 @@ pub async fn entry() -> Result<()> {
                     harness.as_deref(),
                     model.as_deref(),
                     &reasoning,
+                    None,
                 )?;
                 println!("Task {} saved for Unix {}.", item.id, item.next_unix);
                 Ok(())
@@ -644,6 +667,47 @@ pub async fn entry() -> Result<()> {
                     },
                 )?;
                 println!("Updated task {} for Unix {}.", task.id, task.next_unix);
+                Ok(())
+            }
+        },
+        Commands::Notifications { action } => match action {
+            NotificationCommand::List { unread, limit } => {
+                let items = crate::notifications::list(unread, limit)?;
+                if items.is_empty() {
+                    println!("No notifications.");
+                }
+                for item in items {
+                    println!(
+                        "{} {} {}\n  source: {}\n  {}",
+                        item.id,
+                        if item.unread { "•" } else { " " },
+                        item.title,
+                        item.source,
+                        item.text
+                    );
+                }
+                Ok(())
+            }
+            NotificationCommand::Read { id } => {
+                match crate::notifications::read(&id)? {
+                    Some(item) => println!("{} {}\n  {}", item.id, item.title, item.text),
+                    None => println!("No notification {id}."),
+                }
+                Ok(())
+            }
+            NotificationCommand::ReadAll => {
+                println!("Marked {} read.", crate::notifications::read_all()?);
+                Ok(())
+            }
+            NotificationCommand::Dismiss { id } => {
+                println!(
+                    "{}",
+                    if crate::notifications::dismiss(&id)? {
+                        "Dismissed."
+                    } else {
+                        "No such notification."
+                    }
+                );
                 Ok(())
             }
         },

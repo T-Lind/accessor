@@ -169,6 +169,11 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                 &format!("{:.0}%", s.sounds.ready * 100.0),
                 Action::Edit("sounds.ready"),
             ),
+            row(
+                "Notification ding",
+                &format!("{:.0}%", s.sounds.notify * 100.0),
+                Action::Edit("sounds.notify"),
+            ),
             row("Back", "categories", Action::Open(Page::Home)),
         ],
         Page::Speech => {
@@ -590,6 +595,9 @@ fn hint(action: &Action) -> &'static str {
         Action::Edit("sounds.sleep") => "Volume of the sleep chime. 0 silent, 1 default.",
         Action::Edit("sounds.ready") => {
             "Volume of the startup chime played once when Accessor is ready to listen. 0 silent, 1 default, 1.5 loud."
+        }
+        Action::Edit("sounds.notify") => {
+            "Volume of the ding when a watch or the agent raises a notification. 0 silent, 1 default, 1.5 loud."
         }
         Action::Run("/tts test") => "Play a short sample with the current TTS settings.",
         Action::Run("/tts voices") => "List neural voices for Kokoro or Cartesia.",
@@ -1702,7 +1710,7 @@ impl Panel {
                 }
                 "tts.speed" => "Speed 0.6–1.5. Esc returns.".into(),
                 "sounds.think" | "sounds.wake" | "sounds.sleep" | "sounds.alarm" | "sounds.ready"
-                | "tts.volume" => {
+                | "sounds.notify" | "tts.volume" => {
                     "Volume 0–1.5 (or 0–150%). 0 is silent, 1 is default. Esc returns.".into()
                 }
                 "computer.max-image-dimension" => {

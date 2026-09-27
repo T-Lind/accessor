@@ -18,6 +18,7 @@ mod markdown;
 mod mcp;
 mod memory;
 mod noise;
+mod notifications;
 mod organizer;
 mod process_tree;
 mod quota;

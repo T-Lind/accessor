@@ -13,6 +13,8 @@ pub struct Worker {
     pub started: Instant,
     pub failed: bool,
     pub schedule_id: Option<String>,
+    /// Set when this worker is a watch; used to gate and raise notifications.
+    pub watch: Option<crate::organizer::Watch>,
 }
 
 impl Worker {
@@ -31,7 +33,9 @@ impl Worker {
             options.model.as_deref().unwrap_or(""),
             &options.reasoning,
         )?;
-        options.instructions = "You are an isolated Accessor worker executing a bounded user-authorized task. Use your harness tools and existing permissions. Do not create further agents or emit Accessor controls. Return a concise result including outcome, evidence, changed files, unresolved work, and any usage/approval blockers. Never claim success without evidence. Do not retry uncertain external actions. The main conversation will receive and explain your result.".into();
+        if options.instructions.trim().is_empty() {
+            options.instructions = "You are an isolated Accessor worker executing a bounded user-authorized task. Use your harness tools and existing permissions. Do not create further agents or emit Accessor controls. Return a concise result including outcome, evidence, changed files, unresolved work, and any usage/approval blockers. Never claim success without evidence. Do not retry uncertain external actions. The main conversation will receive and explain your result.".into();
+        }
         let id = format!("worker:{}", uuid::Uuid::new_v4());
         let (tx, task) = agent::spawn_tagged(harness, &id, options, events);
         Ok(Self {
@@ -44,6 +48,7 @@ impl Worker {
             started: Instant::now(),
             failed: false,
             schedule_id: None,
+            watch: None,
         })
     }
     pub fn append(&mut self, text: &str) {

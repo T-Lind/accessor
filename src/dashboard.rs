@@ -96,6 +96,8 @@ pub enum LocalCommand {
     Update {
         check: bool,
     },
+    /// `/watch …` — create, list, or stop recurring watches.
+    Watch(String),
 }
 pub fn parse(text: &str, s: &Settings) -> Result<Option<LocalCommand>> {
     let text = text.trim();
@@ -185,9 +187,11 @@ pub fn parse(text: &str, s: &Settings) -> Result<Option<LocalCommand>> {
         ["/update", "check"] | ["/update", "--check"] => LocalCommand::Update { check: true },
         ["/connectors", "setup"] | ["/agent"] => LocalCommand::Native,
         ["/events"] => LocalCommand::Utility(vec!["events".into(), "status".into()]),
+        ["/notifications"] => LocalCommand::Utility(vec!["notifications".into(), "list".into()]),
         ["/organizer"] | ["/alarms"] | ["/tasks"] | ["/notes"] => {
             LocalCommand::Utility(vec!["organizer".into(), "status".into()])
         }
+        ["/watch", rest @ ..] => LocalCommand::Watch(rest.join(" ")),
         ["/stt", "provider", provider] => {
             LocalCommand::Set("stt.conversation".into(), (*provider).into())
         }

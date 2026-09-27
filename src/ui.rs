@@ -34,6 +34,7 @@ pub enum Kind {
     Agent,
     Tool,
     Progress,
+    Notice,
 }
 
 struct Entry {
@@ -164,7 +165,7 @@ impl Ui {
     }
     fn visible(&self, kind: Kind) -> bool {
         match self.chat.as_str() {
-            "off" => matches!(kind, Kind::System | Kind::Tool),
+            "off" => matches!(kind, Kind::System | Kind::Tool | Kind::Notice),
             "transcript" => true,
             _ => kind != Kind::Progress,
         }
@@ -550,6 +551,7 @@ fn plain_prefix(kind: Kind, text: &str) -> String {
         Kind::Agent => format!("Agent: {text}"),
         Kind::Tool => text.to_string(),
         Kind::Progress => text.to_string(),
+        Kind::Notice => format!("! {text}"),
         Kind::System => text.to_string(),
     }
 }
@@ -559,6 +561,7 @@ fn styled_entry(entry: &Entry, width: usize) -> Vec<Line<'static>> {
         Kind::Agent => ("Agent", Color::Cyan),
         Kind::Tool => ("Tool", Color::Yellow),
         Kind::Progress => ("…", Color::DarkGray),
+        Kind::Notice => ("Notice", Color::Magenta),
         Kind::System => ("", Color::Gray),
     };
     let body = if entry.kind == Kind::Agent {
