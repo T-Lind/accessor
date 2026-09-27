@@ -55,10 +55,6 @@ impl Store {
             .open(self.path.with_extension("lock"))?;
         lock.lock_exclusive()?;
         let mut entries = if self.path.exists() {
-            ensure!(
-                fs::metadata(&self.path)?.len() <= 16_000_000,
-                "Memory store exceeds size limit"
-            );
             serde_json::from_slice(&fs::read(&self.path)?)
                 .context("Invalid memory store; refusing to overwrite it")?
         } else {
@@ -152,6 +148,12 @@ impl Store {
             let existing = entries
                 .iter()
                 .position(|e| e.scope == scope && e.key == key);
+            if existing.is_none() && self.path.exists() {
+                ensure!(
+                    fs::metadata(&self.path)?.len() <= 16_000_000,
+                    "Memory store is at capacity; forget unused entries first"
+                );
+            }
             if let Some(i) = existing {
                 ensure!(
                     !entries[i].deleted,

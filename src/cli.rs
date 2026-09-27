@@ -348,6 +348,8 @@ enum JournalCommand {
 enum ConnectorCommand {
     List,
     Status,
+    /// Probe harnesses and cache the connector inventory used by the metaprompt.
+    Refresh,
     Setup,
 }
 #[derive(Subcommand)]
@@ -864,6 +866,7 @@ pub async fn entry() -> Result<()> {
                 connectors::delegate_plugin(&["plugin".into(), "list".into()]).await
             }
             ConnectorCommand::Status => connectors::status().await,
+            ConnectorCommand::Refresh => connectors::refresh().await,
             ConnectorCommand::Setup => {
                 let settings = config::Settings::load()?;
                 let harness = settings.plugin_target().0;

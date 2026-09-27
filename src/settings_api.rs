@@ -46,7 +46,7 @@ pub fn read(s: &Settings) -> Value {
         .map(|key| {
             let mut value = &source;
             for part in key.split('.') {
-                value = &value[part.replace('-', "_")];
+                value = value.get(part.replace('-', "_")).unwrap_or(&Value::Null);
             }
             ((*key).into(), value.clone())
         })

@@ -47,10 +47,6 @@ fn read_entries() -> Result<Vec<Entry>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
-    ensure!(
-        std::fs::metadata(&path)?.len() <= MAX_BYTES,
-        "Journal file exceeds the size limit"
-    );
     let raw = std::fs::read(&path)?;
     ensure!(raw.len() >= NONCE_LEN, "Journal file is malformed");
     let (nonce, ciphertext) = raw.split_at(NONCE_LEN);
@@ -93,6 +89,13 @@ pub fn append(text: &str) -> Result<usize> {
         !text.is_empty() && text.len() <= 8000,
         "Journal entry must be 1–8000 bytes"
     );
+    let p = path()?;
+    if p.exists() {
+        ensure!(
+            std::fs::metadata(&p)?.len() <= MAX_BYTES,
+            "Journal file is at capacity; use /journal clear to make room"
+        );
+    }
     let mut entries = read_entries()?;
     entries.push(Entry {
         at: now_unix(),

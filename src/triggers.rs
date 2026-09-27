@@ -6,7 +6,6 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
-    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -83,36 +82,43 @@ impl Queue {
             if path.extension().and_then(|s| s.to_str()) != Some("json") {
                 continue;
             }
-            ensure!(
-                fs::symlink_metadata(&path)?.file_type().is_file(),
-                "Event is not a regular file"
-            );
-            ensure!(
-                fs::metadata(&path)?.len() <= 4096,
-                "Event exceeds size limit"
-            );
-            let event: Event = serde_json::from_slice(&fs::read(&path)?)?;
-            event.validate()?;
+            // Validate and parse; remove malformed files so they cannot stall the queue.
+            let valid = (|| -> Result<Event> {
+                ensure!(
+                    fs::symlink_metadata(&path)?.file_type().is_file(),
+                    "Event is not a regular file"
+                );
+                ensure!(
+                    fs::metadata(&path)?.len() <= 4096,
+                    "Event exceeds size limit"
+                );
+                let event: Event = serde_json::from_slice(&fs::read(&path)?)?;
+                event.validate()?;
+                Ok(event)
+            })();
+            let event = match valid {
+                Ok(event) => event,
+                Err(_) => {
+                    let _ = fs::remove_file(&path);
+                    continue;
+                }
+            };
             let receipt = self
                 .root
                 .join("receipts")
                 .join(format!("{}.json", event.message_id));
-            match OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&receipt)
-            {
-                Ok(mut file) => {
-                    file.write_all(&serde_json::to_vec(&serde_json::json!({"event":event,"status":"dispatched; outcome not yet known"}))?)?;
-                    file.sync_all()?;
-                    fs::remove_file(path)?;
-                    return Ok(Some(event));
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    fs::remove_file(path)?;
-                }
-                Err(e) => return Err(e.into()),
+            if receipt.exists() {
+                fs::remove_file(path)?;
+                continue;
             }
+            config::save_private(
+                &receipt,
+                &serde_json::to_vec(
+                    &serde_json::json!({"event":event,"status":"dispatched; outcome not yet known"}),
+                )?,
+            )?;
+            fs::remove_file(path)?;
+            return Ok(Some(event));
         }
         Ok(None)
     }

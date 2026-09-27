@@ -51,17 +51,22 @@ impl Worker {
         self.output.push_str(text);
         self.output.push('\n');
         if self.output.len() > 24_000 {
+            let head_end = self
+                .output
+                .char_indices()
+                .nth(2000)
+                .map(|(i, _)| i)
+                .unwrap_or(self.output.len());
+            let tail_start = self
+                .output
+                .char_indices()
+                .nth_back(4000 - 1)
+                .map(|(i, _)| i)
+                .unwrap_or(0);
             self.output = format!(
                 "{}\n[worker detail omitted]\n{}",
-                self.output.chars().take(2000).collect::<String>(),
-                self.output
-                    .chars()
-                    .rev()
-                    .take(4000)
-                    .collect::<String>()
-                    .chars()
-                    .rev()
-                    .collect::<String>()
+                &self.output[..head_end],
+                &self.output[tail_start..],
             );
         }
     }

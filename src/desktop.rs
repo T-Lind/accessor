@@ -393,21 +393,13 @@ mod platform {
         element
             .set_focus()
             .with_context(|| format!("Could not focus \"{}\"", target.name))?;
-        crate::computer::click_point(
-            element
-                .get_clickable_point()
-                .ok()
-                .flatten()
-                .map(|point| point.get_x())
-                .unwrap_or(0),
-            element
-                .get_clickable_point()
-                .ok()
-                .flatten()
-                .map(|point| point.get_y())
-                .unwrap_or(0),
-        )
-        .ok();
+        if let Some(point) = element.get_clickable_point().ok().flatten() {
+            crate::computer::click_point(point.get_x(), point.get_y()).ok();
+        } else if let Ok(rect) = element.get_bounding_rectangle() {
+            let x = (rect.get_left() + rect.get_right()) / 2;
+            let y = (rect.get_top() + rect.get_bottom()) / 2;
+            crate::computer::click_point(x, y).ok();
+        }
         crate::computer::type_at_focus(text)?;
         Ok(format!("Typed into \"{}\".", target.name))
     }
@@ -450,6 +442,54 @@ mod platform {
             let _ = enigo.move_mouse(1, 0, Coordinate::Rel);
             let _ = enigo.move_mouse(-1, 0, Coordinate::Rel);
         }
+    }
+
+    const ES_CONTINUOUS: u32 = 0x8000_0000;
+    const ES_SYSTEM_REQUIRED: u32 = 0x0000_0001;
+    const ES_DISPLAY_REQUIRED: u32 = 0x0000_0002;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetThreadExecutionState(flags: u32) -> u32;
+    }
+
+    pub struct DisplayHold {
+        release: Option<std::sync::mpsc::Sender<()>>,
+        worker: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Drop for DisplayHold {
+        fn drop(&mut self) {
+            self.release.take();
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+        }
+    }
+
+    impl DisplayHold {
+        /// The execution-state thread lives until this hold is dropped.
+        pub fn alive(&mut self) -> bool {
+            true
+        }
+    }
+
+    /// Keep the display and system awake for as long as the hold is alive.
+    pub fn hold_display() -> Option<DisplayHold> {
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let worker = std::thread::spawn(move || {
+            unsafe {
+                SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);
+            }
+            let _ = wait.recv();
+            unsafe {
+                SetThreadExecutionState(ES_CONTINUOUS);
+            }
+        });
+        Some(DisplayHold {
+            release: Some(release),
+            worker: Some(worker),
+        })
     }
 
     pub fn capabilities() -> String {
@@ -521,6 +561,40 @@ mod platform {
         let _ = std::process::Command::new("caffeinate")
             .args(["-u", "-t", "1"])
             .spawn();
+    }
+
+    pub struct DisplayHold {
+        child: Option<std::process::Child>,
+    }
+
+    impl Drop for DisplayHold {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
+    impl DisplayHold {
+        /// False once the inhibitor process has exited on its own.
+        pub fn alive(&mut self) -> bool {
+            self.child
+                .as_mut()
+                .is_some_and(|child| matches!(child.try_wait(), Ok(None)))
+        }
+    }
+
+    /// `caffeinate` keeps the display and system awake until it is killed.
+    pub fn hold_display() -> Option<DisplayHold> {
+        std::process::Command::new("caffeinate")
+            .args(["-d", "-i", "-u"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()
+            .map(|child| DisplayHold { child: Some(child) })
     }
 
     pub fn capabilities() -> String {
@@ -704,6 +778,49 @@ mod platform {
         }
     }
 
+    pub struct DisplayHold {
+        child: Option<std::process::Child>,
+    }
+
+    impl Drop for DisplayHold {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
+    impl DisplayHold {
+        /// False once the inhibitor process has exited on its own.
+        pub fn alive(&mut self) -> bool {
+            self.child
+                .as_mut()
+                .is_some_and(|child| matches!(child.try_wait(), Ok(None)))
+        }
+    }
+
+    /// Ask logind to block the idle timeout (screen blank and screensaver) for
+    /// as long as the child lives. This is what keeps the screen on while the
+    /// user is thinking between phrases rather than blanking seconds later; the
+    /// one-shot `wake_display` only restores a screen that already went dark.
+    pub fn hold_display() -> Option<DisplayHold> {
+        std::process::Command::new("systemd-inhibit")
+            .args([
+                "--what=idle",
+                "--mode=block",
+                "--who=Accessor",
+                "--why=Listening or working",
+            ])
+            .args(["sleep", "infinity"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()
+            .map(|child| DisplayHold { child: Some(child) })
+    }
+
     pub fn capabilities() -> String {
         let available = std::process::Command::new("python3")
             .args([
@@ -723,6 +840,67 @@ mod platform {
 
 pub use platform::*;
 
+/// Keeps the display awake for the whole of an interaction, not just its first
+/// moment. A held inhibitor (logind `idle`, `caffeinate`, or
+/// `SetThreadExecutionState`) stops the screen blanking while Accessor is
+/// listening or working; when no inhibitor is available it falls back to
+/// periodic one-shot wakes.
+pub struct DisplayGuard {
+    enabled: bool,
+    hold: Option<platform::DisplayHold>,
+    last_poke: Option<std::time::Instant>,
+}
+
+const DISPLAY_POKE: std::time::Duration = std::time::Duration::from_secs(20);
+
+impl DisplayGuard {
+    pub fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            hold: None,
+            last_poke: None,
+        }
+    }
+
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        if !enabled {
+            self.release();
+        }
+    }
+
+    /// Called every loop tick with whether Accessor is currently listening or
+    /// working. Holds the display awake while true and releases it when false.
+    /// If a held inhibitor exits early, retries at the poke interval so a dead
+    /// helper cannot leave the screen blanking mid-conversation.
+    pub fn keep(&mut self, busy: bool) {
+        if !self.enabled || !busy {
+            self.release();
+            return;
+        }
+        if self.hold.as_mut().is_some_and(|hold| hold.alive()) {
+            return;
+        }
+        self.hold = None;
+        if self.last_poke.is_none_or(|at| at.elapsed() >= DISPLAY_POKE) {
+            self.last_poke = Some(std::time::Instant::now());
+            std::thread::spawn(wake_display);
+            self.hold = platform::hold_display();
+        }
+    }
+
+    pub fn release(&mut self) {
+        self.hold = None;
+        self.last_poke = None;
+    }
+}
+
+impl Drop for DisplayGuard {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 /// Windows Start-menu search, used as the last-resort app launcher.
 #[cfg(windows)]
 fn start_search(name: &str) -> Result<()> {
@@ -735,4 +913,24 @@ fn start_search(name: &str) -> Result<()> {
     std::thread::sleep(std::time::Duration::from_millis(700));
     key_combo(&mut enigo, "Return", 1)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disabled_guard_never_holds_and_releases_on_toggle_off() {
+        let mut guard = DisplayGuard::new(false);
+        guard.keep(true);
+        assert!(guard.hold.is_none());
+
+        let mut guard = DisplayGuard::new(true);
+        guard.keep(false);
+        assert!(guard.hold.is_none());
+
+        guard.set_enabled(false);
+        guard.keep(true);
+        assert!(guard.hold.is_none());
+    }
 }

@@ -149,19 +149,22 @@ fn play(
         _ => bail!("Unsupported speaker format"),
     };
     stream.play()?;
-    let began = Instant::now();
+    let mut last_progress = Instant::now();
     while !state.stop.load(Ordering::SeqCst) && !state.done.load(Ordering::SeqCst) {
         ensure!(
             !state.failed.load(Ordering::SeqCst),
             "Streaming audio output failed"
         );
+        if state.playing.load(Ordering::SeqCst) {
+            last_progress = Instant::now();
+        }
         ensure!(
-            began.elapsed() < Duration::from_secs(90),
-            "Streaming audio output timed out"
+            last_progress.elapsed() < Duration::from_secs(15),
+            "Streaming audio stalled"
         );
         std::thread::sleep(Duration::from_millis(10));
     }
-    for _ in 0..8 {
+    for _ in 0..15 {
         if state.stop.load(Ordering::SeqCst) {
             break;
         }
