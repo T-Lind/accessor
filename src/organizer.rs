@@ -983,6 +983,16 @@ fn take_due(
             remaining.push(task);
         } else if let Some(every) = task.every_seconds {
             let steps = (now - task.next_unix) / every.max(1) + 1;
+            if steps > 1 {
+                book.runs.push(RunRecord {
+                    id: format!("{}-skipped", task.id),
+                    at_unix: now,
+                    state: format!(
+                        "skipped {} run(s) while Accessor was not running",
+                        steps - 1
+                    ),
+                });
+            }
             task.next_unix = task.next_unix.saturating_add(steps.saturating_mul(every));
             remaining.push(task);
         }
@@ -1042,6 +1052,57 @@ pub fn list_watches() -> Result<String> {
         lines.push("No watches. Create one with /watch every 30m <what to watch for>.".into());
     }
     Ok(lines.join("\n"))
+}
+
+/// Change an existing watch's guidelines, threshold, speak flag, or cadence.
+pub fn update_watch(
+    id: &str,
+    threshold: Option<f32>,
+    speak: Option<bool>,
+    guidelines: Option<String>,
+    every_seconds: Option<u64>,
+) -> Result<Task> {
+    require_id(id)?;
+    let _lock = lock()?;
+    let mut book = load()?;
+    let task = book
+        .tasks
+        .iter_mut()
+        .find(|task| task.id == id)
+        .with_context(|| format!("No scheduled task {id}"))?;
+    let watch = task
+        .watch
+        .as_mut()
+        .context("That scheduled task is not a watch")?;
+    if let Some(value) = threshold {
+        ensure!(
+            (0.0..=1.0).contains(&value),
+            "Watch threshold must be between 0 and 1"
+        );
+        watch.threshold = value;
+    }
+    if let Some(value) = speak {
+        watch.speak = value;
+    }
+    if let Some(value) = guidelines {
+        ensure!(
+            !value.trim().is_empty() && value.len() <= 32_000,
+            "Watch guidelines must contain 1–32000 characters"
+        );
+        watch.guidelines = value;
+        task.prompt = watch.guidelines.clone();
+    }
+    if let Some(value) = every_seconds {
+        ensure!(
+            value >= 60,
+            "Repeating tasks must be at least 60 seconds apart"
+        );
+        task.every_seconds = Some(value);
+    }
+    let task = task.clone();
+    validate_task(&task)?;
+    save(&book)?;
+    Ok(task)
 }
 
 pub fn list() -> Result<String> {
@@ -1298,6 +1359,10 @@ mod tests {
         assert_eq!(due.len(), 2);
         assert!(book.alarms.is_empty());
         assert_eq!(book.tasks[0].next_unix, 110);
+        assert!(book
+            .runs
+            .iter()
+            .any(|run| run.state.contains("skipped 2 run(s)")));
     }
 
     #[test]

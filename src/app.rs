@@ -247,8 +247,63 @@ fn watch_command(rest: &str, settings: &config::Settings) -> Result<String> {
                 task.id
             ))
         }
+        Some("edit") => {
+            let id = parts
+                .next()
+                .context("Usage: /watch edit ID [every 30m] [threshold=0.7] [quiet] [guidelines...]")?
+                .to_string();
+            let tokens: Vec<&str> = parts.collect();
+            let mut threshold = None;
+            let mut speak = None;
+            let mut every = None;
+            let mut words: Vec<&str> = Vec::new();
+            let mut index = 0;
+            while index < tokens.len() {
+                let token = tokens[index];
+                if token.eq_ignore_ascii_case("every") {
+                    let duration = tokens
+                        .get(index + 1)
+                        .context("Usage: /watch edit ID every 30m ...")?;
+                    every = Some(
+                        parse_every_duration(duration)
+                            .context("Use a cadence like 30m, 2h, or 1800s")?,
+                    );
+                    index += 2;
+                    continue;
+                }
+                if token.eq_ignore_ascii_case("quiet")
+                    || token.eq_ignore_ascii_case("silent")
+                    || token.eq_ignore_ascii_case("nospeak")
+                {
+                    speak = Some(false);
+                } else if token.eq_ignore_ascii_case("speak") {
+                    speak = Some(true);
+                } else if let Some(value) = token
+                    .strip_prefix("threshold=")
+                    .or_else(|| token.strip_prefix("th="))
+                {
+                    threshold = Some(value.parse().context("threshold must be a number")?);
+                } else {
+                    words.push(token);
+                }
+                index += 1;
+            }
+            let guidelines = (!words.is_empty()).then(|| words.join(" "));
+            let task = crate::organizer::update_watch(&id, threshold, speak, guidelines, every)?;
+            let watch = task.watch.clone().unwrap_or_default();
+            Ok(format!(
+                "Watch {} updated: every {}, threshold {:.2}, speak {}.\n  Guidelines: {}",
+                task.id,
+                task.every_seconds
+                    .map(humanize_seconds)
+                    .unwrap_or_else(|| "one-shot".into()),
+                watch.threshold,
+                watch.speak,
+                watch.guidelines
+            ))
+        }
         _ => {
-            Ok("Usage: /watch every 30m [quiet] [threshold=0.7] <what to watch for> · /watch list · /watch stop ID".into())
+            Ok("Usage: /watch every 30m [quiet] [threshold=0.7] <what to watch for> · /watch edit ID [every 30m] [quiet] [threshold=0.7] [guidelines] · /watch list · /watch stop ID".into())
         }
     }
 }
@@ -274,6 +329,7 @@ struct BannerState {
     settings_open: bool,
     setup: bool,
     mic_unavailable: bool,
+    notices: usize,
 }
 
 fn banner(state: BannerState, identity: &str) -> String {
@@ -301,7 +357,16 @@ fn banner(state: BannerState, identity: &str) -> String {
     } else {
         "idle"
     };
-    format!("{voice} | {task} | {identity}")
+    let notices = if state.notices > 0 {
+        format!(
+            " · {} notice{}",
+            state.notices,
+            if state.notices == 1 { "" } else { "s" }
+        )
+    } else {
+        String::new()
+    };
+    format!("{voice} | {task} | {identity}{notices}")
 }
 
 pub async fn run(mut args: Run) -> Result<()> {
@@ -382,6 +447,7 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut compaction: Option<CompactionJob> = None;
     let mut last_organizer_poll = Instant::now();
     let mut last_notify_poll = Instant::now();
+    let mut notice_count = crate::notifications::unread_count().unwrap_or(0);
     let mut organizer_error_warned = false;
     let wake_code = args
         .wake_code
@@ -608,6 +674,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                 settings_open: false,
                 setup: false,
                 mic_unavailable,
+                notices: notice_count,
             },
             &identity_status(&active_harness, active_model.as_deref()),
         )
@@ -794,6 +861,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                 settings_open: panel.is_some(),
                 setup: pending_secret.is_some() || wizard.is_some(),
                 mic_unavailable,
+                notices: notice_count,
             },
             &identity_status(&active_harness, active_model.as_deref()),
         );
@@ -2165,8 +2233,10 @@ pub async fn run(mut args: Run) -> Result<()> {
                         Err(e)=>if !organizer_error_warned {organizer_error_warned=true;ui.message(format!("Organizer check failed: {e:#}"));},
                     }
                 }
-                if !args.stt_test && !busy && worker.is_none() && speaker.is_none() && speech_queue.is_empty() && last_notify_poll.elapsed()>=Duration::from_secs(1) {
+                if !args.stt_test && last_notify_poll.elapsed()>=Duration::from_secs(1) {
                     last_notify_poll=Instant::now();
+                    if let Ok(count)=crate::notifications::unread_count() { notice_count=count; }
+                    if !busy && worker.is_none() && speaker.is_none() && speech_queue.is_empty() {
                     match crate::notifications::pending() {
                         Ok(items)=>for item in items {
                             ui.chat(Kind::Notice,format!("Notification · {}\n{}",item.title,item.text));
@@ -2179,6 +2249,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                             if let Err(e)=crate::notifications::mark_announced(&item.id) {ui.message(format!("Could not update notification {}: {e:#}",item.id));}
                         },
                         Err(e)=>ui.message(format!("Notification check failed: {e:#}")),
+                    }
                     }
                 }
                 if !wake_listening && !busy && worker.is_none() && speaker.is_none() && speech_queue.is_empty() && current_event.is_none() && waiting_event.is_none() && wizard.is_none() && panel.is_none() && pending_secret.is_none() && !args.stt_test && last_event_poll.elapsed()>=Duration::from_secs(1) {
@@ -2509,6 +2580,7 @@ mod tests {
                 settings_open: false,
                 setup: false,
                 mic_unavailable: false,
+                notices: 0,
             },
             "A D · antigravity · default",
         );
