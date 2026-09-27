@@ -341,6 +341,69 @@ pub fn kokoro_ready(settings: &config::Settings) -> bool {
         && assets.join("models/kokoro/voices.bin").is_file()
 }
 
+/// Curated Piper voices, best/most typical first.
+pub const PIPER_VOICES: &[(&str, &str)] = &[
+    ("en_GB-alan-medium", "Alan · British male, clear"),
+    ("en_GB-cori-high", "Cori · British female, expressive"),
+    ("en_US-lessac-medium", "Lessac · American male, neutral"),
+    ("en_US-amy-medium", "Amy · American female, warm"),
+];
+
+/// True once the Piper binary and the selected voice are present.
+pub fn piper_ready(settings: &config::Settings) -> bool {
+    let Ok(assets) = settings.assets() else {
+        return false;
+    };
+    let bin = assets
+        .join("piper/bin")
+        .join(if cfg!(windows) { "piper.exe" } else { "piper" });
+    let voice = assets
+        .join("piper/voices")
+        .join(format!("{}.onnx", settings.tts.piper_voice));
+    bin.is_file() && voice.is_file()
+}
+
+/// Run the Piper installer in the background for the selected voice.
+pub fn install_piper(
+    settings: &config::Settings,
+    workspace: &std::path::Path,
+) -> tokio::task::JoinHandle<Result<String>> {
+    let script = workspace.join("scripts").join("setup_piper.py");
+    let assets = settings.assets();
+    let voice = settings.tts.piper_voice.clone();
+    tokio::spawn(async move {
+        let assets = assets?;
+        anyhow::ensure!(
+            script.is_file(),
+            "Piper installer not found at {}. Run: python scripts/setup_piper.py",
+            script.display()
+        );
+        let python = if cfg!(windows) { "python" } else { "python3" };
+        let output = tokio::process::Command::new(python)
+            .arg(&script)
+            .env("ACC_ASSETS", &assets)
+            .env("PIPER_VOICE", &voice)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .output()
+            .await
+            .context("Could not start the Piper installer")?;
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        anyhow::ensure!(
+            output.status.success(),
+            "Piper install failed: {}",
+            text.trim()
+        );
+        Ok(format!("Piper is installed with voice {voice}."))
+    })
+}
+
 /// Run the isolated Kokoro installer in the background and report its result.
 pub fn install_kokoro(
     settings: &config::Settings,
@@ -813,6 +876,7 @@ fn tts_cache_key(text: &str, settings: &Tts) -> Option<String> {
     settings.provider.hash(&mut hasher);
     settings.voice.hash(&mut hasher);
     settings.local_voice.hash(&mut hasher);
+    settings.piper_voice.hash(&mut hasher);
     settings.model.hash(&mut hasher);
     settings.speed.to_bits().hash(&mut hasher);
     text.hash(&mut hasher);
@@ -902,9 +966,55 @@ async fn render_uncached(text: &str, settings: &Tts) -> Result<Vec<u8>> {
         )
         .await?
         .1)
+    } else if settings.provider == "piper" {
+        render_piper(text, settings).await
     } else {
         synthesize(text, settings).await
     }
+}
+
+/// Piper is a fast one-shot ONNX binary; it writes a 22050 Hz WAV we play back
+/// like any other rendered speech.
+async fn render_piper(text: &str, settings: &Tts) -> Result<Vec<u8>> {
+    use tokio::io::AsyncWriteExt;
+    let assets = config::Settings::load()?.assets()?;
+    let bin = assets
+        .join("piper/bin")
+        .join(if cfg!(windows) { "piper.exe" } else { "piper" });
+    let voice = assets
+        .join("piper/voices")
+        .join(format!("{}.onnx", settings.piper_voice));
+    ensure!(
+        bin.is_file() && voice.is_file(),
+        "Piper is not installed. Pick it again to install, or run python scripts/setup_piper.py"
+    );
+    let directory = tempfile::tempdir()?;
+    let output = directory.path().join("speech.wav");
+    let mut command = tokio::process::Command::new(&bin);
+    command
+        .arg("--model")
+        .arg(&voice)
+        .arg("--output_file")
+        .arg(&output)
+        .arg("--length_scale")
+        .arg(format!("{:.3}", 1.0 / settings.speed.clamp(0.6, 1.5)))
+        .current_dir(bin.parent().context("Piper directory missing")?)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let mut child = command.spawn().context("Could not start Piper")?;
+    let mut input = child.stdin.take().context("Piper stdin missing")?;
+    let spoken: String = text.chars().take(6000).collect();
+    input.write_all(spoken.as_bytes()).await?;
+    drop(input);
+    ensure!(
+        tokio::time::timeout(Duration::from_secs(60), child.wait())
+            .await??
+            .success(),
+        "Piper failed to synthesize"
+    );
+    Ok(std::fs::read(&output)?)
 }
 /// Load the local Kokoro worker and warm its ONNX kernels so the first reply is
 /// not delayed by model startup. Uses the normal synthesis path (no worker

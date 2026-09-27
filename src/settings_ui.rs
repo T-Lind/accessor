@@ -323,6 +323,15 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                 Action::Toggle("routing.coordinator"),
             ),
             row(
+                "Fast mode",
+                if s.routing.fast_mode {
+                    "on · low effort + light model"
+                } else {
+                    "off · configured effort"
+                },
+                Action::Toggle("routing.fast-mode"),
+            ),
+            row(
                 "Coding agent",
                 &format!(
                     "{} · {} · {}",
@@ -516,6 +525,7 @@ fn hint(action: &Action) -> &'static str {
             "Spoken letters (A. D.) at most once every 5 minutes. Replies in between skip the identity prefix."
         }
         Action::Toggle("routing.coordinator") => "Keep a lightweight main conversation and delegate plugin/coding/difficult work to isolated workers.",
+        Action::Toggle("routing.fast-mode") => "Prefer speed: low effort and the harness's light model for the main conversation and workers. Harnesses without a distinct light model fall back to their default.",
         Action::Cycle("stt.conversation", _) => {
             "Wake detection stays on-device. Cartesia after-wake transcription uses finished clips by default; enable Cartesia streaming to upload speech as you talk."
         }
@@ -880,6 +890,13 @@ fn current_value<'a>(key: &str, s: &'a Settings) -> &'a str {
                 "false"
             }
         }
+        "routing.fast-mode" => {
+            if s.routing.fast_mode {
+                "true"
+            } else {
+                "false"
+            }
+        }
         "speak" => {
             if s.speak {
                 "true"
@@ -1051,6 +1068,14 @@ pub fn voice_persona_label(s: &Settings) -> String {
                 .unwrap_or(s.tts.local_voice.as_str());
             format!("{label} · Kokoro")
         }
+        "piper" => {
+            let label = crate::speech::PIPER_VOICES
+                .iter()
+                .find(|(id, _)| *id == s.tts.piper_voice)
+                .map(|(_, label)| *label)
+                .unwrap_or(s.tts.piper_voice.as_str());
+            format!("{label} · Piper")
+        }
         "off" => "Off · silent".into(),
         _ => "System voice · this computer".into(),
     }
@@ -1099,6 +1124,7 @@ struct VoiceEdit {
     provider: String,
     voice: String,
     local_voice: String,
+    piper_voice: String,
     choices: Vec<PickChoice>,
     cursor: usize,
 }
@@ -1109,6 +1135,7 @@ impl VoiceEdit {
             provider: s.tts.provider.clone(),
             voice: s.tts.voice.clone(),
             local_voice: s.tts.local_voice.clone(),
+            piper_voice: s.tts.piper_voice.clone(),
             choices: Vec::new(),
             cursor: 0,
         };
@@ -1119,11 +1146,16 @@ impl VoiceEdit {
         self.choices = match self.step {
             0 => vec![
                 pick("cartesia", "Cartesia · cloud neural (needs key)"),
+                pick("piper", "Piper · local neural (fast)"),
                 pick("kokoro", "Kokoro · local neural"),
                 pick("system", "System voice · this computer"),
                 pick("off", "Off · silent"),
             ],
             _ if self.provider == "kokoro" => crate::speech::KOKORO_VOICES
+                .iter()
+                .map(|(id, label)| pick(id, label))
+                .collect(),
+            _ if self.provider == "piper" => crate::speech::PIPER_VOICES
                 .iter()
                 .map(|(id, label)| pick(id, label))
                 .collect(),
@@ -1133,6 +1165,8 @@ impl VoiceEdit {
             self.provider.clone()
         } else if self.provider == "kokoro" {
             self.local_voice.clone()
+        } else if self.provider == "piper" {
+            self.piper_voice.clone()
         } else {
             self.voice.clone()
         };
@@ -1159,9 +1193,11 @@ impl VoiceEdit {
         }
         out.push('\n');
         out.push_str(if self.step == 0 {
-            "Choose how replies are spoken. Kokoro and the system voice are local; Kokoro installs on first use."
+            "Choose how replies are spoken. Piper, Kokoro, and the system voice are local; local engines install on first use."
         } else if self.provider == "kokoro" {
             "Pick a local Kokoro voice."
+        } else if self.provider == "piper" {
+            "Pick a local Piper voice (fast)."
         } else {
             "Pick a Cartesia voice; run /tts voices to refresh from your account."
         });
@@ -1208,6 +1244,8 @@ impl VoiceEdit {
         }
         if self.provider == "kokoro" {
             self.local_voice = selected.clone();
+        } else if self.provider == "piper" {
+            self.piper_voice = selected.clone();
         } else {
             self.voice = selected.clone();
         }
@@ -1254,6 +1292,19 @@ fn choice_for(key: &str, s: &Settings) -> Option<ChoiceEdit> {
                 "Kokoro is local and installs on first use.",
                 choices,
                 &s.tts.local_voice,
+            ))
+        }
+        "tts.piper-voice" => {
+            let choices = crate::speech::PIPER_VOICES
+                .iter()
+                .map(|(id, label)| pick(id, label))
+                .collect();
+            Some(ChoiceEdit::new(
+                "tts.piper-voice",
+                "Piper voice",
+                "Piper is local, fast, and installs on first use.",
+                choices,
+                &s.tts.piper_voice,
             ))
         }
         "stt.engine" => {
@@ -2155,7 +2206,7 @@ mod tests {
         let s = Settings::default();
         let mut panel = Panel::default();
         panel.answer("3", &s, &[]).unwrap();
-        panel.answer("3", &s, &[]).unwrap();
+        panel.answer("4", &s, &[]).unwrap();
         assert!(panel
             .display(&s, false, &[])
             .contains("Coding agent  ·  Step 1 of 3"));
@@ -2401,6 +2452,7 @@ mod tests {
         assert!(step1.contains("Step 1 of 2"));
         assert!(step1.contains("Kokoro"));
         assert!(step1.contains("Cartesia"));
+        assert!(step1.contains("Piper"));
         let Answer::Show = edit.answer("1").unwrap() else {
             panic!("choose cartesia");
         };
@@ -2412,7 +2464,7 @@ mod tests {
         };
         assert!(cmd.starts_with("/tts persona cartesia "));
         let mut system = VoiceEdit::new(&s);
-        let Answer::Command(cmd) = system.answer("3").unwrap() else {
+        let Answer::Command(cmd) = system.answer("4").unwrap() else {
             panic!("choose system");
         };
         assert_eq!(cmd, "/config set tts.provider system");

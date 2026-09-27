@@ -96,6 +96,10 @@ pub struct Routing {
     pub compaction_harness: String,
     #[serde(default = "default_compact_tokens")]
     pub compact_tokens: u32,
+    /// Best-effort low-latency path: low effort and the harness's light model
+    /// for both the main conversation and workers.
+    #[serde(default)]
+    pub fast_mode: bool,
 }
 impl Default for Routing {
     fn default() -> Self {
@@ -117,6 +121,7 @@ impl Default for Routing {
             compaction_model: "gemini-3.8-flash-low".into(),
             compaction_harness: "antigravity".into(),
             compact_tokens: 4000,
+            fast_mode: false,
         }
     }
 }
@@ -172,6 +177,9 @@ pub struct Tts {
     pub voice: String,
     pub model: String,
     pub local_voice: String,
+    /// Piper voice id, e.g. en_GB-alan-medium.
+    #[serde(default = "default_piper_voice")]
+    pub piper_voice: String,
     pub speed: f32,
 }
 impl Default for Tts {
@@ -183,6 +191,7 @@ impl Default for Tts {
             voice: crate::speech::DEFAULT_CARTESIA_VOICE.into(),
             model: "sonic-3".into(),
             local_voice: "bm_lewis".into(),
+            piper_voice: default_piper_voice(),
             speed: 1.1,
         }
     }
@@ -277,6 +286,9 @@ fn default_compact_tokens() -> u32 {
 }
 fn default_stt_engine() -> String {
     "canary".into()
+}
+fn default_piper_voice() -> String {
+    "en_GB-alan-medium".into()
 }
 pub const HARNESSES: &[&str] = &[
     "codex",
@@ -625,8 +637,8 @@ impl Settings {
             "idle-seconds must be 0–3600 (0 disables automatic sleep)"
         );
         ensure!(
-            ["system", "cartesia", "kokoro", "off"].contains(&self.tts.provider.as_str()),
-            "TTS provider must be system, kokoro, cartesia, or off"
+            ["system", "cartesia", "kokoro", "piper", "off"].contains(&self.tts.provider.as_str()),
+            "TTS provider must be system, kokoro, piper, cartesia, or off"
         );
         ensure!(
             (0.6..=1.5).contains(&self.tts.speed),
@@ -761,6 +773,7 @@ impl Settings {
                     )?;
             }
             "tts.local-voice" => self.tts.local_voice = value.into(),
+            "tts.piper-voice" => self.tts.piper_voice = value.into(),
             "tts.model" => self.tts.model = value.into(),
             "tts.speed" => self.tts.speed = value.parse()?,
             "tts.volume" => self.tts.volume = parse_level(value)?,
@@ -774,6 +787,7 @@ impl Settings {
             "routing.main" | "routing.routine" => self.routing.main = value.to_lowercase(),
             "routing.router" => self.routing.router = value.to_lowercase(),
             "routing.announce" => self.routing.announce = value.parse()?,
+            "routing.fast-mode" => self.routing.fast_mode = value.parse()?,
             "routing.auto-model" => self.routing.auto_model = value.parse()?,
             "routing.reasoning" => self.routing.reasoning = value.to_lowercase(),
             "routing.coding-reasoning" => self.routing.coding_reasoning = value.to_lowercase(),

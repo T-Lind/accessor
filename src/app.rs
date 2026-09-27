@@ -258,6 +258,10 @@ pub async fn run(mut args: Run) -> Result<()> {
             let _ = crate::speech::warm_local(&tts).await;
         });
     }
+    if !args.text && settings.tts.provider == "piper" && !crate::speech::piper_ready(&settings) {
+        ui.message("Piper is the selected voice and is not installed yet. Downloading the fast local engine and voice now; this is a one-time install.");
+        tts_install = Some(crate::speech::install_piper(&settings, &workspace));
+    }
     let mut session = Session::new(wake, Duration::from_secs(idle));
     let epoch = Arc::new(AtomicU64::new(0));
     let muted = Arc::new(AtomicBool::new(false));
@@ -823,6 +827,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                     let (h,m,r)=settings.plugin_target();harness=h.into();model=m.into();
                                     if reasoning=="default" {reasoning=r.into();}
                                 } else if reasoning=="default" {reasoning=settings.routing.coding_reasoning.clone();}
+                                if settings.routing.fast_mode {model=config::light_model(&harness).to_string();reasoning="low".into();}
                                 let outcome:Result<String>=(||{
                                     if worker.is_some() {anyhow::bail!("A worker is already running; wait for its result.");}
                                     if let Some(message)=limits.blocked(&harness) {anyhow::bail!(message);}
@@ -852,10 +857,13 @@ pub async fn run(mut args: Run) -> Result<()> {
                         if busy || worker.is_some() {waiting_tasks.push_front(task);continue;}
                         let harness=task.harness.as_deref().unwrap_or(&settings.routing.main);
                         if let Some(message)=limits.blocked(harness) {ui.message(message);waiting_tasks.push_back(task);continue;}
+                        let (task_model,task_reasoning)=if settings.routing.fast_mode {
+                            (Some(config::light_model(harness).to_string()),"low".to_string())
+                        } else {(task.model.clone(),task.reasoning.clone())};
                         worker=Some(crate::worker::Worker::start(harness, task.prompt.clone(), agent::Options {control:None, shared_memory: true,
                             executable:config::harness_bin(harness,&settings,args.codex_bin.as_ref()),
-                            workspace:workspace.clone(),writable:args.workspace_write,model:task.model.clone(),
-                            auto_review:settings.approvals.reviewer=="auto",reasoning:task.reasoning.clone(),instructions:String::new(),
+                            workspace:workspace.clone(),writable:args.workspace_write,model:task_model,
+                            auto_review:settings.approvals.reviewer=="auto",reasoning:task_reasoning,instructions:String::new(),
                         },event_tx.clone())?);
                         if let Some(w)=worker.as_mut() {w.schedule_id=Some(task.id.clone());}
                         ui.message(format!("Scheduled task {} started in an isolated {} worker.",task.id,harness));
@@ -1155,6 +1163,10 @@ pub async fn run(mut args: Run) -> Result<()> {
                                             let tts=settings.tts.clone();
                                             tokio::spawn(async move { let _ = crate::speech::warm_local(&tts).await; });
                                         }
+                                        if settings.tts.provider=="piper" && !crate::speech::piper_ready(&settings) && tts_install.is_none() {
+                                            ui.message("Piper isn't installed yet. Downloading the fast local engine and voice now; this is a one-time install.");
+                                            tts_install=Some(crate::speech::install_piper(&settings,&workspace));
+                                        }
                                         if spoken_setting && speak {speech_queue.push_back(format!("Selected {key}: {value}."));}
                                         if let Some(menu)=&panel {ui.settings(Some(menu.display(&settings,connected,&models)));}
                                         if ["microphone","assets-dir","codex-bin","stt.threads","stt.spin"].contains(&key.as_str()) {ui.message("Restart Accessor to apply this device/runtime change.");}
@@ -1163,7 +1175,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 }
                             }
                             LocalCommand::Persona(provider,voice)=>{
-                                let voice_key=if provider=="kokoro"{"tts.local-voice"}else{"tts.voice"};
+                                let voice_key=if provider=="kokoro"{"tts.local-voice"}else if provider=="piper"{"tts.piper-voice"}else{"tts.voice"};
                                 let mut candidate=settings.clone();
                                 let mut applied=candidate.set("tts.provider",&provider);
                                 if applied.is_ok() && !voice.is_empty() && provider!="system" && provider!="off" {
@@ -1182,6 +1194,10 @@ pub async fn run(mut args: Run) -> Result<()> {
                                         if settings.tts.provider=="kokoro" && crate::speech::kokoro_ready(&settings) {
                                             let tts=settings.tts.clone();
                                             tokio::spawn(async move { let _ = crate::speech::warm_local(&tts).await; });
+                                        }
+                                        if settings.tts.provider=="piper" && !crate::speech::piper_ready(&settings) && tts_install.is_none() {
+                                            ui.message("Piper isn't installed yet. Downloading the fast local engine and voice now; this is a one-time install.");
+                                            tts_install=Some(crate::speech::install_piper(&settings,&workspace));
                                         }
                                         if settings.tts.provider=="cartesia" && voice_lookup.is_none() && config::optional_secret("cartesia","CARTESIA_API_KEY").is_some() {
                                             voice_lookup=Some(tokio::spawn(crate::speech::fetch_voices()));
@@ -1543,7 +1559,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                         else {ui.chat(Kind::User, format!("{text}{}", confidence_suffix(voice_confidence)));}
                         silence_reply=is_event || mic_unavailable || (is_internal && !session.active());
                         cancelled_turn=false;cancel_started=None;
-                        let target = if let Some(target) = route_override {
+                        let mut target = if let Some(target) = route_override {
                             target
                         } else if let Some((harness, model)) = &session_pin {
                             crate::route::Target {
@@ -1561,6 +1577,9 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 }
                             } else { choice.await }
                         };
+                        if settings.routing.fast_mode {
+                            target.model = Some(crate::config::light_model(&target.harness).to_string());
+                        }
                         if let Some(message)=limits.blocked(&target.harness) {
                             ui.message(message);
                             if is_internal { ui.message(&text); }
@@ -1650,7 +1669,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 executable: config::harness_bin(&target.harness, &settings, args.codex_bin.as_ref()),
                                 workspace:workspace.clone(), writable:args.workspace_write, model:target.model.clone(),
                                 auto_review: settings.approvals.reviewer=="auto",
-                                reasoning: if settings.routing.coordinator && settings.routing.reasoning=="default" { "low".into() } else { settings.routing.reasoning.clone() },
+                                reasoning: if settings.routing.fast_mode || (settings.routing.coordinator && settings.routing.reasoning=="default") { "low".into() } else { settings.routing.reasoning.clone() },
                                 instructions: launch_instructions,
                             },event_tx.clone());
                             agent_tx=Some(tx.clone());
@@ -1748,6 +1767,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                         let (h,m,r)=settings.plugin_target();harness=h.into();model=m.into();
                                         if reasoning=="default" {reasoning=r.into();}
                                     } else if reasoning=="default" {reasoning=settings.routing.coding_reasoning.clone();}
+                                    if settings.routing.fast_mode {model=config::light_model(&harness).to_string();reasoning="low".into();}
                                     if worker.is_some() {Err(anyhow::anyhow!("A worker is already running; wait for its result."))}
                                     else if let Some(message)=limits.blocked(&harness) {Err(anyhow::anyhow!(message))}
                                     else {
@@ -1971,7 +1991,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 if let Some(path)=&intro_marker {let _=std::fs::write(path,"1");}
                             }},
                         Ok(Err(e))=>ui.message(format!("{e:#}")),
-                        Err(e)=>ui.message(format!("Kokoro install stopped: {e}")),
+                        Err(e)=>ui.message(format!("Voice install stopped: {e}")),
                     }
                 }
                 if utility.as_ref().is_some_and(|task|task.is_finished()) {

@@ -194,7 +194,7 @@ pub struct Run {
     pub speak: bool,
     #[arg(long)]
     pub no_speak: bool,
-    #[arg(long,value_parser=["system","kokoro","cartesia","off"])]
+    #[arg(long,value_parser=["system","kokoro","piper","cartesia","off"])]
     pub tts: Option<String>,
     #[arg(long)]
     pub no_chime: bool,
@@ -276,7 +276,7 @@ enum TtsCommand {
         playback: bool,
         #[arg(default_value = "I'm ready to help. What would you like to do?")]
         text: String,
-        #[arg(long, value_parser = ["system", "kokoro", "cartesia"])]
+        #[arg(long, value_parser = ["system", "kokoro", "piper", "cartesia"])]
         provider: Option<String>,
         #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u32).range(1..=100))]
         runs: u32,
@@ -288,13 +288,13 @@ enum TtsCommand {
     Test {
         #[arg(default_value = "Hello, I'm Accessor. I'm listening, and ready to help.")]
         text: String,
-        #[arg(long,value_parser=["system","kokoro","cartesia"])]
+        #[arg(long,value_parser=["system","kokoro","piper","cartesia"])]
         provider: Option<String>,
         #[arg(long)]
         output: Option<PathBuf>,
     },
     Voices {
-        #[arg(long,value_parser=["kokoro","cartesia"])]
+        #[arg(long,value_parser=["kokoro","piper","cartesia"])]
         provider: Option<String>,
         /// Filter Cartesia voices by name, id, or description.
         #[arg(long)]
@@ -816,10 +816,15 @@ pub async fn entry() -> Result<()> {
             TtsCommand::ForgetKey => config::delete_secret("cartesia"),
             TtsCommand::Voices { provider, search } => {
                 let s = Settings::load()?;
-                if provider.as_deref().unwrap_or(&s.tts.provider) == "cartesia" {
-                    speech::voices(search.as_deref()).await
-                } else {
-                    speech::local_voices(&s).await
+                match provider.as_deref().unwrap_or(&s.tts.provider) {
+                    "cartesia" => speech::voices(search.as_deref()).await,
+                    "piper" => {
+                        for (id, label) in speech::PIPER_VOICES {
+                            println!("{id}  {label}");
+                        }
+                        Ok(())
+                    }
+                    _ => speech::local_voices(&s).await,
                 }
             }
             TtsCommand::Test {
@@ -1091,6 +1096,7 @@ async fn setup() -> Result<()> {
     let voices = [
         "System voice — installed on this computer",
         "Kokoro — local neural speech",
+        "Piper — fast local neural speech",
         "Cartesia — cloud speech (API key required)",
         "Off",
     ];
@@ -1099,12 +1105,13 @@ async fn setup() -> Result<()> {
         .items(voices)
         .default(match s.tts.provider.as_str() {
             "kokoro" => 1,
-            "cartesia" => 2,
-            "off" => 3,
+            "piper" => 2,
+            "cartesia" => 3,
+            "off" => 4,
             _ => 0,
         })
         .interact()?;
-    s.tts.provider = ["system", "kokoro", "cartesia", "off"][voice].into();
+    s.tts.provider = ["system", "kokoro", "piper", "cartesia", "off"][voice].into();
     s.computer.enabled = dialoguer::Confirm::new()
         .with_prompt("Let agents control this desktop (computer use)?")
         .default(s.computer.enabled)
@@ -1132,6 +1139,7 @@ async fn tts_setup() -> Result<()> {
     let options = [
         "System voice — installed on this computer",
         "Kokoro — local neural speech",
+        "Piper — fast local neural speech",
         "Cartesia — cloud speech (API key required)",
         "Off",
     ];
@@ -1140,12 +1148,13 @@ async fn tts_setup() -> Result<()> {
         .items(options)
         .default(match s.tts.provider.as_str() {
             "kokoro" => 1,
-            "cartesia" => 2,
-            "off" => 3,
+            "piper" => 2,
+            "cartesia" => 3,
+            "off" => 4,
             _ => 0,
         })
         .interact()?;
-    s.tts.provider = ["system", "kokoro", "cartesia", "off"][n].into();
+    s.tts.provider = ["system", "kokoro", "piper", "cartesia", "off"][n].into();
     if n == 1 {
         s.tts.local_voice = Input::new()
             .with_prompt("Kokoro voice")
@@ -1153,6 +1162,12 @@ async fn tts_setup() -> Result<()> {
             .interact_text()?;
         println!("One-time local install: python scripts/setup_tts.py\nVoice list: acc tts voices --provider kokoro");
     } else if n == 2 {
+        s.tts.piper_voice = Input::new()
+            .with_prompt("Piper voice")
+            .default(s.tts.piper_voice)
+            .interact_text()?;
+        println!("One-time local install: python scripts/setup_piper.py");
+    } else if n == 3 {
         let key = read_secret_line("Cartesia API key (saved in the OS credential store)")?;
         config::save_secret("cartesia", &key)?;
         let mut catalog = speech::fetch_voices().await.unwrap_or_default();
