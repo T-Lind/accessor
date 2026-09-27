@@ -72,8 +72,16 @@ enum Action {
 fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
     match page {
         Page::Home => vec![
-            row("Voice", "wake, barge-in, idle", Action::Open(Page::Voice)),
-            row("Speech", "TTS, STT, speed", Action::Open(Page::Speech)),
+            row(
+                "Voice",
+                "spoken replies, wake, barge-in",
+                Action::Open(Page::Voice),
+            ),
+            row(
+                "Speech",
+                "recognition models, noise",
+                Action::Open(Page::Speech),
+            ),
             row(
                 "Harnesses",
                 "main, coding, compaction",
@@ -125,46 +133,93 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
             ),
             row("Back", "categories", Action::Open(Page::Home)),
         ],
-        Page::Voice => vec![
-            row("Wake code", &s.wake_code, Action::Edit("wake-code")),
-            row(
-                "Idle timeout",
-                &format!("{} s", s.idle_seconds),
-                Action::Edit("idle-seconds"),
-            ),
-            row("Barge-in", on(s.barge_in), Action::Toggle("barge-in")),
-            row(
-                "Wake display",
-                on(s.wake_display),
-                Action::Toggle("wake-display"),
-            ),
-            row(
-                "Think warble",
-                &format!("{:.0}%", s.sounds.think * 100.0),
-                Action::Edit("sounds.think"),
-            ),
-            row(
-                "Wake chime",
-                &format!("{:.0}%", s.sounds.wake * 100.0),
-                Action::Edit("sounds.wake"),
-            ),
-            row(
-                "Sleep chime",
-                &format!("{:.0}%", s.sounds.sleep * 100.0),
-                Action::Edit("sounds.sleep"),
-            ),
-            row(
-                "Alarm",
-                &format!("{:.0}%", s.sounds.alarm * 100.0),
-                Action::Edit("sounds.alarm"),
-            ),
-            row(
-                "Ready chime",
-                &format!("{:.0}%", s.sounds.ready * 100.0),
-                Action::Edit("sounds.ready"),
-            ),
-            row("Back", "categories", Action::Open(Page::Home)),
-        ],
+        Page::Voice => {
+            let mut list = vec![
+                row(
+                    "Voice persona",
+                    &voice_persona_label(s),
+                    Action::Edit("voice.persona"),
+                ),
+                row("Speak replies", on(s.speak), Action::Toggle("speak")),
+                row(
+                    "Speak progress",
+                    on(s.speak_progress),
+                    Action::Toggle("speak-progress"),
+                ),
+                row(
+                    "Speed",
+                    &format!("{:.2}×", s.tts.speed),
+                    Action::Edit("tts.speed"),
+                ),
+                row(
+                    "Speech volume",
+                    &format!("{:.0}%", s.tts.volume * 100.0),
+                    Action::Edit("tts.volume"),
+                ),
+                row("Test voice", "play a sample", Action::Run("/tts test")),
+                row("List / refresh voices", "", Action::Run("/tts voices")),
+            ];
+            if s.tts.provider == "cartesia" {
+                list.push(row(
+                    "Stream Cartesia replies",
+                    on(s.tts.streaming),
+                    Action::Toggle("tts.streaming"),
+                ));
+                list.push(row(
+                    "Cartesia model",
+                    &s.tts.model,
+                    Action::Edit("tts.model"),
+                ));
+            }
+            if s.tts.provider == "cartesia" || s.stt.conversation == "cartesia" {
+                list.push(row(
+                    "Cartesia API key",
+                    "hidden credential",
+                    Action::Run("/tts key"),
+                ));
+            }
+            list.extend([
+                row("Wake code", &s.wake_code, Action::Edit("wake-code")),
+                row(
+                    "Idle timeout",
+                    &format!("{} s", s.idle_seconds),
+                    Action::Edit("idle-seconds"),
+                ),
+                row("Barge-in", on(s.barge_in), Action::Toggle("barge-in")),
+                row(
+                    "Wake display",
+                    on(s.wake_display),
+                    Action::Toggle("wake-display"),
+                ),
+                row(
+                    "Think warble",
+                    &format!("{:.0}%", s.sounds.think * 100.0),
+                    Action::Edit("sounds.think"),
+                ),
+                row(
+                    "Wake chime",
+                    &format!("{:.0}%", s.sounds.wake * 100.0),
+                    Action::Edit("sounds.wake"),
+                ),
+                row(
+                    "Sleep chime",
+                    &format!("{:.0}%", s.sounds.sleep * 100.0),
+                    Action::Edit("sounds.sleep"),
+                ),
+                row(
+                    "Alarm",
+                    &format!("{:.0}%", s.sounds.alarm * 100.0),
+                    Action::Edit("sounds.alarm"),
+                ),
+                row(
+                    "Ready chime",
+                    &format!("{:.0}%", s.sounds.ready * 100.0),
+                    Action::Edit("sounds.ready"),
+                ),
+                row("Back", "categories", Action::Open(Page::Home)),
+            ]);
+            list
+        }
         Page::Speech => {
             let mut list = vec![
                 row(
@@ -182,22 +237,6 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                     on(s.stt.spin),
                     Action::Toggle("stt.spin"),
                 ),
-                row("Speak replies", on(s.speak), Action::Toggle("speak")),
-                row(
-                    "Speak progress",
-                    on(s.speak_progress),
-                    Action::Toggle("speak-progress"),
-                ),
-                row(
-                    "Voice persona",
-                    &voice_persona_label(s),
-                    Action::Edit("voice.persona"),
-                ),
-                row(
-                    "Speed",
-                    &format!("{:.2}×", s.tts.speed),
-                    Action::Edit("tts.speed"),
-                ),
                 row(
                     "Local STT model",
                     &engine_label(s),
@@ -212,7 +251,9 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                     },
                     Action::Cycle("stt.conversation", STT_MODES),
                 ),
-                row(
+            ];
+            if s.stt.conversation == "cartesia" {
+                list.push(row(
                     "Cartesia streaming",
                     if s.stt.streaming {
                         "on · uploads awake speech as you talk"
@@ -220,7 +261,9 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                         "off · local word check before upload"
                     },
                     Action::Toggle("stt.streaming"),
-                ),
+                ));
+            }
+            list.extend([
                 row(
                     "Compute saving",
                     if s.stt.lazy {
@@ -258,31 +301,8 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                     "sample 3 s of quiet",
                     Action::Run("/noise calibrate"),
                 ),
-                row(
-                    "Speech volume",
-                    &format!("{:.0}%", s.tts.volume * 100.0),
-                    Action::Edit("tts.volume"),
-                ),
-                row("Test voice", "play a sample", Action::Run("/tts test")),
-                row(
-                    "Stream Cartesia replies",
-                    on(s.tts.streaming),
-                    Action::Toggle("tts.streaming"),
-                ),
-                row("List / refresh voices", "", Action::Run("/tts voices")),
-                row(
-                    "Cartesia API key",
-                    "hidden credential",
-                    Action::Run("/tts key"),
-                ),
-            ];
-            if s.tts.provider == "cartesia" {
-                list.push(row(
-                    "Cartesia model",
-                    &s.tts.model,
-                    Action::Edit("tts.model"),
-                ));
-            }
+                row("Back", "categories", Action::Open(Page::Home)),
+            ]);
             list
         }
         Page::Harnesses => vec![
@@ -547,14 +567,14 @@ fn hint(action: &Action) -> &'static str {
             "Saved instructions sent to Codex, Claude, and Antigravity. Type default to restore the hands-free voice prompt."
         }
         Action::Edit("tts.provider") => "How replies are spoken: system, kokoro, cartesia, or off.",
-        Action::Edit("voice.persona") => "One list of ready voices: the recommended British default first, then other Cartesia voices, local Kokoro voices, the system voice, and off. Choosing Kokoro installs it on first use.",
+        Action::Edit("voice.persona") => "One list of ready voices: the recommended British default first, then the local Kokoro voices, then the rest of your Cartesia catalog, the system voice, and off. Choosing Kokoro installs it on first use.",
         Action::Edit("tts.voice") => {
             "Pick a Cartesia voice by number or name; run /tts voices to refresh the list."
         }
         Action::Edit("tts.local-voice") => {
             "Kokoro voice id, e.g. af_heart. Run /tts voices for the list."
         }
-        Action::Edit("tts.model") => "Cartesia model id, e.g. sonic-3. Esc returns.",
+        Action::Edit("tts.model") => "Pick a Cartesia model with the arrow keys. Sonic 3 is the current default. Esc keeps the current model.",
         Action::Edit("tts.speed") => "Speaking speed 0.6–1.5 for Kokoro and Cartesia.",
         Action::Edit("stt.engine") => {
             "Opens the full local STT list. Esc backs out with no download. Only the model you pick is confirmed, and only if it is not already installed."
@@ -1199,6 +1219,27 @@ fn choice_for(key: &str, s: &Settings) -> Option<ChoiceEdit> {
             ))
         }
         "voice.persona" => Some(voice_persona_edit(s)),
+        "tts.model" => {
+            let mut choices = vec![
+                pick("sonic-3", "Sonic 3 · current default"),
+                pick("sonic-2", "Sonic 2 · previous generation"),
+                pick("sonic-turbo", "Sonic Turbo · lowest latency"),
+                pick("sonic", "Sonic · legacy"),
+            ];
+            if !s.tts.model.is_empty() && !choices.iter().any(|c| c.value == s.tts.model) {
+                choices.insert(
+                    0,
+                    pick(&s.tts.model, &format!("{} · current", s.tts.model)),
+                );
+            }
+            Some(ChoiceEdit::new(
+                "tts.model",
+                "Cartesia model",
+                "Sonic 3 is the current default; lower-latency models trade some quality. Esc keeps the current model.",
+                choices,
+                &s.tts.model,
+            ))
+        }
         _ => None,
     }
 }
@@ -2128,12 +2169,20 @@ mod tests {
         };
         let voice = p.display(&s, false, &[]);
         assert!(voice.contains("Wake code"));
+        assert!(voice.contains("Voice persona"));
         assert!(!voice.contains("Wake mode"));
         p.nav(1, &s, false);
+        p.nav(-1, &s, false);
         let Answer::Show = p.activate(&s, &[], false).unwrap() else {
-            panic!("edit idle timeout");
+            panic!("open voice persona");
         };
-        assert!(p.display(&s, false, &[]).contains("Wake-listening seconds"));
+        let persona = p.display(&s, false, &[]);
+        assert!(persona.contains("Classy British Man"));
+        assert!(persona.contains("Kokoro"));
+        let Answer::Show = p.back() else {
+            panic!("esc persona");
+        };
+        assert!(p.display(&s, false, &[]).contains("Wake code"));
         let mut home = Panel::default();
         home.answer("3", &s, &[]).unwrap();
         let harnesses = home.display(&s, false, &[]);
@@ -2145,7 +2194,7 @@ mod tests {
         assert!(picker.contains("Mock"));
         let mut speech = Panel::default();
         speech.answer("2", &s, &[]).unwrap();
-        let Answer::Show = speech.answer("8", &s, &[]).unwrap() else {
+        let Answer::Show = speech.answer("4", &s, &[]).unwrap() else {
             panic!("open local STT list");
         };
         let list = speech.display(&s, false, &[]);
@@ -2186,7 +2235,7 @@ mod tests {
             ..Settings::default()
         };
         let mut speech = Panel::default();
-        speech.answer("2", &s, &[]).unwrap();
+        speech.answer("1", &s, &[]).unwrap();
         assert!(speech.display(&s, false, &[]).contains("Cartesia model"));
         assert!(speech
             .display(&s, false, &[])
@@ -2196,6 +2245,61 @@ mod tests {
             crate::speech::resolve_voice("classy british man", &catalog).as_deref(),
             Some(crate::speech::DEFAULT_CARTESIA_VOICE)
         );
+    }
+
+    #[test]
+    fn cartesia_model_chooser_uses_arrows_and_includes_current() {
+        let s = Settings {
+            tts: crate::config::Tts {
+                provider: "cartesia".into(),
+                model: "sonic-2".into(),
+                ..crate::config::Tts::default()
+            },
+            ..Settings::default()
+        };
+        let edit = choice_for("tts.model", &s).expect("model picker");
+        assert!(edit.display().contains("Sonic 3"));
+        assert!(edit.display().contains("↑/↓ move"));
+        assert_eq!(
+            edit.cursor,
+            edit.choices
+                .iter()
+                .position(|c| c.value == "sonic-2")
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn cartesia_only_rows_hide_until_cartesia_is_used() {
+        let local = Settings {
+            tts: crate::config::Tts {
+                provider: "kokoro".into(),
+                ..crate::config::Tts::default()
+            },
+            stt: crate::config::Stt {
+                conversation: "local".into(),
+                ..crate::config::Stt::default()
+            },
+            ..Settings::default()
+        };
+        let mut voice = Panel::default();
+        voice.answer("1", &local, &[]).unwrap();
+        let text = voice.display(&local, false, &[]);
+        assert!(text.contains("Voice persona"));
+        assert!(!text.contains("Cartesia model"));
+        assert!(!text.contains("Stream Cartesia replies"));
+        assert!(!text.contains("Cartesia API key"));
+
+        let ink = Settings {
+            stt: crate::config::Stt {
+                conversation: "cartesia".into(),
+                ..crate::config::Stt::default()
+            },
+            ..local
+        };
+        let mut voice = Panel::default();
+        voice.answer("1", &ink, &[]).unwrap();
+        assert!(voice.display(&ink, false, &[]).contains("Cartesia API key"));
     }
 
     #[test]
