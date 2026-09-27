@@ -247,6 +247,12 @@ pub async fn run(mut args: Run) -> Result<()> {
         .workspace
         .canonicalize()
         .context("Workspace must exist")?;
+    // A fresh profile defaults to the local Kokoro voice; install it once on
+    // first interactive launch so speech works without a manual setup step.
+    if !args.text && settings.tts.provider == "kokoro" && !crate::speech::kokoro_ready(&settings) {
+        ui.message("Kokoro is the default voice and is not installed yet. Downloading the local runtime and voice model now; this is a one-time install.");
+        tts_install = Some(crate::speech::install_kokoro(&settings, &workspace));
+    }
     let mut session = Session::new(wake, Duration::from_secs(idle));
     let epoch = Arc::new(AtomicU64::new(0));
     let muted = Arc::new(AtomicBool::new(false));

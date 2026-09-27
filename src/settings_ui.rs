@@ -33,6 +33,7 @@ pub struct Panel {
     field: Option<&'static str>,
     agent_edit: Option<AgentEdit>,
     choice_edit: Option<ChoiceEdit>,
+    voice_edit: Option<VoiceEdit>,
 }
 impl Default for Panel {
     fn default() -> Self {
@@ -42,6 +43,7 @@ impl Default for Panel {
             field: None,
             agent_edit: None,
             choice_edit: None,
+            voice_edit: None,
         }
     }
 }
@@ -72,14 +74,10 @@ enum Action {
 fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
     match page {
         Page::Home => vec![
-            row(
-                "Voice",
-                "spoken replies, wake, barge-in",
-                Action::Open(Page::Voice),
-            ),
+            row("Voice", "wake, barge-in, chimes", Action::Open(Page::Voice)),
             row(
                 "Speech",
-                "recognition models, noise",
+                "voice, recognition, noise",
                 Action::Open(Page::Speech),
             ),
             row(
@@ -133,93 +131,46 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
             ),
             row("Back", "categories", Action::Open(Page::Home)),
         ],
-        Page::Voice => {
-            let mut list = vec![
-                row(
-                    "Voice persona",
-                    &voice_persona_label(s),
-                    Action::Edit("voice.persona"),
-                ),
-                row("Speak replies", on(s.speak), Action::Toggle("speak")),
-                row(
-                    "Speak progress",
-                    on(s.speak_progress),
-                    Action::Toggle("speak-progress"),
-                ),
-                row(
-                    "Speed",
-                    &format!("{:.2}×", s.tts.speed),
-                    Action::Edit("tts.speed"),
-                ),
-                row(
-                    "Speech volume",
-                    &format!("{:.0}%", s.tts.volume * 100.0),
-                    Action::Edit("tts.volume"),
-                ),
-                row("Test voice", "play a sample", Action::Run("/tts test")),
-                row("List / refresh voices", "", Action::Run("/tts voices")),
-            ];
-            if s.tts.provider == "cartesia" {
-                list.push(row(
-                    "Stream Cartesia replies",
-                    on(s.tts.streaming),
-                    Action::Toggle("tts.streaming"),
-                ));
-                list.push(row(
-                    "Cartesia model",
-                    &s.tts.model,
-                    Action::Edit("tts.model"),
-                ));
-            }
-            if s.tts.provider == "cartesia" || s.stt.conversation == "cartesia" {
-                list.push(row(
-                    "Cartesia API key",
-                    "hidden credential",
-                    Action::Run("/tts key"),
-                ));
-            }
-            list.extend([
-                row("Wake code", &s.wake_code, Action::Edit("wake-code")),
-                row(
-                    "Idle timeout",
-                    &format!("{} s", s.idle_seconds),
-                    Action::Edit("idle-seconds"),
-                ),
-                row("Barge-in", on(s.barge_in), Action::Toggle("barge-in")),
-                row(
-                    "Wake display",
-                    on(s.wake_display),
-                    Action::Toggle("wake-display"),
-                ),
-                row(
-                    "Think warble",
-                    &format!("{:.0}%", s.sounds.think * 100.0),
-                    Action::Edit("sounds.think"),
-                ),
-                row(
-                    "Wake chime",
-                    &format!("{:.0}%", s.sounds.wake * 100.0),
-                    Action::Edit("sounds.wake"),
-                ),
-                row(
-                    "Sleep chime",
-                    &format!("{:.0}%", s.sounds.sleep * 100.0),
-                    Action::Edit("sounds.sleep"),
-                ),
-                row(
-                    "Alarm",
-                    &format!("{:.0}%", s.sounds.alarm * 100.0),
-                    Action::Edit("sounds.alarm"),
-                ),
-                row(
-                    "Ready chime",
-                    &format!("{:.0}%", s.sounds.ready * 100.0),
-                    Action::Edit("sounds.ready"),
-                ),
-                row("Back", "categories", Action::Open(Page::Home)),
-            ]);
-            list
-        }
+        Page::Voice => vec![
+            row("Wake code", &s.wake_code, Action::Edit("wake-code")),
+            row(
+                "Idle timeout",
+                &format!("{} s", s.idle_seconds),
+                Action::Edit("idle-seconds"),
+            ),
+            row("Barge-in", on(s.barge_in), Action::Toggle("barge-in")),
+            row(
+                "Wake display",
+                on(s.wake_display),
+                Action::Toggle("wake-display"),
+            ),
+            row(
+                "Think warble",
+                &format!("{:.0}%", s.sounds.think * 100.0),
+                Action::Edit("sounds.think"),
+            ),
+            row(
+                "Wake chime",
+                &format!("{:.0}%", s.sounds.wake * 100.0),
+                Action::Edit("sounds.wake"),
+            ),
+            row(
+                "Sleep chime",
+                &format!("{:.0}%", s.sounds.sleep * 100.0),
+                Action::Edit("sounds.sleep"),
+            ),
+            row(
+                "Alarm",
+                &format!("{:.0}%", s.sounds.alarm * 100.0),
+                Action::Edit("sounds.alarm"),
+            ),
+            row(
+                "Ready chime",
+                &format!("{:.0}%", s.sounds.ready * 100.0),
+                Action::Edit("sounds.ready"),
+            ),
+            row("Back", "categories", Action::Open(Page::Home)),
+        ],
         Page::Speech => {
             let mut list = vec![
                 row(
@@ -236,6 +187,22 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                     "Keep CPU spinning",
                     on(s.stt.spin),
                     Action::Toggle("stt.spin"),
+                ),
+                row("Speak replies", on(s.speak), Action::Toggle("speak")),
+                row(
+                    "Speak progress",
+                    on(s.speak_progress),
+                    Action::Toggle("speak-progress"),
+                ),
+                row(
+                    "Voice",
+                    &voice_persona_label(s),
+                    Action::Edit("voice.persona"),
+                ),
+                row(
+                    "Speed",
+                    &format!("{:.2}×", s.tts.speed),
+                    Action::Edit("tts.speed"),
                 ),
                 row(
                     "Local STT model",
@@ -301,8 +268,35 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                     "sample 3 s of quiet",
                     Action::Run("/noise calibrate"),
                 ),
-                row("Back", "categories", Action::Open(Page::Home)),
+                row(
+                    "Speech volume",
+                    &format!("{:.0}%", s.tts.volume * 100.0),
+                    Action::Edit("tts.volume"),
+                ),
+                row("Test voice", "play a sample", Action::Run("/tts test")),
             ]);
+            if s.tts.provider == "cartesia" {
+                list.push(row(
+                    "Stream Cartesia replies",
+                    on(s.tts.streaming),
+                    Action::Toggle("tts.streaming"),
+                ));
+            }
+            list.push(row("List / refresh voices", "", Action::Run("/tts voices")));
+            if s.tts.provider == "cartesia" || s.stt.conversation == "cartesia" {
+                list.push(row(
+                    "Cartesia API key",
+                    "hidden credential",
+                    Action::Run("/tts key"),
+                ));
+            }
+            if s.tts.provider == "cartesia" {
+                list.push(row(
+                    "Cartesia model",
+                    &s.tts.model,
+                    Action::Edit("tts.model"),
+                ));
+            }
             list
         }
         Page::Harnesses => vec![
@@ -567,7 +561,7 @@ fn hint(action: &Action) -> &'static str {
             "Saved instructions sent to Codex, Claude, and Antigravity. Type default to restore the hands-free voice prompt."
         }
         Action::Edit("tts.provider") => "How replies are spoken: system, kokoro, cartesia, or off.",
-        Action::Edit("voice.persona") => "One list of ready voices: the recommended British default first, then the local Kokoro voices, then the rest of your Cartesia catalog, the system voice, and off. Choosing Kokoro installs it on first use.",
+        Action::Edit("voice.persona") => "Choose the provider first, then its voice. Cartesia is cloud; Kokoro and the system voice are local. Choosing Kokoro installs it on first use.",
         Action::Edit("tts.voice") => {
             "Pick a Cartesia voice by number or name; run /tts voices to refresh the list."
         }
@@ -1082,10 +1076,11 @@ pub fn device_intro(s: &Settings) -> String {
     )
 }
 
-fn voice_persona_edit(s: &Settings) -> ChoiceEdit {
-    let mut choices: Vec<PickChoice> = Vec::new();
-    let catalog = crate::speech::catalog_with_current(&s.tts.voice);
-    let mut cartesia: Vec<PickChoice> = catalog
+/// Cartesia voices, best/most typical first, for the provider voice step.
+fn cartesia_voice_choices(current: &str) -> Vec<PickChoice> {
+    let mut catalog = crate::speech::catalog_with_current(current);
+    catalog.sort_by_key(|v| u8::from(v.id != crate::speech::DEFAULT_CARTESIA_VOICE));
+    catalog
         .iter()
         .map(|voice| {
             let detail = if voice.description.is_empty() {
@@ -1093,60 +1088,133 @@ fn voice_persona_edit(s: &Settings) -> ChoiceEdit {
             } else {
                 voice.description.clone()
             };
-            PickChoice {
-                value: voice.id.clone(),
-                label: format!("{} · Cartesia · {}", voice.name, detail),
-                command: Some(format!("/tts persona cartesia {}", voice.id)),
-            }
+            pick(&voice.id, &format!("{} · {}", voice.name, detail))
         })
-        .collect();
-    // Best/most typical first: the recommended British default leads, then the
-    // local Kokoro voices stay reachable before the long account catalog.
-    if let Some(index) = cartesia
-        .iter()
-        .position(|c| c.value == crate::speech::DEFAULT_CARTESIA_VOICE)
-    {
-        choices.push(cartesia.remove(index));
+        .collect()
+}
+
+/// Two-step voice chooser: provider first, then that provider's voices.
+struct VoiceEdit {
+    step: usize,
+    provider: String,
+    voice: String,
+    local_voice: String,
+    choices: Vec<PickChoice>,
+    cursor: usize,
+}
+impl VoiceEdit {
+    fn new(s: &Settings) -> Self {
+        let mut edit = Self {
+            step: 0,
+            provider: s.tts.provider.clone(),
+            voice: s.tts.voice.clone(),
+            local_voice: s.tts.local_voice.clone(),
+            choices: Vec::new(),
+            cursor: 0,
+        };
+        edit.refresh();
+        edit
     }
-    for (id, label) in crate::speech::KOKORO_VOICES {
-        choices.push(PickChoice {
-            value: (*id).into(),
-            label: format!("{label} · Kokoro"),
-            command: Some(format!("/tts persona kokoro {id}")),
+    fn refresh(&mut self) {
+        self.choices = match self.step {
+            0 => vec![
+                pick("cartesia", "Cartesia · cloud neural (needs key)"),
+                pick("kokoro", "Kokoro · local neural"),
+                pick("system", "System voice · this computer"),
+                pick("off", "Off · silent"),
+            ],
+            _ if self.provider == "kokoro" => crate::speech::KOKORO_VOICES
+                .iter()
+                .map(|(id, label)| pick(id, label))
+                .collect(),
+            _ => cartesia_voice_choices(&self.voice),
+        };
+        let selected = if self.step == 0 {
+            self.provider.clone()
+        } else if self.provider == "kokoro" {
+            self.local_voice.clone()
+        } else {
+            self.voice.clone()
+        };
+        self.cursor = self
+            .choices
+            .iter()
+            .position(|c| c.value == selected)
+            .unwrap_or(0);
+    }
+    fn display(&self) -> String {
+        let step = if self.step == 0 {
+            "Step 1 of 2 · Provider"
+        } else {
+            "Step 2 of 2 · Voice"
+        };
+        let mut out = format!("Spoken replies  ·  {step}\n↑/↓ move · Enter choose · Esc back\n\n");
+        for (i, choice) in self.choices.iter().enumerate() {
+            out.push_str(&format!(
+                "{}{}  {}\n",
+                if i == self.cursor { "› " } else { "  " },
+                i + 1,
+                choice.label
+            ));
+        }
+        out.push('\n');
+        out.push_str(if self.step == 0 {
+            "Choose how replies are spoken. Kokoro and the system voice are local; Kokoro installs on first use."
+        } else if self.provider == "kokoro" {
+            "Pick a local Kokoro voice."
+        } else {
+            "Pick a Cartesia voice; run /tts voices to refresh from your account."
         });
+        out
     }
-    choices.extend(cartesia);
-    choices.push(PickChoice {
-        value: "system".into(),
-        label: "System voice · this computer".into(),
-        command: Some("/config set tts.provider system".into()),
-    });
-    choices.push(PickChoice {
-        value: "off".into(),
-        label: "Off · silent".into(),
-        command: Some("/config set tts.provider off".into()),
-    });
-    let cursor = match s.tts.provider.as_str() {
-        "kokoro" => choices
-            .iter()
-            .position(|c| c.value == s.tts.local_voice)
-            .unwrap_or(0),
-        "cartesia" => choices
-            .iter()
-            .position(|c| c.value == s.tts.voice)
-            .unwrap_or(0),
-        "off" => choices.iter().position(|c| c.value == "off").unwrap_or(0),
-        _ => choices
-            .iter()
-            .position(|c| c.value == "system")
-            .unwrap_or(0),
-    };
-    ChoiceEdit {
-        key: None,
-        title: "Voice persona".into(),
-        footer: "Best matches are first. Cartesia is cloud; Kokoro and the system voice are local. Kokoro installs on first use.".into(),
-        choices,
-        cursor,
+    fn nav(&mut self, dir: i32) {
+        if self.choices.is_empty() {
+            return;
+        }
+        self.cursor = (self.cursor as i32 + dir).rem_euclid(self.choices.len() as i32) as usize;
+    }
+    fn answer(&mut self, value: &str) -> Result<Answer> {
+        let index = if value.is_empty() || value == "enter" {
+            Some(self.cursor)
+        } else if let Ok(n) = value.parse::<usize>() {
+            n.checked_sub(1)
+        } else {
+            let needle = value.to_lowercase();
+            self.choices
+                .iter()
+                .position(|c| c.value.eq_ignore_ascii_case(value))
+                .or_else(|| {
+                    self.choices
+                        .iter()
+                        .position(|c| c.label.to_lowercase().contains(&needle))
+                })
+        };
+        let Some(index) = index.filter(|i| *i < self.choices.len()) else {
+            bail!("Choose a listed option.");
+        };
+        self.cursor = index;
+        let selected = self.choices[index].value.clone();
+        if self.step == 0 {
+            self.provider = selected;
+            if self.provider == "system" || self.provider == "off" {
+                return Ok(Answer::Command(format!(
+                    "/config set tts.provider {}",
+                    self.provider
+                )));
+            }
+            self.step = 1;
+            self.refresh();
+            return Ok(Answer::Show);
+        }
+        if self.provider == "kokoro" {
+            self.local_voice = selected.clone();
+        } else {
+            self.voice = selected.clone();
+        }
+        Ok(Answer::Command(format!(
+            "/tts persona {} {}",
+            self.provider, selected
+        )))
     }
 }
 
@@ -1166,19 +1234,7 @@ fn choice_for(key: &str, s: &Settings) -> Option<ChoiceEdit> {
             &s.tts.provider,
         )),
         "tts.voice" => {
-            let mut catalog = crate::speech::catalog_with_current(&s.tts.voice);
-            catalog.sort_by_key(|v| u8::from(v.id != crate::speech::DEFAULT_CARTESIA_VOICE));
-            let choices = catalog
-                .iter()
-                .map(|v| {
-                    let detail = if v.description.is_empty() {
-                        crate::speech::short_id(&v.id)
-                    } else {
-                        v.description.clone()
-                    };
-                    pick(&v.id, &format!("{} · {}", v.name, detail))
-                })
-                .collect();
+            let choices = cartesia_voice_choices(&s.tts.voice);
             Some(ChoiceEdit::new(
                 "tts.voice",
                 "Cartesia voice",
@@ -1218,7 +1274,6 @@ fn choice_for(key: &str, s: &Settings) -> Option<ChoiceEdit> {
                 &s.stt.engine,
             ))
         }
-        "voice.persona" => Some(voice_persona_edit(s)),
         "tts.model" => {
             let mut choices = vec![
                 pick("sonic-3", "Sonic 3 · current default"),
@@ -1522,6 +1577,9 @@ impl Panel {
         if let Some(edit) = &self.choice_edit {
             return edit.display();
         }
+        if let Some(edit) = &self.voice_edit {
+            return edit.display();
+        }
         if let Some(key) = self.field {
             return match key {
                 "model" | "routing.plugin-model" | "routing.main-model" => {
@@ -1638,6 +1696,10 @@ impl Panel {
             edit.nav(dir);
             return;
         }
+        if let Some(edit) = &mut self.voice_edit {
+            edit.nav(dir);
+            return;
+        }
         if self.field.is_some() {
             return;
         }
@@ -1662,6 +1724,15 @@ impl Panel {
             self.choice_edit = None;
             return Answer::Show;
         }
+        if let Some(edit) = &mut self.voice_edit {
+            if edit.step == 0 {
+                self.voice_edit = None;
+            } else {
+                edit.step = 0;
+                edit.refresh();
+            }
+            return Answer::Show;
+        }
         if self.field.is_some() {
             self.field = None;
             return Answer::Show;
@@ -1679,6 +1750,9 @@ impl Panel {
             return self.answer("", s, models);
         }
         if self.choice_edit.is_some() {
+            return self.answer("", s, models);
+        }
+        if self.voice_edit.is_some() {
             return self.answer("", s, models);
         }
         if self.field.is_some() {
@@ -1712,9 +1786,13 @@ impl Panel {
                 Ok(Answer::Command(format!("/config set {key} {next}")))
             }
             Action::Edit(key) => {
-                match choice_for(key, s) {
-                    Some(edit) => self.choice_edit = Some(edit),
-                    None => self.field = Some(*key),
+                if *key == "voice.persona" {
+                    self.voice_edit = Some(VoiceEdit::new(s));
+                } else {
+                    match choice_for(key, s) {
+                        Some(edit) => self.choice_edit = Some(edit),
+                        None => self.field = Some(*key),
+                    }
                 }
                 Ok(Answer::Show)
             }
@@ -1731,7 +1809,7 @@ impl Panel {
             self.nav(1, s, false);
             return Ok(Answer::Show);
         }
-        if (self.agent_edit.is_some() || self.choice_edit.is_some())
+        if (self.agent_edit.is_some() || self.choice_edit.is_some() || self.voice_edit.is_some())
             && matches!(value, "esc" | "back")
         {
             return Ok(self.back());
@@ -1747,6 +1825,13 @@ impl Panel {
             let result = edit.answer(value)?;
             if matches!(result, Answer::Command(_)) {
                 self.choice_edit = None;
+            }
+            return Ok(result);
+        }
+        if let Some(edit) = &mut self.voice_edit {
+            let result = edit.answer(value)?;
+            if matches!(result, Answer::Command(_)) {
+                self.voice_edit = None;
             }
             return Ok(result);
         }
@@ -2169,20 +2254,7 @@ mod tests {
         };
         let voice = p.display(&s, false, &[]);
         assert!(voice.contains("Wake code"));
-        assert!(voice.contains("Voice persona"));
         assert!(!voice.contains("Wake mode"));
-        p.nav(1, &s, false);
-        p.nav(-1, &s, false);
-        let Answer::Show = p.activate(&s, &[], false).unwrap() else {
-            panic!("open voice persona");
-        };
-        let persona = p.display(&s, false, &[]);
-        assert!(persona.contains("Classy British Man"));
-        assert!(persona.contains("Kokoro"));
-        let Answer::Show = p.back() else {
-            panic!("esc persona");
-        };
-        assert!(p.display(&s, false, &[]).contains("Wake code"));
         let mut home = Panel::default();
         home.answer("3", &s, &[]).unwrap();
         let harnesses = home.display(&s, false, &[]);
@@ -2194,7 +2266,23 @@ mod tests {
         assert!(picker.contains("Mock"));
         let mut speech = Panel::default();
         speech.answer("2", &s, &[]).unwrap();
-        let Answer::Show = speech.answer("4", &s, &[]).unwrap() else {
+        let Answer::Show = speech.answer("6", &s, &[]).unwrap() else {
+            panic!("open voice provider step");
+        };
+        let step1 = speech.display(&s, false, &[]);
+        assert!(step1.contains("Step 1 of 2"));
+        assert!(step1.contains("Kokoro"));
+        assert!(step1.contains("Cartesia"));
+        let Answer::Show = speech.answer("enter", &s, &[]).unwrap() else {
+            panic!("open provider voices");
+        };
+        let step2 = speech.display(&s, false, &[]);
+        assert!(step2.contains("Step 2 of 2"));
+        assert!(step2.contains("Lewis"));
+        let Answer::Command(_) = speech.answer("enter", &s, &[]).unwrap() else {
+            panic!("choose voice");
+        };
+        let Answer::Show = speech.answer("8", &s, &[]).unwrap() else {
             panic!("open local STT list");
         };
         let list = speech.display(&s, false, &[]);
@@ -2235,7 +2323,7 @@ mod tests {
             ..Settings::default()
         };
         let mut speech = Panel::default();
-        speech.answer("1", &s, &[]).unwrap();
+        speech.answer("2", &s, &[]).unwrap();
         assert!(speech.display(&s, false, &[]).contains("Cartesia model"));
         assert!(speech
             .display(&s, false, &[])
@@ -2283,9 +2371,9 @@ mod tests {
             ..Settings::default()
         };
         let mut voice = Panel::default();
-        voice.answer("1", &local, &[]).unwrap();
+        voice.answer("2", &local, &[]).unwrap();
         let text = voice.display(&local, false, &[]);
-        assert!(text.contains("Voice persona"));
+        assert!(text.contains("Voice"));
         assert!(!text.contains("Cartesia model"));
         assert!(!text.contains("Stream Cartesia replies"));
         assert!(!text.contains("Cartesia API key"));
@@ -2298,29 +2386,36 @@ mod tests {
             ..local
         };
         let mut voice = Panel::default();
-        voice.answer("1", &ink, &[]).unwrap();
+        voice.answer("2", &ink, &[]).unwrap();
         assert!(voice.display(&ink, false, &[]).contains("Cartesia API key"));
     }
 
     #[test]
-    fn voice_persona_leads_with_the_default_and_emits_persona_commands() {
+    fn voice_chooser_steps_through_provider_then_voice() {
         let s = Settings::default();
-        let mut edit = choice_for("voice.persona", &s).expect("persona picker");
-        assert_eq!(edit.choices[0].value, crate::speech::DEFAULT_CARTESIA_VOICE);
-        let text = edit.display();
-        assert!(text.contains("Classy British Man"));
-        assert!(text.contains("Kokoro"));
-        assert!(matches!(edit.answer("enter").unwrap(), Answer::Command(_)));
-        let kokoro = edit
-            .choices
-            .iter()
-            .find(|c| c.value == "bm_george")
-            .expect("kokoro george");
-        assert_eq!(
-            kokoro.command.as_deref(),
-            Some("/tts persona kokoro bm_george")
-        );
-        assert!(voice_persona_label(&s).contains("Classy British Man"));
+        assert_eq!(s.tts.provider, "kokoro");
+        assert_eq!(s.tts.local_voice, "bm_lewis");
+        assert!(voice_persona_label(&s).contains("Lewis"));
+        let mut edit = VoiceEdit::new(&s);
+        let step1 = edit.display();
+        assert!(step1.contains("Step 1 of 2"));
+        assert!(step1.contains("Kokoro"));
+        assert!(step1.contains("Cartesia"));
+        let Answer::Show = edit.answer("1").unwrap() else {
+            panic!("choose cartesia");
+        };
+        let step2 = edit.display();
+        assert!(step2.contains("Step 2 of 2"));
+        assert!(step2.contains("Classy British Man"));
+        let Answer::Command(cmd) = edit.answer("enter").unwrap() else {
+            panic!("choose voice");
+        };
+        assert!(cmd.starts_with("/tts persona cartesia "));
+        let mut system = VoiceEdit::new(&s);
+        let Answer::Command(cmd) = system.answer("3").unwrap() else {
+            panic!("choose system");
+        };
+        assert_eq!(cmd, "/config set tts.provider system");
     }
 
     #[test]

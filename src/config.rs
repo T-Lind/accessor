@@ -141,7 +141,7 @@ impl Default for Stt {
             endpoint_ms: 600,
             threads: 2,
             spin: false,
-            conversation: "cartesia".into(),
+            conversation: "local".into(),
             streaming: true,
             lazy: false,
             engine: "canary".into(),
@@ -179,10 +179,10 @@ impl Default for Tts {
         Self {
             streaming: true,
             volume: 1.0,
-            provider: "cartesia".into(),
+            provider: "kokoro".into(),
             voice: crate::speech::DEFAULT_CARTESIA_VOICE.into(),
             model: "sonic-3".into(),
-            local_voice: "af_heart".into(),
+            local_voice: "bm_lewis".into(),
             speed: 1.1,
         }
     }
@@ -1170,11 +1170,12 @@ mod tests {
     fn new_profile_matches_portable_working_defaults() {
         let s = Settings::default();
         assert_eq!(s.stt.engine, "canary");
-        assert_eq!(s.stt.conversation, "cartesia");
+        assert_eq!(s.stt.conversation, "local");
         assert!(s.stt.streaming);
         assert_eq!(s.stt.denoise, "highpass");
         assert_eq!(s.stt.noise_floor_db, crate::noise::DEFAULT_FLOOR_DB);
-        assert_eq!(s.tts.provider, "cartesia");
+        assert_eq!(s.tts.provider, "kokoro");
+        assert_eq!(s.tts.local_voice, "bm_lewis");
         assert!(s.tts.streaming);
         assert_eq!(s.tts.speed, 1.1);
         assert_eq!(s.sounds.think, 1.5);
