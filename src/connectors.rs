@@ -5,7 +5,7 @@ use crate::{
 };
 use anyhow::{ensure, Context, Result};
 use serde_json::{json, Value};
-use std::{ffi::OsString, process::Stdio, time::Duration};
+use std::{ffi::OsString, path::PathBuf, process::Stdio, time::Duration};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::Command,
@@ -74,14 +74,19 @@ pub async fn refresh_inventory(
         .into_iter()
         .filter(|h| h.found && h.id != "mock")
     {
-        if offer.id == "codex" {
-            if let Ok(list) =
-                codex_connectors(config::harness_bin("codex", settings, codex_override)).await
-            {
-                out.extend(list);
+        match offer.id {
+            "codex" => {
+                if let Ok(list) =
+                    codex_connectors(config::harness_bin("codex", settings, codex_override)).await
+                {
+                    out.extend(list);
+                }
             }
-        } else {
-            out.extend(generic_connectors(offer.id, settings).await);
+            // opencode and Cursor list connectors non-interactively only through
+            // their own config files, which is also where ownership lives.
+            "opencode" => out.extend(opencode_connectors()),
+            "cursor" => out.extend(cursor_connectors()),
+            _ => out.extend(generic_connectors(offer.id, settings).await),
         }
     }
     if !out.is_empty() {
@@ -166,6 +171,83 @@ fn parse_connector_lines(harness: &str, kind: &str, text: &str) -> Vec<Connector
         }
     }
     out
+}
+
+fn user_home() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("USERPROFILE").map(PathBuf::from)
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME").map(PathBuf::from)
+    }
+}
+
+/// Read connector names from a harness's own JSON config, where names and
+/// ownership are authoritative (unlike interactive terminal output).
+fn config_file_connectors(
+    path: &std::path::Path,
+    harness: &str,
+    key: &str,
+    kind: &str,
+) -> Vec<Connector> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+        return Vec::new();
+    };
+    let names: Vec<String> = match &value[key] {
+        Value::Object(map) => map.keys().cloned().collect(),
+        Value::Array(items) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect(),
+        _ => Vec::new(),
+    };
+    names
+        .iter()
+        .map(|name| name.trim())
+        .filter(|name| !name.is_empty() && name.len() <= 60 && name.is_ascii())
+        .map(|name| Connector {
+            harness: harness.into(),
+            kind: kind.into(),
+            name: name.into(),
+        })
+        .collect()
+}
+
+fn opencode_connectors() -> Vec<Connector> {
+    let Some(home) = user_home() else {
+        return Vec::new();
+    };
+    let mut configs = Vec::new();
+    if let Some(path) = std::env::var_os("OPENCODE_CONFIG") {
+        configs.push(PathBuf::from(path));
+    }
+    configs.push(home.join(".config/opencode/opencode.json"));
+    let mut out = Vec::new();
+    for path in configs {
+        out.extend(config_file_connectors(&path, "opencode", "mcp", "mcp"));
+        out.extend(config_file_connectors(
+            &path, "opencode", "plugin", "plugin",
+        ));
+    }
+    out.sort_by_key(|connector| connector.name.clone());
+    out.dedup_by(|a, b| a.name == b.name && a.kind == b.kind);
+    out
+}
+
+fn cursor_connectors() -> Vec<Connector> {
+    let Some(home) = user_home() else {
+        return Vec::new();
+    };
+    let dir = std::env::var_os("CURSOR_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".cursor"));
+    config_file_connectors(&dir.join("mcp.json"), "cursor", "mcpServers", "mcp")
 }
 
 async fn generic_connectors(harness: &str, settings: &Settings) -> Vec<Connector> {
@@ -342,6 +424,22 @@ pub async fn status() -> Result<()> {
     if harness == "codex" {
         return codex_status(config::harness_bin(harness, &settings, None)).await;
     }
+    if harness == "opencode" || harness == "cursor" {
+        let list = if harness == "opencode" {
+            opencode_connectors()
+        } else {
+            cursor_connectors()
+        };
+        if list.is_empty() {
+            println!("No connectors found in {harness}'s configuration. Add MCP servers there, then run acc connectors refresh.");
+        } else {
+            println!("Connectors from {harness}'s configuration:");
+            for connector in &list {
+                println!("{}  ·  {}", safe(&connector.name), connector.kind);
+            }
+        }
+        return Ok(());
+    }
     println!("Plugins reported by {harness}:");
     delegate_harness(harness, &settings, None, &["plugin".into(), "list".into()]).await?;
     println!("\nMCP connectors reported by {harness}:");
@@ -380,6 +478,20 @@ mod tests {
     fn table_headers_and_metadata_are_not_connectors() {
         let text = "NAME      TYPE   STATUS   COMMAND/URL\nVersion: 1.0\nStatus: enabled\nplugin\n";
         assert!(parse_connector_lines("antigravity", "mcp", text).is_empty());
+    }
+
+    #[test]
+    fn config_files_yield_connectors_with_owner() {
+        use std::io::Write as _;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(br#"{"mcpServers":{"github":{"type":"stdio"}},"plugin":["foo","bar"]}"#)
+            .unwrap();
+        let servers = config_file_connectors(file.path(), "cursor", "mcpServers", "mcp");
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].harness, "cursor");
+        assert_eq!(servers[0].name, "github");
+        let plugins = config_file_connectors(file.path(), "opencode", "plugin", "plugin");
+        assert_eq!(plugins.len(), 2);
     }
 
     #[test]

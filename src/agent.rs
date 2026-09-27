@@ -79,6 +79,8 @@ pub fn spawn_tagged(
             "mock" => mock_agent(rx, inner_tx.clone()).await,
             "claude" => claude_cli(options, rx, inner_tx.clone()).await,
             "antigravity" => antigravity_cli(options, rx, inner_tx.clone()).await,
+            "opencode" => oneshot_agent(OneShot::Opencode, options, rx, inner_tx.clone()).await,
+            "cursor" => oneshot_agent(OneShot::Cursor, options, rx, inner_tx.clone()).await,
             _ => codex(options, rx, inner_tx.clone()).await,
         };
         if let Err(e) = result {
@@ -787,6 +789,287 @@ async fn stdio_agent(
     }
 }
 
+/// opencode and Cursor expose only a one-shot headless invocation, so Accessor
+/// runs one process per prompt and resumes continuity with the harness's own
+/// session id instead of holding a persistent stdin stream.
+#[derive(Clone, Copy, PartialEq)]
+enum OneShot {
+    Opencode,
+    Cursor,
+}
+
+impl OneShot {
+    fn name(self) -> &'static str {
+        match self {
+            OneShot::Opencode => "opencode",
+            OneShot::Cursor => "Cursor",
+        }
+    }
+    fn config_harness(self) -> &'static str {
+        match self {
+            OneShot::Opencode => "opencode",
+            OneShot::Cursor => "cursor",
+        }
+    }
+}
+
+fn oneshot_args(spec: OneShot, options: &Options, session: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    let model = options
+        .model
+        .as_deref()
+        .filter(|m| !m.is_empty())
+        .map(str::to_owned)
+        .or_else(|| crate::config::harness_default_model(spec.config_harness()).map(str::to_owned));
+    match spec {
+        OneShot::Opencode => {
+            args.push("run".into());
+            args.extend(["--format".into(), "json".into()]);
+            if !options.writable {
+                args.extend(["--agent".into(), "plan".into()]);
+            }
+            if options.auto_review {
+                args.push("--auto".into());
+            }
+            if let Some(model) = model {
+                args.extend(["-m".into(), model]);
+            }
+            if options.reasoning != "default" {
+                args.extend(["--variant".into(), options.reasoning.clone()]);
+            }
+            if let Some(id) = session {
+                args.extend(["--session".into(), id.to_owned()]);
+            }
+        }
+        OneShot::Cursor => {
+            args.extend([
+                "-p".into(),
+                "--output-format".into(),
+                "stream-json".into(),
+                "--trust".into(),
+            ]);
+            if options.writable {
+                args.push("--force".into());
+            } else {
+                args.extend(["--mode".into(), "plan".into()]);
+            }
+            if let Some(model) = model {
+                args.extend(["--model".into(), model]);
+            }
+            if options.auto_review {
+                args.push("--auto-review".into());
+            }
+            if let Some(id) = session {
+                args.extend(["--resume".into(), id.to_owned()]);
+            }
+        }
+    }
+    args
+}
+
+fn observe_session(spec: OneShot, msg: &Value, session: &mut Option<String>) {
+    let id = match spec {
+        OneShot::Opencode => msg["sessionID"]
+            .as_str()
+            .or_else(|| msg["session_id"].as_str()),
+        OneShot::Cursor => msg["session_id"].as_str(),
+    };
+    if let Some(id) = id {
+        *session = Some(id.to_owned());
+    }
+}
+
+enum OneLine {
+    Skip,
+    Text(String),
+    Final(String),
+    Tool(String),
+    Error(String),
+}
+
+fn parse_oneshot(spec: OneShot, msg: &Value) -> OneLine {
+    match spec {
+        OneShot::Opencode => match msg["type"].as_str() {
+            Some("text") => nonempty_str(&msg["part"]["text"])
+                .map(OneLine::Text)
+                .unwrap_or(OneLine::Skip),
+            Some("tool_use") | Some("tool") => {
+                let part = &msg["part"];
+                let name = part["tool"]
+                    .as_str()
+                    .or_else(|| part["name"].as_str())
+                    .or_else(|| part["toolName"].as_str())
+                    .unwrap_or("tool");
+                OneLine::Tool(format!("▸ {name}"))
+            }
+            Some("error") => OneLine::Error(
+                nonempty_str(&msg["error"]["message"])
+                    .or_else(|| nonempty_str(&msg["error"]))
+                    .unwrap_or_else(|| "opencode reported an error".into()),
+            ),
+            _ => OneLine::Skip,
+        },
+        OneShot::Cursor => match msg["type"].as_str() {
+            Some("assistant") => claude_text(msg).map(OneLine::Text).unwrap_or(OneLine::Skip),
+            Some("result") => {
+                if msg["is_error"] == true {
+                    OneLine::Error(
+                        nonempty_str(&msg["result"])
+                            .or_else(|| nonempty_str(&msg["error"]))
+                            .unwrap_or_else(|| "Cursor task failed".into()),
+                    )
+                } else {
+                    nonempty_str(&msg["result"])
+                        .map(OneLine::Final)
+                        .unwrap_or(OneLine::Skip)
+                }
+            }
+            Some("tool_call") => {
+                let name = msg["tool_call"]
+                    .as_object()
+                    .and_then(|tool| tool.keys().next())
+                    .cloned()
+                    .unwrap_or_else(|| "tool".into());
+                OneLine::Tool(format!("▸ {name}"))
+            }
+            _ => OneLine::Skip,
+        },
+    }
+}
+
+async fn oneshot_agent(
+    spec: OneShot,
+    options: Options,
+    mut commands: mpsc::Receiver<CommandMessage>,
+    events: mpsc::Sender<Event>,
+) -> Result<()> {
+    let name = spec.name();
+    events.send(Event::Ready).await?;
+    let mut session: Option<String> = None;
+    let mut primed = false;
+    loop {
+        let Some(command) = commands.recv().await else {
+            return Ok(());
+        };
+        let text = match command {
+            CommandMessage::Shutdown => return Ok(()),
+            CommandMessage::Prompt(text) => text,
+            CommandMessage::Cancel | CommandMessage::Model(_) | CommandMessage::Approval { .. } => {
+                continue
+            }
+        };
+        let text = if primed {
+            text
+        } else {
+            primed = true;
+            format!("{}\n\n{text}", options.instructions)
+        };
+        events.send(Event::Started).await?;
+
+        let mut cmd = Command::new(&options.executable);
+        cmd.args(oneshot_args(spec, &options, session.as_deref()))
+            .current_dir(&options.workspace)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut process = crate::process_tree::spawn(&mut cmd)
+            .with_context(|| format!("Could not start {name}. Install and log in to it first."))?;
+        let mut tree = crate::process_tree::ProcessTree::attach(&process)?;
+        {
+            let mut stdin = process.stdin.take().context("Agent stdin missing")?;
+            stdin.write_all(text.as_bytes()).await?;
+            stdin.flush().await?;
+        }
+
+        let mut lines =
+            BufReader::new(process.stdout.take().context("Agent stdout missing")?).lines();
+        let mut err_lines =
+            BufReader::new(process.stderr.take().context("Agent stderr missing")?).lines();
+        let mut err_open = true;
+        let mut err_log = String::new();
+        let mut reply = String::new();
+        let mut final_reply: Option<String> = None;
+        let mut error: Option<String> = None;
+        let mut cancelled = false;
+        loop {
+            tokio::select! {
+                line = lines.next_line() => {
+                    match line? {
+                        Some(line) => {
+                            if line.trim().is_empty() { continue; }
+                            let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue; };
+                            observe_session(spec, &msg, &mut session);
+                            crate::quota::observe(spec.config_harness(), &msg);
+                            match parse_oneshot(spec, &msg) {
+                                OneLine::Skip => {}
+                                OneLine::Tool(text) => events.send(Event::Tool(text)).await?,
+                                OneLine::Text(text) => {
+                                    if !reply.ends_with(&text) { reply.push_str(&text); reply.push('\n'); }
+                                }
+                                OneLine::Final(text) => final_reply = Some(text),
+                                OneLine::Error(e) => error = Some(e),
+                            }
+                        }
+                        None => break,
+                    }
+                }
+                line = err_lines.next_line(), if err_open => {
+                    match line? {
+                        Some(line) => {
+                            if err_log.len() < 4000 { err_log.push_str(line.trim()); err_log.push('\n'); }
+                        }
+                        None => err_open = false,
+                    }
+                }
+                command = commands.recv() => {
+                    match command {
+                        Some(CommandMessage::Shutdown) | None => {
+                            tree.stop();
+                            let _ = process.start_kill();
+                            let _ = process.wait().await;
+                            return Ok(());
+                        }
+                        Some(CommandMessage::Cancel) => {
+                            tree.stop();
+                            let _ = process.start_kill();
+                            let _ = process.wait().await;
+                            cancelled = true;
+                            break;
+                        }
+                        Some(_) => {}
+                    }
+                }
+            }
+        }
+        if cancelled {
+            events.send(Event::Cancelled).await?;
+            continue;
+        }
+        let status = process.wait().await?;
+        let reply =
+            final_reply.or_else(|| (!reply.is_empty()).then(|| reply.trim_end().to_string()));
+        let failure = if !status.success() {
+            harness_exit_message(name, true, status, &err_log)
+        } else if reply.is_none() {
+            error
+        } else {
+            None
+        };
+        if let Some(failure) = failure {
+            if let Some(reply) = reply {
+                events.send(Event::Reply(reply)).await?;
+            }
+            events
+                .send(Event::Failed(format!("{name}: {failure}")))
+                .await?;
+        } else if let Some(reply) = reply {
+            events.send(Event::Reply(reply)).await?;
+        }
+        events.send(Event::Done).await?;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -954,5 +1237,88 @@ mod tests {
         let args = antigravity_args(&opts);
         assert!(args.contains(&"accept-edits".to_string()));
         assert!(args.contains(&"--dangerously-skip-permissions".to_string()));
+    }
+    fn oneshot_options(writable: bool, auto_review: bool) -> Options {
+        Options {
+            control: None,
+            shared_memory: false,
+            executable: "opencode".into(),
+            workspace: "/tmp/work".into(),
+            writable,
+            model: Some("opencode/big-pickle".into()),
+            auto_review,
+            reasoning: "high".into(),
+            instructions: String::new(),
+        }
+    }
+    #[test]
+    fn opencode_lines_map_to_text_tool_and_error() {
+        assert!(matches!(
+            parse_oneshot(
+                OneShot::Opencode,
+                &json!({"type":"text","part":{"type":"text","text":"hello"}})
+            ),
+            OneLine::Text(t) if t == "hello"
+        ));
+        assert!(matches!(
+            parse_oneshot(
+                OneShot::Opencode,
+                &json!({"type":"tool_use","part":{"tool":"bash"}})
+            ),
+            OneLine::Tool(t) if t.contains("bash")
+        ));
+        assert!(matches!(
+            parse_oneshot(
+                OneShot::Opencode,
+                &json!({"type":"error","error":{"message":"nope"}})
+            ),
+            OneLine::Error(e) if e == "nope"
+        ));
+    }
+    #[test]
+    fn cursor_lines_map_to_text_and_final() {
+        assert!(matches!(
+            parse_oneshot(
+                OneShot::Cursor,
+                &json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}})
+            ),
+            OneLine::Text(t) if t == "hi"
+        ));
+        assert!(matches!(
+            parse_oneshot(
+                OneShot::Cursor,
+                &json!({"type":"result","subtype":"success","is_error":false,"result":"done"})
+            ),
+            OneLine::Final(t) if t == "done"
+        ));
+        assert!(matches!(
+            parse_oneshot(
+                OneShot::Cursor,
+                &json!({"type":"result","is_error":true,"result":"boom"})
+            ),
+            OneLine::Error(e) if e == "boom"
+        ));
+    }
+    #[test]
+    fn oneshot_args_respect_mode_model_and_session() {
+        let mut opts = oneshot_options(false, false);
+        opts.reasoning = "default".into();
+        let args = oneshot_args(OneShot::Opencode, &opts, Some("ses_1"));
+        assert_eq!(args[0], "run");
+        assert!(args.contains(&"--agent".to_string()));
+        assert!(args.contains(&"plan".to_string()));
+        assert!(args.contains(&"--session".to_string()));
+        assert!(args.contains(&"opencode/big-pickle".to_string()));
+        assert!(!args.contains(&"--auto".to_string()));
+
+        opts.writable = true;
+        opts.auto_review = true;
+        opts.model = None;
+        let args = oneshot_args(OneShot::Cursor, &opts, None);
+        assert!(args.contains(&"-p".to_string()));
+        assert!(args.contains(&"--force".to_string()));
+        assert!(args.contains(&"--auto-review".to_string()));
+        assert!(args.contains(&"auto".to_string()));
+        assert!(!args.contains(&"--mode".to_string()));
     }
 }

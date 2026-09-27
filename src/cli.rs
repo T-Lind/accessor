@@ -159,6 +159,9 @@ enum MemoryCommand {
 pub enum Backend {
     Mock,
     Codex,
+    #[value(name = "opencode")]
+    OpenCode,
+    Cursor,
 }
 #[derive(Parser)]
 pub struct Run {

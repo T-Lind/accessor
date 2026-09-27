@@ -649,7 +649,7 @@ fn parse_switch_line(line: &str) -> Option<(String, String)> {
             }
         }
         let harness = harness?;
-        if !["codex", "claude", "antigravity", "mock"].contains(&harness.as_str()) {
+        if !crate::config::HARNESSES.contains(&harness.as_str()) {
             return None;
         }
         return Some((harness, model.unwrap_or_else(|| "default".into())));
@@ -659,7 +659,7 @@ fn parse_switch_line(line: &str) -> Option<(String, String)> {
             .get("accessor_switch")
             .or_else(|| value.get("ACCESSOR_SWITCH"))?;
         let harness = obj.get("harness")?.as_str()?.to_lowercase();
-        if !["codex", "claude", "antigravity", "mock"].contains(&harness.as_str()) {
+        if !crate::config::HARNESSES.contains(&harness.as_str()) {
             return None;
         }
         let model = obj

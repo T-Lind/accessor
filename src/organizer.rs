@@ -646,7 +646,7 @@ pub fn add_task(
     }
     if let Some(name) = harness {
         ensure!(
-            ["codex", "claude", "antigravity", "mock"].contains(&name),
+            crate::config::HARNESSES.contains(&name),
             "Unknown task harness"
         );
     }
@@ -703,7 +703,7 @@ pub fn add_task(
 
 pub fn validate_execution(harness: &str, model: &str, reasoning: &str) -> Result<()> {
     ensure!(
-        ["codex", "claude", "antigravity", "mock"].contains(&harness),
+        crate::config::HARNESSES.contains(&harness),
         "Unknown harness"
     );
     ensure!(

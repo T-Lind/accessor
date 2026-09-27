@@ -125,10 +125,11 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut lock_requested = access.locked();
     let mut password_entry: Option<crate::auth::Entry> = None;
     if let Some(backend) = args.agent {
-        let name = if backend == Backend::Mock {
-            "mock"
-        } else {
-            "codex"
+        let name = match backend {
+            Backend::Mock => "mock",
+            Backend::OpenCode => "opencode",
+            Backend::Cursor => "cursor",
+            Backend::Codex => "codex",
         };
         settings.agent = name.into();
         settings.routing.coding = name.into();

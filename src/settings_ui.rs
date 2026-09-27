@@ -715,6 +715,24 @@ fn harness_models(harness: &str, discovered: &[Model]) -> Vec<Model> {
             name: id.into(),
         })
         .collect(),
+        "opencode" => [
+            "opencode/big-pickle",
+            "opencode/nemotron-3-ultra-free",
+            "opencode/space-bunny-free",
+        ]
+        .into_iter()
+        .map(|id| Model {
+            id: id.into(),
+            name: id.into(),
+        })
+        .collect(),
+        "cursor" => ["auto", "composer-2.5-fast", "gpt-5.3-codex-high"]
+            .into_iter()
+            .map(|id| Model {
+                id: id.into(),
+                name: id.into(),
+            })
+            .collect(),
         "mock" => Vec::new(),
         _ => [
             "google/gemini-3.5-flash",
@@ -1411,7 +1429,9 @@ impl Panel {
                     "1" | "codex" => "codex".into(),
                     "2" | "claude" => "claude".into(),
                     "3" | "antigravity" | "agy" => "antigravity".into(),
-                    "4" | "mock" => "mock".into(),
+                    "4" | "opencode" => "opencode".into(),
+                    "5" | "cursor" => "cursor".into(),
+                    "6" | "mock" => "mock".into(),
                     other => other.to_lowercase(),
                 },
                 "routing.compaction-harness" => {
@@ -1610,6 +1630,8 @@ fn named_harness(value: &str) -> Option<&'static str> {
         "codex" => Some("codex"),
         "claude" => Some("claude"),
         "antigravity" | "agy" => Some("antigravity"),
+        "opencode" => Some("opencode"),
+        "cursor" | "cursor-agent" => Some("cursor"),
         "mock" => Some("mock"),
         _ => None,
     }
@@ -1627,11 +1649,19 @@ fn extract_harness_request(
         value.trim().trim_start_matches("the ").to_string()
     } else if text.contains("switch") {
         let hay = text.replace(' ', "");
-        ["antigravity", "codex", "claude", "mock", "agy"]
-            .into_iter()
-            .find(|n| hay.contains(n))
-            .unwrap_or("")
-            .to_string()
+        [
+            "antigravity",
+            "opencode",
+            "cursor",
+            "codex",
+            "claude",
+            "mock",
+            "agy",
+        ]
+        .into_iter()
+        .find(|n| hay.contains(n))
+        .unwrap_or("")
+        .to_string()
     } else {
         String::new()
     };
@@ -1653,7 +1683,7 @@ fn extract_harness_request(
     let Some(id) = named_harness(&wanted) else {
         if text.contains("switch agent") || text.starts_with("switch to ") {
             return Some(Err(anyhow::anyhow!(
-                "Unknown harness. Use Codex, Claude, Antigravity, or Mock."
+                "Unknown harness. Use Codex, Claude, Antigravity, opencode, Cursor, or Mock."
             )));
         }
         return None;

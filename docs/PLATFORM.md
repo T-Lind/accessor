@@ -1,6 +1,6 @@
 # Accessor platform
 
-Accessor is a local voice shell around **harnesses** (Codex, Claude Code, Antigravity, mock). It owns the microphone, wake/sleep, speech, the dashboard, and routing. Each harness owns tools, sandbox, and **its own conversation thread**.
+Accessor is a local voice shell around **harnesses** (Codex, Claude Code, Antigravity, opencode, Cursor, mock). It owns the microphone, wake/sleep, speech, the dashboard, and routing. Each harness owns tools, sandbox, and **its own conversation thread**.
 
 ## Audio overflow
 
@@ -47,7 +47,7 @@ Compaction has two layers. Each CLI manages its native context; `/compact` (or t
 
 `/limits` reports observed provider failures and local backoff. Rate errors defer new work on that harness for five minutes; quota/usage exhaustion defers it for an hour. These are conservative **local retry delays**, not verified reset times or remaining subscription quotas. The errors and backoff persist in `limits.json`; scheduled work stays pending until eligible. Failed or uncertain actions are never automatically replayed. No paid fallback, credit purchase, or account switch occurs. Harness token/cost estimates in `/analytics` remain estimates.
 
-Codex receives per-turn reasoning. Claude Code and Antigravity receive `--effort` and `--model`. The main default effort is low; workers select low/medium/high explicitly. Claude/Antigravity cancellation terminates the current CLI process; the next main turn reconnects with an Accessor handoff. Worker cancellation and the 15-minute deadline stop the isolated worker and leave a receipt for scheduled work. Inspect incomplete external actions before retrying.
+Codex receives per-turn reasoning. Claude Code and Antigravity receive `--effort` and `--model`. opencode receives `--variant` and `-m`; Cursor receives `--model`. The main default effort is low; workers select low/medium/high explicitly. Claude/Antigravity keep one warm stdio process; opencode and Cursor expose only a one-shot headless invocation, so Accessor runs one process per turn and resumes the harness's own session id (`--session` for opencode, `--resume` for Cursor) to keep continuity. Cancelling any of these terminates the current CLI process; the next main turn reconnects with an Accessor handoff. Worker cancellation and the 15-minute deadline stop the isolated worker and leave a receipt for scheduled work. Inspect incomplete external actions before retrying.
 
 ## Approvals
 

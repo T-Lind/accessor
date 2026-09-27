@@ -263,9 +263,19 @@ fn default_compact_tokens() -> u32 {
 fn default_stt_engine() -> String {
     "canary".into()
 }
+pub const HARNESSES: &[&str] = &[
+    "codex",
+    "claude",
+    "antigravity",
+    "opencode",
+    "cursor",
+    "mock",
+];
 pub fn harness_default_model(harness: &str) -> Option<&'static str> {
     match harness {
         "antigravity" => Some("gemini-3.8-flash"),
+        "opencode" => Some("opencode/big-pickle"),
+        "cursor" => Some("auto"),
         _ => None,
     }
 }
@@ -273,6 +283,8 @@ pub fn light_model(harness: &str) -> &'static str {
     match harness {
         "claude" => "haiku",
         "antigravity" => "gemini-3.8-flash",
+        "opencode" => "opencode/big-pickle",
+        "cursor" => "auto",
         "mock" => "mock-light",
         _ => "gpt-5.6-luna",
     }
@@ -281,6 +293,8 @@ pub fn worker_model(harness: &str) -> &'static str {
     match harness {
         "claude" => "sonnet",
         "antigravity" => "gemini-3.8-flash",
+        "opencode" => "opencode/big-pickle",
+        "cursor" => "auto",
         "mock" => "mock-worker",
         _ => "gpt-5.6-sol",
     }
@@ -524,13 +538,13 @@ impl Settings {
             "security.lock-seconds must be 1–86400 (absolute time since unlock)"
         );
         ensure!(
-            ["codex", "mock", "claude", "antigravity"].contains(&self.agent.as_str()),
-            "Supported harnesses: codex, claude, antigravity, mock"
+            HARNESSES.contains(&self.agent.as_str()),
+            "Supported harnesses: codex, claude, antigravity, opencode, cursor, mock"
         );
         for name in [&self.routing.coding, &self.routing.main] {
             ensure!(
-                ["codex", "mock", "claude", "antigravity"].contains(&name.as_str()),
-                "routing harnesses must be codex, claude, antigravity, or mock"
+                HARNESSES.contains(&name.as_str()),
+                "routing harnesses must be codex, claude, antigravity, opencode, cursor, or mock"
             );
         }
         ensure!(
@@ -904,6 +918,20 @@ pub fn harness_bin(
         }),
         "antigravity" => antigravity_bin()
             .unwrap_or_else(|| PathBuf::from(if cfg!(windows) { "agy.cmd" } else { "agy" })),
+        "opencode" => find_on_path(&["opencode"]).unwrap_or_else(|| {
+            PathBuf::from(if cfg!(windows) {
+                "opencode.cmd"
+            } else {
+                "opencode"
+            })
+        }),
+        "cursor" => cursor_bin().unwrap_or_else(|| {
+            PathBuf::from(if cfg!(windows) {
+                "agent.cmd"
+            } else {
+                "cursor-agent"
+            })
+        }),
         "mock" => PathBuf::from("mock"),
         _ => codex_override.cloned().unwrap_or_else(|| codex(settings)),
     }
@@ -921,6 +949,8 @@ pub fn harness_offers(settings: &Settings, codex_override: Option<&PathBuf>) -> 
     let codex_ok = codex.is_file() || find_on_path(&["codex"]).is_some();
     let claude = find_on_path(&["claude"]);
     let agy = antigravity_bin();
+    let opencode = find_on_path(&["opencode"]);
+    let cursor = cursor_bin();
     vec![
         HarnessOffer {
             id: "codex",
@@ -951,12 +981,44 @@ pub fn harness_offers(settings: &Settings, codex_override: Option<&PathBuf>) -> 
                 .unwrap_or_else(|| "agy".into()),
         },
         HarnessOffer {
+            id: "opencode",
+            name: "opencode",
+            found: opencode.is_some(),
+            detail: opencode
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "opencode".into()),
+        },
+        HarnessOffer {
+            id: "cursor",
+            name: "Cursor",
+            found: cursor.is_some(),
+            detail: cursor
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "cursor-agent".into()),
+        },
+        HarnessOffer {
             id: "mock",
             name: "Mock",
             found: true,
             detail: "offline fixture, always available".into(),
         },
     ]
+}
+
+fn cursor_bin() -> Option<PathBuf> {
+    if let Some(found) = find_on_path(&["cursor-agent"]) {
+        return Some(found);
+    }
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        let dir = PathBuf::from(local).join("cursor-agent");
+        for name in ["agent.cmd", "cursor-agent.cmd", "agent.exe"] {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 fn antigravity_bin() -> Option<PathBuf> {
@@ -976,11 +1038,12 @@ fn find_on_path(names: &[&str]) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     #[cfg(not(windows))]
     let exts = vec![String::new()];
+    // Prefer real Windows executables over extensionless npm shell shims, which
+    // CreateProcess cannot launch directly.
     #[cfg(windows)]
-    let mut exts = vec![String::new()];
+    let mut exts: Vec<String> = vec![".exe".into(), ".cmd".into(), ".bat".into()];
     #[cfg(windows)]
     {
-        exts.extend([".exe".into(), ".cmd".into(), ".bat".into()]);
         if let Ok(pathext) = std::env::var("PATHEXT") {
             for ext in pathext.split(';') {
                 let ext = ext.trim();
@@ -989,6 +1052,7 @@ fn find_on_path(names: &[&str]) -> Option<PathBuf> {
                 }
             }
         }
+        exts.push(String::new());
     }
     for dir in std::env::split_paths(&path) {
         for name in names {

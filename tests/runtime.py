@@ -27,6 +27,14 @@ class RuntimeTests(unittest.TestCase):
             else:
                 shim.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(fixture))} {kind} "$@"\n')
                 shim.chmod(0o700)
+        for name, fixture_name in [("opencode", "fake_opencode.py"), ("cursor-agent", "fake_cursor.py")]:
+            fixture = ROOT / "tests" / fixture_name
+            shim = self.home / (name + (".cmd" if os.name == "nt" else ""))
+            if os.name == "nt":
+                shim.write_text(f'@echo off\n"{sys.executable}" "{fixture}" %*\n')
+            else:
+                shim.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(fixture))} "$@"\n')
+                shim.chmod(0o700)
         self.codex = self.home / ("codex-fixture.cmd" if os.name == "nt" else "codex-fixture")
 
     def cli(self, *args, ok=True):
@@ -304,6 +312,54 @@ class RuntimeTests(unittest.TestCase):
                 app.send("29 replacement")
                 app.expect("stdio reply: replacement")
                 app.close()
+
+    def test_opencode_and_cursor_run_headless_and_follow_up(self):
+        for harness, reply in [
+            ("opencode", "opencode reply: hello"),
+            ("cursor", "cursor reply: hello"),
+        ]:
+            with self.subTest(harness=harness):
+                app = self.app(harness)
+                app.send("29 hello")
+                app.expect("You: hello")
+                app.expect(reply)
+                app.send("follow up")
+                app.expect(reply.replace("hello", "follow up"))
+                app.close()
+
+    def test_opencode_and_cursor_are_accepted_roles(self):
+        for harness in ("opencode", "cursor"):
+            with self.subTest(harness=harness):
+                self.config("routing.coding", harness)
+                settings = json.loads((self.home / "settings" / "config.json").read_text(encoding="utf-8"))
+                self.assertEqual(settings["routing"]["coding"], harness)
+
+    def test_connector_autodetection_reads_harness_config(self):
+        opencode_config = self.home / "opencode.json"
+        opencode_config.write_text(
+            json.dumps({"mcp": {"github": {"type": "local"}}, "plugin": ["superpowers"]})
+        )
+        cursor_dir = self.home / "cursor-config"
+        cursor_dir.mkdir()
+        (cursor_dir / "mcp.json").write_text(json.dumps({"mcpServers": {"linear": {"command": "x"}}}))
+
+        self.config("routing.plugin-use-main", "false")
+        self.config("agent", "opencode")
+        env = dict(self.env, OPENCODE_CONFIG=str(opencode_config))
+        opencode = subprocess.run(
+            [str(BINARY), "connectors", "status"], env=env, cwd=ROOT,
+            capture_output=True, text=True, encoding="utf-8", timeout=20,
+        )
+        self.assertIn("github", opencode.stdout)
+        self.assertIn("superpowers", opencode.stdout)
+
+        self.config("agent", "cursor")
+        env = dict(self.env, CURSOR_CONFIG_DIR=str(cursor_dir))
+        cursor = subprocess.run(
+            [str(BINARY), "connectors", "status"], env=env, cwd=ROOT,
+            capture_output=True, text=True, encoding="utf-8", timeout=20,
+        )
+        self.assertIn("linear", cursor.stdout)
 
     def test_claude_duplicate_messages_apply_note_once(self):
         app = self.app("claude")
