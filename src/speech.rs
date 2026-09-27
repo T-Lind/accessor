@@ -992,8 +992,25 @@ async fn render_uncached(text: &str, settings: &Tts) -> Result<Vec<u8>> {
 
 /// Piper is a fast one-shot ONNX binary; it writes a 22050 Hz WAV we play back
 /// like any other rendered speech.
-async fn render_piper(text: &str, settings: &Tts) -> Result<Vec<u8>> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+/// A persistent Piper process. The stock binary keeps its ONNX model loaded and
+/// writes one WAV per stdin line, so we reuse it across chunks instead of paying
+/// a model load per sentence.
+struct PiperWorker {
+    child: tokio::process::Child,
+    stdin: tokio::process::ChildStdin,
+    dir: tempfile::TempDir,
+    voice: String,
+    length_scale: String,
+}
+
+static PIPER_WORKER: std::sync::OnceLock<tokio::sync::Mutex<Option<PiperWorker>>> =
+    std::sync::OnceLock::new();
+
+fn piper_worker() -> &'static tokio::sync::Mutex<Option<PiperWorker>> {
+    PIPER_WORKER.get_or_init(|| tokio::sync::Mutex::new(None))
+}
+
+fn piper_paths(settings: &Tts) -> Result<(std::path::PathBuf, std::path::PathBuf)> {
     let assets = config::Settings::load()?.assets()?;
     let bin = assets
         .join("piper/bin")
@@ -1008,6 +1025,131 @@ async fn render_piper(text: &str, settings: &Tts) -> Result<Vec<u8>> {
         bin.is_file() && voice.is_file() && voice_config.is_file(),
         "Piper is not installed. Pick it again to install, or run python scripts/setup_piper.py"
     );
+    Ok((bin, voice))
+}
+
+async fn render_piper(text: &str, settings: &Tts) -> Result<Vec<u8>> {
+    match render_piper_persistent(text, settings).await {
+        Ok(bytes) => Ok(bytes),
+        Err(_) => render_piper_oneshot(text, settings).await,
+    }
+}
+
+async fn render_piper_persistent(text: &str, settings: &Tts) -> Result<Vec<u8>> {
+    let (bin, voice) = piper_paths(settings)?;
+    let length_scale = format!("{:.3}", 1.0 / settings.speed.clamp(0.6, 2.5));
+    let voice_name = settings.piper_voice.clone();
+    let mut guard = piper_worker().lock().await;
+    let restart = match guard.as_mut() {
+        Some(worker) => {
+            worker.voice != voice_name
+                || worker.length_scale != length_scale
+                || worker.child.try_wait().ok().flatten().is_some()
+        }
+        None => true,
+    };
+    if std::env::var_os("ACC_DEBUG_PIPER").is_some() {
+        eprintln!(
+            "[piper] {}",
+            if restart {
+                "starting worker (model load)"
+            } else {
+                "reusing warm worker"
+            }
+        );
+    }
+    if restart {
+        *guard = None;
+        let dir = tempfile::tempdir()?;
+        let mut command = tokio::process::Command::new(&bin);
+        command
+            .arg("-m")
+            .arg(&voice)
+            .arg("-d")
+            .arg(dir.path())
+            .arg("--length_scale")
+            .arg(&length_scale)
+            .arg("-q")
+            .current_dir(bin.parent().context("Piper directory missing")?)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        let mut child = command.spawn().context("Could not start Piper")?;
+        let stdin = child.stdin.take().context("Piper stdin missing")?;
+        *guard = Some(PiperWorker {
+            child,
+            stdin,
+            dir,
+            voice: voice_name,
+            length_scale,
+        });
+    }
+    let before: std::collections::HashSet<std::path::PathBuf> = std::fs::read_dir(
+        guard
+            .as_ref()
+            .context("Piper worker unavailable")?
+            .dir
+            .path(),
+    )?
+    .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+    .collect();
+    let line: String = text.chars().take(6000).collect();
+    let result = piper_synthesize(
+        guard.as_mut().context("Piper worker unavailable")?,
+        &before,
+        &line,
+    )
+    .await;
+    match result {
+        Ok(bytes) => Ok(bytes),
+        Err(error) => {
+            if let Some(worker) = guard.as_mut() {
+                let _ = worker.child.start_kill();
+            }
+            *guard = None;
+            Err(error)
+        }
+    }
+}
+
+async fn piper_synthesize(
+    worker: &mut PiperWorker,
+    before: &std::collections::HashSet<std::path::PathBuf>,
+    line: &str,
+) -> Result<Vec<u8>> {
+    use tokio::io::AsyncWriteExt;
+    worker.stdin.write_all(line.as_bytes()).await?;
+    worker.stdin.write_all(b"\n").await?;
+    worker.stdin.flush().await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let candidate = std::fs::read_dir(worker.dir.path())?
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .find(|path| {
+                path.extension().and_then(|s| s.to_str()) == Some("wav")
+                    && !before.contains(path)
+                    && std::fs::metadata(path)
+                        .map(|metadata| metadata.len() > 2000)
+                        .unwrap_or(false)
+            });
+        if let Some(path) = candidate {
+            let bytes = std::fs::read(&path)?;
+            let _ = std::fs::remove_file(&path);
+            return Ok(bytes);
+        }
+        if tokio::time::Instant::now() > deadline {
+            anyhow::bail!("Piper did not produce audio in time");
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// One-shot fallback: a fresh Piper process per request, used only when the
+/// persistent worker cannot start or stalls.
+async fn render_piper_oneshot(text: &str, settings: &Tts) -> Result<Vec<u8>> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (bin, voice) = piper_paths(settings)?;
     let directory = tempfile::tempdir()?;
     let output = directory.path().join("speech.wav");
     let mut command = tokio::process::Command::new(&bin);
@@ -1042,6 +1184,12 @@ async fn render_piper(text: &str, settings: &Tts) -> Result<Vec<u8>> {
         anyhow::bail!("Piper failed to synthesize: {}", detail.trim());
     }
     Ok(std::fs::read(&output)?)
+}
+
+/// Warm the persistent Piper worker so the first reply is not delayed by the
+/// one-time model load. Best-effort.
+pub async fn warm_piper(settings: &Tts) -> Result<()> {
+    render_piper("Ready.", settings).await.map(|_| ())
 }
 /// Load the local Kokoro worker and warm its ONNX kernels so the first reply is
 /// not delayed by model startup. Uses the normal synthesis path (no worker

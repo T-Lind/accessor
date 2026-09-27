@@ -36,6 +36,7 @@ mod updates;
 mod usage;
 mod wake;
 mod worker;
+#[allow(clippy::large_enum_variant)]
 pub enum Input {
     Control(control::Request),
     Configure {

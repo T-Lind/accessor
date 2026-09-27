@@ -503,14 +503,18 @@ fn antigravity_args(options: &Options) -> Vec<String> {
     };
     args.push("--effort".into());
     args.push(effort.into());
+    // agy auto-approves tool permissions in stream-json print mode, so when the
+    // user asked for approvals we cannot honor them: run read-only (plan) so it
+    // cannot make unapproved edits. Writable auto-review turns accept edits.
+    let accept_edits = options.writable && options.auto_review;
     args.push("--mode".into());
-    args.push(if options.writable {
+    args.push(if accept_edits {
         "accept-edits".into()
     } else {
         "plan".into()
     });
     args.push("--sandbox".into());
-    if options.writable && options.auto_review {
+    if accept_edits {
         args.push("--dangerously-skip-permissions".into());
     }
     args

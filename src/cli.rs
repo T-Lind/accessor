@@ -618,6 +618,7 @@ pub async fn entry() -> Result<()> {
                     model.as_deref(),
                     &reasoning,
                     None,
+                    None,
                 )?;
                 println!("Task {} saved for Unix {}.", item.id, item.next_unix);
                 Ok(())

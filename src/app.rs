@@ -154,6 +154,23 @@ fn parse_every_duration(token: &str) -> Option<u64> {
     (seconds >= 60).then_some(seconds)
 }
 
+/// Parse "20:00-07:00" (or "20:00..07:00" / "20:00 to 07:00") into quiet hours.
+fn parse_quiet_hours(spec: &str) -> Option<crate::organizer::QuietHours> {
+    let spec = spec.trim();
+    let (start, end) = spec
+        .split_once('-')
+        .or_else(|| spec.split_once(".."))
+        .or_else(|| spec.split_once("to"))?;
+    let (start, end) = (start.trim(), end.trim());
+    if start.is_empty() || end.is_empty() {
+        return None;
+    }
+    Some(crate::organizer::QuietHours {
+        start: start.into(),
+        end: end.into(),
+    })
+}
+
 fn humanize_seconds(seconds: u64) -> String {
     if seconds.is_multiple_of(3600) {
         format!("{}h", seconds / 3600)
@@ -190,6 +207,7 @@ fn watch_command(rest: &str, settings: &config::Settings) -> Result<String> {
                 .context("Use a cadence like 30m, 2h, or 1800s (minimum 60 seconds)")?;
             let mut speak = true;
             let mut threshold = 0.5f32;
+            let mut quiet_hours = None;
             let mut words: Vec<&str> = Vec::new();
             for token in parts {
                 if token.eq_ignore_ascii_case("quiet")
@@ -208,6 +226,13 @@ fn watch_command(rest: &str, settings: &config::Settings) -> Result<String> {
                         (0.0..=1.0).contains(&threshold),
                         "threshold must be between 0 and 1"
                     );
+                } else if let Some(value) = token
+                    .strip_prefix("night=")
+                    .or_else(|| token.strip_prefix("quiet-hours="))
+                    .or_else(|| token.strip_prefix("quiet_hours="))
+                {
+                    quiet_hours =
+                        Some(parse_quiet_hours(value).context("Use night=20:00-07:00")?);
                 } else {
                     words.push(token);
                 }
@@ -237,9 +262,14 @@ fn watch_command(rest: &str, settings: &config::Settings) -> Result<String> {
                 Some(&model),
                 "low",
                 Some(watch),
+                quiet_hours.clone(),
             )?;
+            let quiet_note = quiet_hours
+                .as_ref()
+                .map(|quiet| format!(", quiet {}–{}", quiet.start, quiet.end))
+                .unwrap_or_default();
             Ok(format!(
-                "Watch {} created: every {}, threshold {:.2}, speak {}. It surveys with your connectors, then Jev gates what is worth alerting you about. /watch stop {} to end it.",
+                "Watch {} created: every {}, threshold {:.2}, speak {}{quiet_note}. It surveys with your connectors, then Jev gates what is worth alerting you about. /watch stop {} to end it.",
                 task.id,
                 humanize_seconds(seconds),
                 threshold,
@@ -256,6 +286,7 @@ fn watch_command(rest: &str, settings: &config::Settings) -> Result<String> {
             let mut threshold = None;
             let mut speak = None;
             let mut every = None;
+            let mut quiet = None;
             let mut words: Vec<&str> = Vec::new();
             let mut index = 0;
             while index < tokens.len() {
@@ -283,16 +314,28 @@ fn watch_command(rest: &str, settings: &config::Settings) -> Result<String> {
                     .or_else(|| token.strip_prefix("th="))
                 {
                     threshold = Some(value.parse().context("threshold must be a number")?);
+                } else if let Some(value) = token
+                    .strip_prefix("night=")
+                    .or_else(|| token.strip_prefix("quiet-hours="))
+                    .or_else(|| token.strip_prefix("quiet_hours="))
+                {
+                    quiet = Some(parse_quiet_hours(value).context("Use night=20:00-07:00")?);
                 } else {
                     words.push(token);
                 }
                 index += 1;
             }
             let guidelines = (!words.is_empty()).then(|| words.join(" "));
-            let task = crate::organizer::update_watch(&id, threshold, speak, guidelines, every)?;
+            let task =
+                crate::organizer::update_watch(&id, threshold, speak, guidelines, every, quiet)?;
             let watch = task.watch.clone().unwrap_or_default();
+            let quiet_note = task
+                .quiet
+                .as_ref()
+                .map(|quiet| format!(", quiet {}–{}", quiet.start, quiet.end))
+                .unwrap_or_default();
             Ok(format!(
-                "Watch {} updated: every {}, threshold {:.2}, speak {}.\n  Guidelines: {}",
+                "Watch {} updated: every {}, threshold {:.2}, speak {}{quiet_note}.\n  Guidelines: {}",
                 task.id,
                 task.every_seconds
                     .map(humanize_seconds)
@@ -303,7 +346,7 @@ fn watch_command(rest: &str, settings: &config::Settings) -> Result<String> {
             ))
         }
         _ => {
-            Ok("Usage: /watch every 30m [quiet] [threshold=0.7] <what to watch for> · /watch edit ID [every 30m] [quiet] [threshold=0.7] [guidelines] · /watch list · /watch stop ID".into())
+            Ok("Usage: /watch every 30m [quiet] [threshold=0.7] [night=20:00-07:00] <what to watch for> · /watch edit ID [every 30m] [quiet] [threshold=0.7] [night=20:00-07:00] [guidelines] · /watch list · /watch stop ID".into())
         }
     }
 }
@@ -514,6 +557,11 @@ pub async fn run(mut args: Run) -> Result<()> {
     if !args.text && settings.tts.provider == "piper" && !crate::speech::piper_ready(&settings) {
         ui.message("Piper is the selected voice and is not installed yet. Downloading the fast local engine and voice now; this is a one-time install.");
         tts_install = Some(crate::speech::install_piper(&settings, &workspace));
+    } else if !args.text && settings.tts.provider == "piper" {
+        let tts = settings.tts.clone();
+        tokio::spawn(async move {
+            let _ = crate::speech::warm_piper(&tts).await;
+        });
     }
     let mut session = Session::new(wake, Duration::from_secs(idle));
     let epoch = Arc::new(AtomicU64::new(0));
@@ -2084,8 +2132,8 @@ pub async fn run(mut args: Run) -> Result<()> {
                                     crate::organizer::add_alarm(label.as_deref(),delay_seconds,at_unix)
                                         .map(|item|format!("Alarm {} saved for Unix {}.",item.id,item.at_unix))
                                 }
-                                crate::organizer::Directive::Schedule { prompt,label,delay_seconds,at_unix,every_seconds,local_date,local_time,every_days,harness,model,reasoning,watch } => {
-                                    crate::organizer::add_task(&prompt,label.as_deref(),delay_seconds,at_unix,every_seconds,local_date.as_deref(),local_time.as_deref(),every_days,harness.as_deref(),model.as_deref(),&reasoning,watch)
+                                crate::organizer::Directive::Schedule { prompt,label,delay_seconds,at_unix,every_seconds,local_date,local_time,every_days,harness,model,reasoning,watch,quiet } => {
+                                    crate::organizer::add_task(&prompt,label.as_deref(),delay_seconds,at_unix,every_seconds,local_date.as_deref(),local_time.as_deref(),every_days,harness.as_deref(),model.as_deref(),&reasoning,watch,quiet)
                                         .map(|item|format!("Scheduled task {} saved for Unix {}.",item.id,item.next_unix))
                                 }
                                 crate::organizer::Directive::Notify { text, title, speak } => {

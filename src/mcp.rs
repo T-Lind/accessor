@@ -246,6 +246,7 @@ pub async fn call(name: &str, args: &Value, workspace: &Path) -> Result<Value> {
                     model,
                     reasoning,
                     watch,
+                    quiet,
                 } => {
                     ensure!(
                         harness.is_some() && model.is_some(),
@@ -264,6 +265,7 @@ pub async fn call(name: &str, args: &Value, workspace: &Path) -> Result<Value> {
                         model.as_deref(),
                         &reasoning,
                         watch,
+                        quiet,
                     )?)?)
                 }
                 Directive::Notify { text, title, speak } => {
