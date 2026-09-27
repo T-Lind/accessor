@@ -175,9 +175,23 @@ pub async fn choose(
             kind: "main",
         };
     }
+    // Honor plugin_use_main: when it is set, a plugin turn follows the main
+    // target exactly (matching plugin_target(), the UI and delegation); only an
+    // explicit separate plugin preference uses the agent harness.
+    let (plugin_harness, plugin_model) = if settings.routing.plugin_use_main {
+        (
+            settings.routing.main.clone(),
+            settings.routing.main_model.clone(),
+        )
+    } else {
+        (
+            settings.agent.clone(),
+            settings.routing.plugin_model.clone(),
+        )
+    };
     let plugin = Target {
-        harness: settings.agent.clone(),
-        model: settings.routing.plugin_model.clone(),
+        harness: plugin_harness,
+        model: plugin_model,
         kind: "plugin",
     };
     let coding = Target {
@@ -817,6 +831,8 @@ mod tests {
                 coding: "codex".into(),
                 main: "claude".into(),
                 router: "keywords".into(),
+                // Keep a distinct plugin harness for this split-harness test.
+                plugin_use_main: false,
                 ..crate::config::Routing::default()
             },
             ..Settings::default()

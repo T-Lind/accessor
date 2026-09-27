@@ -40,12 +40,24 @@ def send(value):
 
 for line in sys.stdin:
     value = json.loads(line)
+    if value.get("type") == "control_response":
+        behavior = value["response"]["response"]["behavior"]
+        reply = "approval=" + behavior
+        if kind == "claude":
+            send({"type": "assistant", "message": {"content": [{"text": reply}]}})
+            send({"type": "result", "result": reply})
+        else:
+            send({"event": "result", "result": {"response": reply}})
+        continue
     if kind == "claude":
         text = value["message"]["content"][0]["text"]
     else:
         text = value["message"]["content"]
     text = text.split("\n\n")[-1]
     text = text.removeprefix("Current request:\n")
+    if text == "permission fixture":
+        send({"type": "control_request", "request_id": "perm-1", "request": {"subtype": "can_use_tool", "tool_name": "Bash", "input": {"command": "echo hi"}}})
+        continue
     if text == "hold":
         send({"type": "tool_use", "name": "holding-stdio"} if kind == "claude" else
              {"event": "step_update", "step_update": {"step_type": "tool", "tool_name": "holding-stdio"}})
@@ -61,7 +73,10 @@ for line in sys.stdin:
         assert "--dangerously-skip-permissions" not in sys.argv
         reply = "compact-model=" + sys.argv[sys.argv.index("--model") + 1] + "; compact-effort=" + sys.argv[sys.argv.index("--effort") + 1]
     elif kind == "antigravity":
-        assert "--dangerously-skip-permissions" in sys.argv
+        if "accept-edits" in sys.argv:
+            assert "--dangerously-skip-permissions" in sys.argv
+        else:
+            assert "--dangerously-skip-permissions" not in sys.argv
     if text == "note fixture":
         reply = '{"accessor":{"action":"note","text":"Only save once"}}'
     reply = control_reply(text) or reply

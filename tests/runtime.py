@@ -313,6 +313,35 @@ class RuntimeTests(unittest.TestCase):
                 app.expect("stdio reply: replacement")
                 app.close()
 
+    def test_antigravity_read_only_does_not_skip_permissions_writable_does(self):
+        # The fixture asserts the bypass is absent in plan mode and present in
+        # accept-edits mode, so a failure surfaces as a missing reply here.
+        read_only = self.app("antigravity")
+        read_only.send("29 hello")
+        read_only.expect("stdio reply: hello")
+        read_only.close()
+        self.config("routing.main", "antigravity")
+        writable = App("--codex-bin", str(self.codex), "--workspace-write", env=self.env)
+        self.addCleanup(writable.close)
+        writable.send("29 hello writable")
+        writable.expect("stdio reply: hello writable")
+
+    def test_claude_permission_request_is_surfaced_and_approved(self):
+        app = self.app("claude")
+        app.send("29 permission fixture")
+        app.expect("Approval ")
+        app.send("/approve 1")
+        app.expect("approval=allow")
+        app.close()
+
+    def test_claude_permission_request_can_be_denied(self):
+        app = self.app("claude")
+        app.send("29 permission fixture")
+        app.expect("Approval ")
+        app.send("/deny 1")
+        app.expect("approval=deny")
+        app.close()
+
     def test_opencode_and_cursor_run_headless_and_follow_up(self):
         for harness, reply in [
             ("opencode", "opencode reply: hello"),
