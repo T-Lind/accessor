@@ -584,7 +584,7 @@ fn hint(action: &Action) -> &'static str {
             "Kokoro voice id, e.g. af_heart. Run /tts voices for the list."
         }
         Action::Edit("tts.model") => "Pick a Cartesia model with the arrow keys. Sonic 3 is the current default. Esc keeps the current model.",
-        Action::Edit("tts.speed") => "Speaking speed 0.6–1.5 for Piper, Kokoro, the system voice, and Cartesia.",
+        Action::Edit("tts.speed") => "Speaking speed 0.6–2.5 for Piper, Kokoro, and the system voice. Cartesia is clamped to its 1.5 maximum.",
         Action::Edit("stt.engine") => {
             "Opens the full local STT list. Esc backs out with no download. Only the model you pick is confirmed, and only if it is not already installed."
         },
@@ -603,7 +603,7 @@ fn hint(action: &Action) -> &'static str {
         Action::Run("/tts voices") => "List neural voices for Kokoro or Cartesia.",
         Action::Run("/tts key") => "Save a Cartesia API key in the OS credential store (TTS and Ink-2).",
         Action::Run("/jev key") => {
-            "Save a TypeSafe API key in the OS credential store (not settings.json). Needed for Jev routing. TYPESAFE_API_KEY also works."
+            "Save a TypeSafe API key in the OS credential store (not config.json). Needed for Jev routing. TYPESAFE_API_KEY also works."
         },
         Action::Run("/stt test") => {
             "Show every transcript with no agent. Wake still uses the selected local STT model."
@@ -1708,7 +1708,7 @@ impl Panel {
                     "Noise floor in dBFS (-100 to -20). /noise calibrate measures it. Esc returns."
                         .into()
                 }
-                "tts.speed" => "Speed 0.6–1.5. Esc returns.".into(),
+                "tts.speed" => "Speed 0.6–2.5 (Cartesia max 1.5). Esc returns.".into(),
                 "sounds.think" | "sounds.wake" | "sounds.sleep" | "sounds.alarm" | "sounds.ready"
                 | "sounds.notify" | "tts.volume" => {
                     "Volume 0–1.5 (or 0–150%). 0 is silent, 1 is default. Esc returns.".into()

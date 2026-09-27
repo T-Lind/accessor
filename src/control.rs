@@ -136,7 +136,14 @@ pub async fn call(endpoint: &Endpoint, action: Action) -> Result<Value> {
     .context("Control outcome is unknown; check session status before retrying")?
 }
 pub fn from_environment() -> Result<Endpoint> {
-    serde_json::from_str(&std::env::var("ACC_CONTROL_ENDPOINT").context("No live Accessor session is attached to this MCP connection; start this harness through Accessor")?).context("Invalid session endpoint")
+    if let Ok(value) = std::env::var("ACC_CONTROL_ENDPOINT") {
+        return serde_json::from_str(&value).context("Invalid session endpoint");
+    }
+    if let Ok(path) = std::env::var("ACC_CONTROL_ENDPOINT_FILE") {
+        let data = std::fs::read(&path).context("Cannot read session endpoint file")?;
+        return serde_json::from_slice(&data).context("Invalid session endpoint");
+    }
+    anyhow::bail!("No live Accessor session is attached to this MCP connection; start this harness through Accessor")
 }
 
 #[cfg(test)]

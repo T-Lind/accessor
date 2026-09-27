@@ -13,8 +13,10 @@ use std::{
     path::PathBuf,
 };
 
-/// Keep the newest notifications; older ones are dropped.
+/// Keep the newest notifications; read ones are evicted before unread.
 pub const LIMIT: usize = 100;
+/// Suppress a repeat of the same finding from the same source for this long.
+const DEDUPE_SECONDS: u64 = 6 * 3600;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Notification {
@@ -88,30 +90,48 @@ pub fn add(
 ) -> Result<Notification> {
     let text = text.trim();
     ensure!(!text.is_empty(), "Notification text is empty");
+    let title = {
+        let title = title.trim();
+        if title.is_empty() {
+            "Notification".to_owned()
+        } else {
+            title.chars().take(120).collect()
+        }
+    };
+    let text: String = text.chars().take(4000).collect();
+    let source: String = source.trim().chars().take(120).collect();
     let _lock = lock()?;
     let mut book = load()?;
+    let now = crate::organizer::now_unix();
+    // A watch that keeps seeing the same unresolved thing should not re-alert
+    // every cycle: refresh the existing item's time instead of appending.
+    if let Some(existing) = book.items.iter_mut().find(|item| {
+        item.source == source
+            && item.text == text
+            && now.saturating_sub(item.at_unix) < DEDUPE_SECONDS
+    }) {
+        existing.at_unix = now;
+        let item = existing.clone();
+        save(&book)?;
+        return Ok(item);
+    }
     let item = Notification {
         id: uuid::Uuid::new_v4().to_string()[..8].into(),
-        title: {
-            let title = title.trim();
-            if title.is_empty() {
-                "Notification".into()
-            } else {
-                title.chars().take(120).collect()
-            }
-        },
-        text: text.chars().take(4000).collect(),
-        at_unix: crate::organizer::now_unix(),
-        source: source.trim().chars().take(120).collect(),
+        title,
+        text,
+        at_unix: now,
+        source,
         unread: true,
         relevance,
         speak,
         announced: false,
     };
     book.items.push(item.clone());
-    if book.items.len() > LIMIT {
-        let excess = book.items.len() - LIMIT;
-        book.items.drain(0..excess);
+    while book.items.len() > LIMIT {
+        // Drop the oldest already-read item first; never silently discard an
+        // unread alert unless everything is unread.
+        let victim = book.items.iter().position(|item| !item.unread).unwrap_or(0);
+        book.items.remove(victim);
     }
     save(&book)?;
     Ok(item)

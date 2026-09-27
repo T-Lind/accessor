@@ -549,8 +549,8 @@ fn plain_prefix(kind: Kind, text: &str) -> String {
     match kind {
         Kind::User => format!("You: {text}"),
         Kind::Agent => format!("Agent: {text}"),
-        Kind::Tool => text.to_string(),
-        Kind::Progress => text.to_string(),
+        Kind::Tool => format!("Tool: {text}"),
+        Kind::Progress => format!("… {text}"),
         Kind::Notice => format!("! {text}"),
         Kind::System => text.to_string(),
     }
@@ -635,7 +635,9 @@ fn clipboard_text() -> Option<String> {
     };
     for args in candidates {
         let (bin, rest) = args.split_first()?;
-        let output = std::process::Command::new(bin).args(rest).output().ok()?;
+        let Ok(output) = std::process::Command::new(bin).args(rest).output() else {
+            continue;
+        };
         if !output.status.success() {
             continue;
         }

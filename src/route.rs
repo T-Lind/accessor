@@ -573,6 +573,7 @@ pub async fn compact(history: &str, settings: &Settings) -> Result<String> {
             &settings.routing.compaction_model
         },
         tokens,
+        settings.routing.compaction_harness == "gateway",
     );
     Ok(text)
 }

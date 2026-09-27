@@ -194,8 +194,12 @@ pub fn record_harness(harness: &str, tokens: usize) {
     record("harness", harness, tokens as f64, 0.0);
 }
 
-pub fn record_compact(model: &str, tokens: usize) {
-    let usd = tokens as f64 / 1_000_000.0 * (GATEWAY_IN_PER_M + GATEWAY_OUT_PER_M) / 2.0;
+pub fn record_compact(model: &str, tokens: usize, gateway: bool) {
+    let usd = if gateway {
+        tokens as f64 / 1_000_000.0 * (GATEWAY_IN_PER_M + GATEWAY_OUT_PER_M) / 2.0
+    } else {
+        0.0
+    };
     record("compact", model, tokens as f64, usd);
 }
 
@@ -204,7 +208,7 @@ pub fn record_jev(ok: bool) {
         "jev",
         if ok { "systemone" } else { "systemone-fail" },
         1.0,
-        JEV_USD,
+        if ok { JEV_USD } else { 0.0 },
     );
 }
 

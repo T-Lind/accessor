@@ -33,7 +33,7 @@ def main():
                     raise ValueError("Text must be at most 6000 characters")
                 voice = request.get("voice", "af_heart")
                 speed = float(request.get("speed", 1.0))
-                speed = min(1.5, max(0.6, speed))
+                speed = min(2.5, max(0.6, speed))
                 samples, rate = model.create(text, voice=voice, speed=speed, lang="en-gb" if voice.startswith("b") else "en-us")
                 buffer = io.BytesIO()
                 with wave.open(buffer, "wb") as wav:

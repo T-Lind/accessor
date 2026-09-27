@@ -888,7 +888,11 @@ pub async fn entry() -> Result<()> {
                         }
                         Ok(())
                     }
-                    _ => speech::local_voices(&s).await,
+                    "kokoro" => speech::local_voices(&s).await,
+                    other => {
+                        println!("No voice list for provider {other}.");
+                        Ok(())
+                    }
                 }
             }
             TtsCommand::Test {
@@ -950,7 +954,7 @@ pub async fn entry() -> Result<()> {
         Commands::Jev { action } => match action {
             JevCommand::Key => {
                 let key = read_secret_line(
-                    "TypeSafe API key (saved in the OS credential store, not settings.json)",
+                    "TypeSafe API key (saved in the OS credential store, not config.json)",
                 )?;
                 config::save_secret("typesafe", &key)?;
                 println!("Saved. In Accessor: Harnesses → Input relevance → Jev.");

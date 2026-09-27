@@ -68,7 +68,7 @@ pub fn summary(s: &Settings) -> String {
     format!("Wake code: {}\nWake once, then follow up for {} idle seconds (0 = never sleep)\nMain harness: {} · {} · {}\nCoding agent: {} · {} · {}\nCompaction agent: {} · {} · {} @ ~{} tokens\nPlugins & connectors: {} · {} · {}{}\nInput relevance: {}\nSpoken replies: {} · {} · {:.2}×\nLocal STT: {} · Conversation STT: {}\nApprovals: {}\nSettings: {}\nUse /settings for harness → model → reasoning.",s.wake_code,s.idle_seconds,s.routing.main,s.routing.main_model.as_deref().unwrap_or(crate::config::light_model(&s.routing.main)),s.routing.reasoning,s.routing.coding,s.model.as_deref().unwrap_or(crate::config::worker_model(&s.routing.coding)),s.routing.coding_reasoning,s.routing.compaction_harness,s.routing.compaction_model,s.routing.compaction_reasoning,s.routing.compact_tokens,plugin,plugin_model,plugin_effort,if s.routing.plugin_use_main {" (follows main)"} else {""},s.routing.input_gate,s.speak,s.tts.provider,s.tts.speed,s.stt.engine,s.stt.conversation,s.approvals.reviewer,crate::config::path().map(|p|p.display().to_string()).unwrap_or_default())
 }
 pub fn tts_help(s: &Settings) -> String {
-    format!("Voice provider: {}\nSpeed: {:.2}× (0.6–1.5)\n/tts provider system|kokoro|piper|cartesia|off\n/tts voice NAME_OR_ID      Pick a voice by name or id\n/tts model MODEL           Cartesia model (default sonic-3)\n/tts speed 1.1            Speaking speed for local and Cartesia voices\n/tts test [sample text]    Hear a sample\n/tts voices [search]      List Cartesia voices (marks the current one)\n/tts key                  Enter Cartesia key in a hidden field\nLocal engines: Kokoro installs with python scripts/setup_tts.py; Piper with python scripts/setup_piper.py",s.tts.provider,s.tts.speed)
+    format!("Voice provider: {}\nSpeed: {:.2}× (0.6–2.5; Cartesia 1.5)\n/tts provider system|kokoro|piper|cartesia|off\n/tts voice NAME_OR_ID      Pick a voice by name or id\n/tts model MODEL           Cartesia model (default sonic-3)\n/tts speed 1.6            Speaking speed (Cartesia is clamped to 1.5)\n/tts test [sample text]    Hear a sample\n/tts voices [search]      List Cartesia voices (marks the current one)\n/tts key                  Enter Cartesia key in a hidden field\nLocal engines: Kokoro installs with python scripts/setup_tts.py; Piper with python scripts/setup_piper.py",s.tts.provider,s.tts.speed)
 }
 pub enum LocalCommand {
     Settings,
@@ -187,7 +187,18 @@ pub fn parse(text: &str, s: &Settings) -> Result<Option<LocalCommand>> {
         ["/update", "check"] | ["/update", "--check"] => LocalCommand::Update { check: true },
         ["/connectors", "setup"] | ["/agent"] => LocalCommand::Native,
         ["/events"] => LocalCommand::Utility(vec!["events".into(), "status".into()]),
-        ["/notifications"] => LocalCommand::Utility(vec!["notifications".into(), "list".into()]),
+        ["/notifications"] | ["/notifications", "list"] => {
+            LocalCommand::Utility(vec!["notifications".into(), "list".into()])
+        }
+        ["/notifications", "read", id] => {
+            LocalCommand::Utility(vec!["notifications".into(), "read".into(), (*id).into()])
+        }
+        ["/notifications", "readall"] | ["/notifications", "read-all"] => {
+            LocalCommand::Utility(vec!["notifications".into(), "read-all".into()])
+        }
+        ["/notifications", "dismiss", id] => {
+            LocalCommand::Utility(vec!["notifications".into(), "dismiss".into(), (*id).into()])
+        }
         ["/organizer"] | ["/alarms"] | ["/tasks"] | ["/notes"] => {
             LocalCommand::Utility(vec!["organizer".into(), "status".into()])
         }

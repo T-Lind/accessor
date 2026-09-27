@@ -360,24 +360,45 @@ pub fn piper_ready(settings: &config::Settings) -> bool {
     let voice = assets
         .join("piper/voices")
         .join(format!("{}.onnx", settings.tts.piper_voice));
-    bin.is_file() && voice.is_file()
+    let voice_config = assets
+        .join("piper/voices")
+        .join(format!("{}.onnx.json", settings.tts.piper_voice));
+    bin.is_file() && voice.is_file() && voice_config.is_file()
+}
+
+const SETUP_SPEECH_PY: &str = include_str!("../scripts/setup_speech.py");
+const SETUP_TTS_PY: &str = include_str!("../scripts/setup_tts.py");
+const SETUP_PIPER_PY: &str = include_str!("../scripts/setup_piper.py");
+
+/// Write the bundled installers into the assets dir so auto-install works no
+/// matter where the binary was launched from (an installed `acc` has no
+/// checkout next to it).
+fn installer_scripts(assets: &std::path::Path) -> Result<std::path::PathBuf> {
+    let dir = assets.join("scripts");
+    std::fs::create_dir_all(&dir)?;
+    for (name, body) in [
+        ("setup_speech.py", SETUP_SPEECH_PY),
+        ("setup_tts.py", SETUP_TTS_PY),
+        ("setup_piper.py", SETUP_PIPER_PY),
+    ] {
+        let path = dir.join(name);
+        if std::fs::read_to_string(&path).ok().as_deref() != Some(body) {
+            config::save_private(&path, body.as_bytes())?;
+        }
+    }
+    Ok(dir)
 }
 
 /// Run the Piper installer in the background for the selected voice.
 pub fn install_piper(
     settings: &config::Settings,
-    workspace: &std::path::Path,
+    _workspace: &std::path::Path,
 ) -> tokio::task::JoinHandle<Result<String>> {
-    let script = workspace.join("scripts").join("setup_piper.py");
     let assets = settings.assets();
     let voice = settings.tts.piper_voice.clone();
     tokio::spawn(async move {
         let assets = assets?;
-        anyhow::ensure!(
-            script.is_file(),
-            "Piper installer not found at {}. Run: python scripts/setup_piper.py",
-            script.display()
-        );
+        let script = installer_scripts(&assets)?.join("setup_piper.py");
         let python = if cfg!(windows) { "python" } else { "python3" };
         let output = tokio::process::Command::new(python)
             .arg(&script)
@@ -407,17 +428,12 @@ pub fn install_piper(
 /// Run the isolated Kokoro installer in the background and report its result.
 pub fn install_kokoro(
     settings: &config::Settings,
-    workspace: &std::path::Path,
+    _workspace: &std::path::Path,
 ) -> tokio::task::JoinHandle<Result<String>> {
-    let script = workspace.join("scripts").join("setup_tts.py");
     let assets = settings.assets();
     tokio::spawn(async move {
         let assets = assets?;
-        anyhow::ensure!(
-            script.is_file(),
-            "Kokoro installer not found at {}. Run: python scripts/setup_tts.py",
-            script.display()
-        );
+        let script = installer_scripts(&assets)?.join("setup_tts.py");
         let python = if cfg!(windows) { "python" } else { "python3" };
         let mut command = tokio::process::Command::new(python);
         command
@@ -720,10 +736,11 @@ pub fn start(text: String, settings: Tts, capture: Arc<crate::audio::SpeechState
             let flag = flag.clone();
             let playback = playback.clone();
             let speed = settings.speed;
+            let spoken = spoken_text(&text);
             tokio::task::spawn_blocking(move || {
                 capture.playback(true);
                 playback.store(true, Ordering::SeqCst);
-                let result = crate::audio::speak_system_direct(&text, speed, &flag, &pause);
+                let result = crate::audio::speak_system_direct(&spoken, speed, &flag, &pause);
                 playback.store(false, Ordering::SeqCst);
                 capture.playback(false);
                 result
@@ -962,7 +979,7 @@ async fn render_uncached(text: &str, settings: &Tts) -> Result<Vec<u8>> {
         crate::audio::synthesize_system(text, settings.speed).await
     } else if settings.provider == "kokoro" {
         Ok(local_request(
-            json!({"text":text,"voice":settings.local_voice,"speed":settings.speed.clamp(0.6,1.5)}),
+            json!({"text":text,"voice":settings.local_voice,"speed":settings.speed.clamp(0.6,2.5)}),
         )
         .await?
         .1)
@@ -976,7 +993,7 @@ async fn render_uncached(text: &str, settings: &Tts) -> Result<Vec<u8>> {
 /// Piper is a fast one-shot ONNX binary; it writes a 22050 Hz WAV we play back
 /// like any other rendered speech.
 async fn render_piper(text: &str, settings: &Tts) -> Result<Vec<u8>> {
-    use tokio::io::AsyncWriteExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let assets = config::Settings::load()?.assets()?;
     let bin = assets
         .join("piper/bin")
@@ -984,8 +1001,11 @@ async fn render_piper(text: &str, settings: &Tts) -> Result<Vec<u8>> {
     let voice = assets
         .join("piper/voices")
         .join(format!("{}.onnx", settings.piper_voice));
+    let voice_config = assets
+        .join("piper/voices")
+        .join(format!("{}.onnx.json", settings.piper_voice));
     ensure!(
-        bin.is_file() && voice.is_file(),
+        bin.is_file() && voice.is_file() && voice_config.is_file(),
         "Piper is not installed. Pick it again to install, or run python scripts/setup_piper.py"
     );
     let directory = tempfile::tempdir()?;
@@ -997,23 +1017,30 @@ async fn render_piper(text: &str, settings: &Tts) -> Result<Vec<u8>> {
         .arg("--output_file")
         .arg(&output)
         .arg("--length_scale")
-        .arg(format!("{:.3}", 1.0 / settings.speed.clamp(0.6, 1.5)))
+        .arg(format!("{:.3}", 1.0 / settings.speed.clamp(0.6, 2.5)))
         .current_dir(bin.parent().context("Piper directory missing")?)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
     let mut child = command.spawn().context("Could not start Piper")?;
     let mut input = child.stdin.take().context("Piper stdin missing")?;
     let spoken: String = text.chars().take(6000).collect();
     input.write_all(spoken.as_bytes()).await?;
     drop(input);
-    ensure!(
-        tokio::time::timeout(Duration::from_secs(60), child.wait())
-            .await??
-            .success(),
-        "Piper failed to synthesize"
-    );
+    let status = tokio::time::timeout(Duration::from_secs(60), child.wait()).await??;
+    if !status.success() {
+        let mut detail = String::new();
+        if let Some(mut error) = child.stderr.take() {
+            let _ = error.read_to_string(&mut detail).await;
+        }
+        let detail = detail
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("no detail");
+        anyhow::bail!("Piper failed to synthesize: {}", detail.trim());
+    }
     Ok(std::fs::read(&output)?)
 }
 /// Load the local Kokoro worker and warm its ONNX kernels so the first reply is
@@ -1023,7 +1050,7 @@ pub async fn warm_local(settings: &Tts) -> Result<()> {
     local_request(json!({
         "text":"Ready.",
         "voice":settings.local_voice,
-        "speed":settings.speed.clamp(0.6,1.5),
+        "speed":settings.speed.clamp(0.6,2.5),
     }))
     .await?;
     Ok(())

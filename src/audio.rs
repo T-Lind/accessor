@@ -1676,10 +1676,10 @@ fn heard_transcript(text: &str) -> bool {
 }
 
 fn system_rate(speed: f32) -> i32 {
-    (((speed.clamp(0.6, 1.5) - 1.0) * 10.0).round() as i32).clamp(-10, 10)
+    (((speed.clamp(0.6, 2.5) - 1.0) * 10.0).round() as i32).clamp(-10, 10)
 }
 fn system_wpm(speed: f32) -> u32 {
-    (175.0 * speed.clamp(0.6, 1.5)).round() as u32
+    (175.0 * speed.clamp(0.6, 2.5)).round() as u32
 }
 
 /// Speech text travels over stdin, never interpolated into a shell command.

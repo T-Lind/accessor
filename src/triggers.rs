@@ -77,11 +77,15 @@ impl Queue {
     }
     pub fn next(&self) -> Result<Option<Event>> {
         // Claim before dispatch: no automatic re-execution after a crash or uncertain send.
-        for entry in fs::read_dir(self.root.join("pending"))?.take(64) {
-            let path = entry?.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("json") {
-                continue;
-            }
+        // Filter to JSON first so stale non-JSON artifacts cannot consume the
+        // per-poll budget and starve a valid event.
+        let mut entries: Vec<_> = fs::read_dir(self.root.join("pending"))?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|s| s.to_str()) == Some("json"))
+            .collect();
+        entries.sort();
+        for path in entries.into_iter().take(64) {
             // Validate and parse; remove malformed files so they cannot stall the queue.
             let valid = (|| -> Result<Event> {
                 ensure!(

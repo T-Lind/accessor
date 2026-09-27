@@ -91,6 +91,7 @@ pub struct Routing {
     pub compaction_reasoning: String,
     pub plugin_use_main: bool,
     pub input_gate: String,
+    #[serde(default = "default_compaction_model")]
     pub compaction_model: String,
     #[serde(default = "default_compaction_harness")]
     pub compaction_harness: String,
@@ -283,6 +284,11 @@ fn migrate_defaults(value: &mut Settings) {
 fn default_compaction_harness() -> String {
     "codex".into()
 }
+/// Matches `default_compaction_harness` so a partial legacy routing object does
+/// not pair Codex with a Gemini model.
+fn default_compaction_model() -> String {
+    "gpt-5.6-luna".into()
+}
 fn default_compact_tokens() -> u32 {
     4000
 }
@@ -330,7 +336,9 @@ pub fn worker_model(harness: &str) -> &'static str {
 }
 fn parse_level(value: &str) -> Result<f32> {
     let n: f32 = value.trim().trim_end_matches('%').parse()?;
-    Ok(if n > 1.5 { n / 100.0 } else { n })
+    // Treat clearly percentage-like values (10–150) as percent; reject the
+    // ambiguous 1.6–9.99 band instead of silently turning it into near-silence.
+    Ok(if n >= 10.0 { n / 100.0 } else { n })
 }
 pub fn home() -> Result<PathBuf> {
     if let Some(p) = std::env::var_os("ACC_HOME") {
@@ -426,7 +434,7 @@ pub fn locations(settings: &Settings) -> String {
         .map(display_path)
         .unwrap_or_else(|_| "(unavailable)".into());
     format!(
-        "Accessor home (copy this folder to replicate settings):\n  {home}\n  config.json          portable wake, harnesses, TTS, routing (no secrets)\n  device.json          device-local mic, asset/codex paths, CPU tuning, noise floor\n  analytics.json       optional usage totals\n  models.json          cached Codex model list\n  voices.json          cached Cartesia voice list\n  notes/               private Markdown notes\n  schedules.json       pending alarms and agent tasks\n  password.json        salted passphrase hash and retry counter\n  tts-cache/           legacy audio cache; acc tts clear-cache removes it\n  events/              local Gmail notification queue\nSettings file:\n  {config}\nDevice settings file:\n  {device}\nCopy preferences between machines with `acc config export FILE` and `acc config import FILE`; device.json is excluded so the target keeps its own mic, paths, threads and noise floor.\nSpeech models / ONNX runtime (large; copy or let `acc` re-download):\n  {assets}\n  Override with ACC_HOME (settings) or ACC_ASSETS (models).\nAPI keys are NOT in that folder. The optional password.json contains only a salted hash. Re-enter them on the new machine:\n  acc tts key     Cartesia (TTS + Ink-2)\n  acc jev key     TypeSafe / Jev\n  AI_GATEWAY_API_KEY or OS credential 'ai-gateway'\nWindows: Credential Manager, service name Accessor.\nHarness CLIs (Codex, Claude Code, Antigravity, opencode, Cursor) and their plugin logins live in those apps, not here.\nassets-dir is stored in device.json and is often an absolute path — set it again on the other machine if the checkout moved. Starting acc without speech files downloads ONNX Runtime and the selected local STT model automatically."
+        "Accessor home (copy this folder to replicate settings):\n  {home}\n  config.json          portable wake, harnesses, TTS, routing (no secrets)\n  device.json          device-local mic, asset/codex paths, CPU tuning, noise floor\n  analytics.json       optional usage totals\n  models.json          cached Codex model list\n  voices.json          cached Cartesia voice list\n  notes/               private Markdown notes\n  schedules.json       pending alarms and agent tasks\n  password.json        salted passphrase hash and retry counter\n  tts-cache/           legacy audio cache; acc tts clear-cache removes it\n  events/              local Gmail notification queue\nSettings file:\n  {config}\nDevice settings file:\n  {device}\nCopy preferences between machines with `acc config export FILE` and `acc config import FILE`; device.json is excluded so the target keeps its own mic, paths, threads and noise floor.\nSpeech models / ONNX runtime (large; copy or let `acc` re-download):\n  {assets}\n  Override with ACC_HOME (settings) or ACC_ASSETS (models).\nAPI keys are NOT in that folder. The optional password.json contains only a salted hash. Re-enter them on the new machine:\n  acc tts setup   Cartesia (TTS + Ink-2)\n  acc jev key     TypeSafe / Jev\n  AI_GATEWAY_API_KEY or OS credential 'ai-gateway'\nWindows: Credential Manager, service name Accessor.\nHarness CLIs (Codex, Claude Code, Antigravity, opencode, Cursor) and their plugin logins live in those apps, not here.\nassets-dir is stored in device.json and is often an absolute path — set it again on the other machine if the checkout moved. Starting acc without speech files downloads ONNX Runtime and the selected local STT model automatically."
     )
 }
 impl Settings {
@@ -643,8 +651,8 @@ impl Settings {
             "TTS provider must be system, kokoro, piper, cartesia, or off"
         );
         ensure!(
-            (0.6..=1.5).contains(&self.tts.speed),
-            "tts.speed must be between 0.6 and 1.5"
+            (0.6..=2.5).contains(&self.tts.speed),
+            "tts.speed must be between 0.6 and 2.5"
         );
         ensure!(
             (0.0..=1.5).contains(&self.sounds.think)
@@ -663,7 +671,7 @@ impl Settings {
         ensure!(
             ["gateway", "codex", "claude", "antigravity", "mock", "local"]
                 .contains(&self.routing.compaction_harness.as_str()),
-            "compaction harness must be gateway, codex, claude, antigravity, or mock"
+            "compaction harness must be gateway, codex, claude, antigravity, local, or mock"
         );
         ensure!(
             (500..=200_000).contains(&self.routing.compact_tokens),
@@ -1221,6 +1229,13 @@ mod tests {
     }
 
     #[test]
+    fn partial_routing_keeps_compaction_harness_and_model_consistent() {
+        let s: Settings = serde_json::from_str(r#"{"routing":{}}"#).unwrap();
+        assert_eq!(s.routing.compaction_harness, "codex");
+        assert_eq!(s.routing.compaction_model, "gpt-5.6-luna");
+    }
+
+    #[test]
     fn built_in_voice_and_prompt_migrate_without_overwriting_custom_choices() {
         let mut old = Settings {
             prompt: previous_default_prompt(),
@@ -1335,5 +1350,10 @@ mod tests {
     fn volume_percents_map_to_unit_range() {
         assert_eq!(parse_level("80").unwrap(), 0.8);
         assert_eq!(parse_level("1.2").unwrap(), 1.2);
+        assert_eq!(parse_level("150").unwrap(), 1.5);
+        // Ambiguous values are preserved (and rejected by validate) rather than
+        // silently divided into near-silence.
+        assert_eq!(parse_level("1.6").unwrap(), 1.6);
+        assert_eq!(parse_level("2").unwrap(), 2.0);
     }
 }

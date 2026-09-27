@@ -1004,6 +1004,46 @@ pub fn finish_run(id: &str, state: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn list_watches() -> Result<String> {
+    let _lock = lock()?;
+    let book = load()?;
+    let clock = time_context();
+    let mut lines = vec![format!(
+        "Device time: {} · {}",
+        clock["local_time"].as_str().unwrap_or("unavailable"),
+        clock["timezone"].as_str().unwrap_or("UTC")
+    )];
+    let mut any = false;
+    for task in &book.tasks {
+        let Some(watch) = &task.watch else { continue };
+        any = true;
+        let cadence = task
+            .every_seconds
+            .map(|seconds| format!("every {seconds}s"))
+            .or_else(|| task.every_days.map(|days| format!("every {days}d")))
+            .unwrap_or_else(|| "one-shot".into());
+        let next = task
+            .timezone
+            .as_deref()
+            .map(|timezone| display_unix(task.next_unix, timezone))
+            .unwrap_or_else(|| format!("Unix {}", task.next_unix));
+        lines.push(format!(
+            "Watch {} · {cadence} · next {next} · {} / {} · threshold {:.2} · speak {} · paused={}\n  Guidelines: {}",
+            task.id,
+            task.harness.as_deref().unwrap_or(""),
+            task.model.as_deref().unwrap_or(""),
+            watch.threshold,
+            watch.speak,
+            task.paused,
+            watch.guidelines
+        ));
+    }
+    if !any {
+        lines.push("No watches. Create one with /watch every 30m <what to watch for>.".into());
+    }
+    Ok(lines.join("\n"))
+}
+
 pub fn list() -> Result<String> {
     let _lock = lock()?;
     let book = load()?;
