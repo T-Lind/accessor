@@ -1,10 +1,32 @@
 title: Accessor
 description: Local voice gateway for command-line agents
-theme: jekyll-theme-cayman
+url: "https://t-lind.github.io"
+baseurl: "/accessor"
+theme: minima
 
-# Maintainer-facing material and raw benchmark data stay in the repo, not on the
-# published site.
+minima:
+  skin: classic
+  social:
+    - title: GitHub
+      icon: github
+      url: https://github.com/T-Lind/accessor
+
+# Top navigation. Labels come from each page's first Markdown heading; the
+# jekyll-optional-front-matter / jekyll-default-layout / jekyll-titles-from-headings
+# plugins that GitHub Pages enables by default render these pages without front
+# matter (so the same files still read cleanly on GitHub).
+header_pages:
+  - getting-started.md
+  - features.md
+  - architecture.md
+  - configuration.md
+  - harnesses.md
+  - troubleshooting.md
+  - releases.md
+
+# Maintainer-facing material stays in the repo, not on the published site. The
+# benchmark results remain published so links from the voice guide keep working;
+# the raw Graphviz source is not needed on the site.
 exclude:
   - RELEASING.md
-  - benchmarks/
   - diagrams/*.dot
