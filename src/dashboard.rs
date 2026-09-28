@@ -40,7 +40,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/sleep", "Close voice access"),
     ("/cancel", "Cancel current work"),
     ("/audio", "Wake detection diagnostics (no recordings)"),
-    ("/memory", "Inspect shared facts and preferences"),
+    ("/memory", "Inspect and review shared facts and preferences"),
     ("/approve", "Approve one request by number"),
     ("/deny", "Deny one request by number"),
     ("/quit", "Exit Accessor"),

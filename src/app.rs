@@ -1642,7 +1642,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                     match parts.as_slice() {
                         ["/quit"] => break,
                         ["/status"] => ui.message(format!("{} | {} | {} · {} · {}",if mic_unavailable{"MICROPHONE UNAVAILABLE"}else if session.active(){"GREEN: conversation open"}else{"WHITE: waiting for wake code"},if busy{"agent working"}else{"idle"},crate::identity::code(&active_harness, active_model.as_deref()),active_harness,active_model.as_deref().unwrap_or("default"))),
-                        ["/help"] => ui.message("/quit /stop /sleep /cancel /audio /status /approve N /deny N"),
+                        ["/help"] => ui.message("/quit /stop /sleep /cancel /audio /status /memory review /approve N /deny N"),
                         ["/disconnect"] | ["/sleep"] => {
                             alarm=None;wake_listening=false;
                             session.close(); epoch.fetch_add(1,Ordering::SeqCst);
@@ -1658,6 +1658,33 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 Ok(entries)=>{for entry in entries {ui.message(format!("{} · {} · revision {}\n{}",if entry.scope=="global" {"Global"} else {"Project"},entry.key,entry.revision,if entry.deleted {"Forgotten".into()} else {safe(&entry.text)}));}},
                                 Err(e)=>ui.message(format!("Could not read memory: {e:#}")),
                             }
+                        },
+                        ["/memory","review"] => {
+                            match crate::memory::Store::open(&workspace).and_then(|store|store.search("",100)) {
+                                Ok(entries)=>{
+                                    let live:Vec<_>=entries.iter().filter(|e|!e.deleted).collect();
+                                    if live.is_empty() {ui.message("Nothing remembered yet. Say \"remember ...\" or state a preference and Accessor will capture it.");}
+                                    else {
+                                        for (index,entry) in live.iter().enumerate() {
+                                            ui.message(format!("{}. [{}] {} · {}\n{}",index+1,if entry.scope=="global" {"global"} else {"project"},entry.key,entry.kind,safe(&entry.text)));
+                                        }
+                                        ui.message("Forget one with /memory forget N.");
+                                    }
+                                }
+                                Err(e)=>ui.message(format!("Could not read memory: {e:#}")),
+                            }
+                        },
+                        ["/memory","forget",number] => {
+                            let result=(||->anyhow::Result<String>{
+                                let index:usize=number.parse().map_err(|_|anyhow::anyhow!("Use /memory forget N"))?;
+                                let store=crate::memory::Store::open(&workspace)?;
+                                let live:Vec<_>=store.search("",100)?.into_iter().filter(|e|!e.deleted).collect();
+                                let entry=live.get(index.saturating_sub(1)).ok_or_else(||anyhow::anyhow!("No memory at that number"))?;
+                                let scope=if entry.scope=="global" {"global"} else {"project"};
+                                store.forget(scope,&entry.key,entry.revision)?;
+                                Ok(format!("Forgot {} ({scope}).",entry.key))
+                            })();
+                            match result {Ok(message)=>ui.message(message),Err(e)=>ui.message(format!("{e:#}"))}
                         },
                         ["/audio"] => ui.message(format!("Local wake checks: {wake_checks}; wake hits: {wake_hits}; speaker echoes rejected: {wake_echoes}; last decode: {wake_decode_ms} ms. Rolling checks active: {}. Local engine: {}. Say {}, pause, then your request. No recordings saved. Noise gate: {} at {:.1} dBFS; denoise: {}.\n{}; {}; capture paused: {}; decoder errors: {wake_errors}; last wake-window recognition (diagnostic only): {}",interrupting.load(Ordering::SeqCst),settings.stt.engine,settings.wake_code,if settings.stt.noise_gate {"on"} else {"off"},noise_control.floor_db(),settings.stt.denoise,audio_diagnostics.summary(),speech_state.summary(),muted.load(Ordering::SeqCst),last_wake_probe)),
                         ["/limits"] => ui.message(limits.report()),
@@ -1878,6 +1905,26 @@ pub async fn run(mut args: Run) -> Result<()> {
                         if is_event {ui.message("Gmail notification received; asking the agent to handle the reply.");}
                         else if is_internal {ui.message("Returning the local result to the main conversation.");}
                         else {ui.chat(Kind::User, format!("{text}{}", confidence_suffix(voice_confidence)));}
+                        // Silently capture durable facts the user states in their
+                        // own words. Off the hot path: a blocking file write must
+                        // never delay routing, speech, or the UI.
+                        if settings.memory.capture && !is_automatic && !text.trim_start().starts_with('/') {
+                            let workspace = workspace.clone();
+                            let utterance = text.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let saved = crate::memory::capture(&workspace, &utterance);
+                                if std::env::var_os("ACC_DEBUG_MEMORY").is_some() {
+                                    eprintln!(
+                                        "[memory] capture {:?} -> {:?}",
+                                        utterance,
+                                        saved
+                                            .as_ref()
+                                            .map(|v| v.len())
+                                            .map_err(|e| format!("{e:#}"))
+                                    );
+                                }
+                            });
+                        }
                         silence_reply=is_event || mic_unavailable || (is_internal && !session.active());
                         cancelled_turn=false;cancel_started=None;
                         let mut target = if let Some(target) = route_override {

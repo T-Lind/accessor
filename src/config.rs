@@ -36,6 +36,18 @@ pub struct Settings {
     pub sounds: Sounds,
     pub security: Security,
     pub computer: Computer,
+    pub memory: Memory,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Memory {
+    /// Silently capture durable facts the user states in conversation.
+    pub capture: bool,
+}
+impl Default for Memory {
+    fn default() -> Self {
+        Self { capture: true }
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -244,6 +256,7 @@ impl Default for Settings {
             sounds: Sounds::default(),
             security: Security::default(),
             computer: Computer::default(),
+            memory: Memory::default(),
         }
     }
 }
@@ -767,6 +780,7 @@ impl Settings {
             "speak" => self.speak = value.parse()?,
             "barge-in" => self.barge_in = value.parse()?,
             "speak-progress" => self.speak_progress = value.parse()?,
+            "memory.capture" => self.memory.capture = value.parse()?,
             "agent" => self.agent = value.to_lowercase(),
             "model" => {
                 self.model = if value == "default" {
