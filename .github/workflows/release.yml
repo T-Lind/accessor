@@ -35,7 +35,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libdbus-1-dev libwayland-dev libxcb1-dev libxrandr-dev libxkbcommon-dev libpipewire-0.3-dev libgbm-dev libdrm-dev pkg-config
+          sudo apt-get install -y libasound2-dev libdbus-1-dev libwayland-dev libxcb1-dev libxrandr-dev libxkbcommon-dev libpipewire-0.3-dev libgbm-dev libdrm-dev libegl1-mesa-dev libgles2-mesa-dev pkg-config
       - name: Build
         run: cargo build --release --locked --bin acc --target ${{ matrix.target }}
       - name: Stage artifact
