@@ -121,6 +121,66 @@ class MemoryRuntimeTests(unittest.TestCase):
         quotas=json.loads(results[4]["content"][0]["text"])
         self.assertTrue(all(not p["available"] and p["age_seconds"] is None for p in quotas["providers"]))
 
+    def test_notifications_dedupe_review_and_dismiss(self):
+        def notify(title, text):
+            return self.mcp(self.a, [
+                ("organizer_control", {"directive": {"action": "notify", "title": title, "text": text, "speak": False}}),
+            ])[0]
+
+        first = json.loads(notify("Release check", "The release pull request is ready to review.")["content"][0]["text"])
+        self.assertTrue(first["unread"])
+        self.assertEqual(first["source"], "agent")
+        notification_id = first["id"]
+        # An exact repeat from the same source refreshes the time, not the list.
+        repeat = json.loads(notify("Release check", "The release pull request is ready to review.")["content"][0]["text"])
+        self.assertTrue(repeat["suppressed"])
+        # A re-worded version of the same story is suppressed too.
+        reworded = json.loads(notify("Release PR ready", "The release pull request is ready and awaiting review.")["content"][0]["text"])
+        self.assertTrue(reworded["suppressed"])
+        # A genuinely different story is kept.
+        distinct = json.loads(notify("Server alert", "Disk usage passed ninety percent on host alpha.")["content"][0]["text"])
+        self.assertFalse(distinct.get("suppressed", False))
+
+        listed = json.loads(self.mcp(self.a, [("notifications", {"action": "list", "unread": True})])[0]["content"][0]["text"])
+        self.assertEqual(listed["unread"], 2)
+        self.assertEqual({item["title"] for item in listed["items"]}, {"Release check", "Server alert"})
+        self.assertEqual([item["title"] for item in listed["items"]], ["Server alert", "Release check"])  # newest first
+
+        read = json.loads(self.mcp(self.a, [("notifications", {"action": "read", "id": notification_id})])[0]["content"][0]["text"])
+        self.assertFalse(read["notification"]["unread"])
+        remaining = json.loads(self.mcp(self.a, [("notifications", {"action": "list", "unread": True})])[0]["content"][0]["text"])
+        self.assertEqual(remaining["unread"], 1)
+        dismissed = json.loads(self.mcp(self.a, [("notifications", {"action": "dismiss", "id": distinct["id"]})])[0]["content"][0]["text"])
+        self.assertIn("Dismissed", dismissed["receipt"])
+        final = json.loads(self.mcp(self.a, [("notifications", {"action": "list"})])[0]["content"][0]["text"])
+        self.assertEqual([item["title"] for item in final["items"]], ["Release check"])
+
+    def test_schedule_quiet_hours_and_watch_validation(self):
+        results = self.mcp(self.a, [
+            ("organizer_control", {"directive": {"action": "schedule", "prompt": "Quiet report", "delay_seconds": 3600,
+                                                 "harness": "mock", "model": "mock-light", "reasoning": "low",
+                                                 "quiet": {"start": "00:00", "end": "23:59"}}}),
+            ("organizer_control", {"directive": {"action": "schedule", "prompt": "Survey", "delay_seconds": 3600,
+                                                 "every_seconds": 3600, "harness": "mock", "model": "mock-light",
+                                                 "watch": {"guidelines": "urgent release email", "threshold": 0.7, "speak": False}}}),
+            ("organizer_control", {"directive": {"action": "schedule", "prompt": "Bad watch", "delay_seconds": 3600,
+                                                 "harness": "mock", "model": "mock-light",
+                                                 "watch": {"guidelines": "", "threshold": 0.5}}}),
+            ("organizer_control", {"directive": {"action": "list_schedules"}}),
+        ])
+        self.assertFalse(results[0]["isError"], results[0])
+        self.assertFalse(results[1]["isError"], results[1])
+        self.assertTrue(results[2]["isError"], results[2])
+        book = json.loads((self.root / "settings" / "schedules.json").read_text(encoding="utf-8"))
+        quiet = next(task for task in book["tasks"] if task["prompt"] == "Quiet report")
+        self.assertEqual(quiet["quiet"], {"start": "00:00", "end": "23:59"})
+        watch = next(task for task in book["tasks"] if task["prompt"] == "Survey")
+        self.assertEqual(watch["watch"]["guidelines"], "urgent release email")
+        self.assertEqual(watch["watch"]["threshold"], 0.7)
+        self.assertFalse(watch["watch"]["speak"])
+        status = json.loads(results[3]["content"][0]["text"])["status"]
+        self.assertIn("quiet 00:00–23:59", status)
+
     def test_statusline_ingest_preserves_last_sample_when_fields_disappear(self):
         def ingest(payload):
             return subprocess.run([str(BINARY),"usage","--ingest","claude"],env=self.env,input=json.dumps(payload),capture_output=True,text=True,encoding="utf-8",timeout=10)

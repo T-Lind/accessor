@@ -642,8 +642,8 @@ fn hint(action: &Action) -> &'static str {
         Action::Edit("prompt") => {
             "Saved instructions sent to Codex, Claude, and Antigravity. Type default to restore the hands-free voice prompt."
         }
-        Action::Edit("tts.provider") => "How replies are spoken: system, kokoro, cartesia, or off.",
-        Action::Edit("voice.persona") => "Choose the provider first, then its voice. Cartesia is cloud; Kokoro and the system voice are local. Choosing Kokoro installs it on first use.",
+        Action::Edit("tts.provider") => "How replies are spoken: piper, system, kokoro, cartesia, or off.",
+        Action::Edit("voice.persona") => "Choose the provider first, then its voice. Piper, Kokoro, and the system voice are local; Cartesia is cloud. Piper installs on first use.",
         Action::Edit("tts.voice") => {
             "Pick a Cartesia voice by number or name; run /tts voices to refresh the list."
         }

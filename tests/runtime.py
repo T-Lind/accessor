@@ -398,6 +398,79 @@ class RuntimeTests(unittest.TestCase):
         time.sleep(0.3)
         self.assertEqual(len(list((self.home / "settings" / "notes").glob("*.md"))), 1)
 
+    def test_watch_slash_lifecycle(self):
+        app = self.app("mock")
+        app.send("/watch every 5m threshold=0.7 night=22:00-07:00 urgent release email")
+        app.expect("created: every 5m, threshold 0.70")
+        book_path = self.home / "settings" / "schedules.json"
+        watch = json.loads(book_path.read_text())["tasks"][0]
+        watch_id = watch["id"]
+        self.assertEqual(watch["every_seconds"], 300)
+        self.assertEqual(watch["watch"]["guidelines"], "urgent release email")
+        self.assertEqual(watch["watch"]["threshold"], 0.7)
+        self.assertEqual(watch["quiet"], {"start": "22:00", "end": "07:00"})
+        app.send("/watch list")
+        app.expect("threshold 0.70 · speak true · quiet 22:00–07:00")
+        app.send("/watch edit " + watch_id + " threshold=0.9 quiet")
+        app.expect("Watch " + watch_id + " updated")
+        self.assertEqual(json.loads(book_path.read_text())["tasks"][0]["watch"]["threshold"], 0.9)
+        app.send("/watch stop " + watch_id)
+        app.expect("Stopped watch " + watch_id)
+        self.assertEqual(json.loads(book_path.read_text())["tasks"], [])
+
+    def test_agent_notification_directive_is_stored_and_deduped(self):
+        app = self.app("codex")
+        path = self.home / "settings" / "notifications.json"
+        app.send("29 notify fixture")
+        app.expect("saved.")
+        items = json.loads(path.read_text())["items"]
+        self.assertEqual(len(items), 1)
+        self.assertTrue(items[0]["unread"])
+        self.assertEqual(items[0]["source"], "agent")
+        # An exact repeat from the same source is suppressed, not appended.
+        app.send("29 notify fixture")
+        app.expect("suppressed")
+        self.assertEqual(len(json.loads(path.read_text())["items"]), 1)
+        # A distinct story is kept.
+        app.send("29 notify distinct")
+        app.expect("saved.")
+        titles = {item["title"] for item in json.loads(path.read_text())["items"]}
+        self.assertEqual(titles, {"Fixture notice", "Server alert"})
+
+    def test_quiet_hours_deferral_records_a_visible_receipt(self):
+        app = self.app("codex")
+        app.send("29 quiet fixture")
+        app.expect("Scheduled task ")
+        deadline = time.time() + 10
+        status = ""
+        while time.time() < deadline:
+            status = self.cli("organizer", "status").stdout
+            if "quiet hours" in status:
+                break
+            time.sleep(0.5)
+        self.assertIn("deferred to", status)
+        self.assertIn("(quiet hours", status)
+        self.assertIn("Run ", status)
+
+    def test_conversation_captures_explicit_memory_off_the_hot_path(self):
+        app = self.app("mock")
+        app.send("29 remember that the workshop filter size is 20 by 25")
+        app.expect("Mock agent received: remember that the workshop filter size is 20 by 25")
+        path = self.home / "settings" / "memory.json"
+        entries = []
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if path.exists():
+                entries = json.loads(path.read_text())
+                if entries:
+                    break
+            time.sleep(0.2)
+        self.assertTrue(entries, "expected an explicit memory to be captured")
+        captured = next(entry for entry in entries if entry["kind"] == "explicit")
+        self.assertEqual(captured["scope"], "global")
+        self.assertIn("workshop filter size is 20 by 25", captured["text"])
+        self.assertIn("user said:", captured["source"])
+
     def test_usage_failure_blocks_repeat_requests(self):
         app = self.app("claude")
         app.send("29 quota fixture")

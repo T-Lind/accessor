@@ -35,6 +35,11 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/agent", "Open Codex; exit to return"),
     ("/events", "Show the event queue"),
     ("/organizer", "Show notes, alarms, and scheduled tasks"),
+    ("/watch", "Recurring survey; /watch list|edit|stop"),
+    (
+        "/notifications",
+        "Review notices: list, read, readall, dismiss",
+    ),
     ("/status", "Show current state"),
     ("/stop", "Cancel and sleep"),
     ("/sleep", "Close voice access"),

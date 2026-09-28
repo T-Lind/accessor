@@ -1194,6 +1194,9 @@ async fn setup() -> Result<()> {
     match s.tts.provider.as_str() {
         "cartesia" => println!("  acc tts setup      add your Cartesia key and pick a voice"),
         "kokoro" => println!("  python scripts/setup_tts.py   install the local voice"),
+        "piper" => println!(
+            "  python scripts/setup_piper.py   install the fast local voice (usually automatic)"
+        ),
         _ => {}
     }
     println!("  acc connectors setup   log in or add plugins");
@@ -1354,6 +1357,16 @@ async fn doctor() -> Result<()> {
             "installed (use acc tts test to verify)"
         } else {
             "optional; run python scripts/setup_tts.py"
+        }
+    );
+    println!(
+        "Piper: {}",
+        if speech::piper_ready(&s) {
+            "installed (use acc tts test to verify)"
+        } else if s.tts.provider == "piper" {
+            "missing — installs on next start; or python scripts/setup_piper.py"
+        } else {
+            "optional; installs when Piper is the selected provider"
         }
     );
     if s.tts.provider == "cartesia" {
