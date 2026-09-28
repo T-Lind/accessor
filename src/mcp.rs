@@ -47,6 +47,7 @@ fn revision(args: &Value) -> Result<u64> {
 }
 
 pub async fn call(name: &str, args: &Value, workspace: &Path) -> Result<Value> {
+    crate::masterlog::event("mcp", &format!("tool {name}"));
     match name {
         "memory_search" => {
             let store = crate::memory::Store::open(workspace)?;
@@ -269,16 +270,20 @@ pub async fn call(name: &str, args: &Value, workspace: &Path) -> Result<Value> {
                     )?)?)
                 }
                 Directive::Notify { text, title, speak } => {
-                    let item = crate::notifications::add(
+                    match crate::notifications::add(
                         title.as_deref().unwrap_or("Notification"),
                         &text,
                         "agent",
                         None,
                         speak.unwrap_or(false),
-                    )?;
-                    Ok(serde_json::to_value(crate::notifications::json_item(
-                        &item,
-                    ))?)
+                    )? {
+                        Some(item) => Ok(serde_json::to_value(crate::notifications::json_item(
+                            &item,
+                        ))?),
+                        None => Ok(
+                            json!({"suppressed": true, "reason": "a recent notification already covers this"}),
+                        ),
+                    }
                 }
                 Directive::UpdateSchedule { id, changes } => {
                     Ok(serde_json::to_value(organizer::update(&id, changes)?)?)

@@ -41,6 +41,11 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/cancel", "Cancel current work"),
     ("/audio", "Wake detection diagnostics (no recordings)"),
     ("/memory", "Inspect and review shared facts and preferences"),
+    (
+        "/prompt",
+        "Edit the voice metaprompt: tone presets, extra instructions, $EDITOR",
+    ),
+    ("/logs", "Show or tail the master log (enable in settings)"),
     ("/approve", "Approve one request by number"),
     ("/deny", "Deny one request by number"),
     ("/quit", "Exit Accessor"),
@@ -98,6 +103,10 @@ pub enum LocalCommand {
     },
     /// `/watch …` — create, list, or stop recurring watches.
     Watch(String),
+    /// `/prompt …` — show, pick a tone, edit extra instructions, or open $EDITOR.
+    Prompt(String),
+    /// `/logs` — show the master log path and tail it.
+    Logs,
 }
 pub fn parse(text: &str, s: &Settings) -> Result<Option<LocalCommand>> {
     let text = text.trim();
@@ -203,6 +212,8 @@ pub fn parse(text: &str, s: &Settings) -> Result<Option<LocalCommand>> {
             LocalCommand::Utility(vec!["organizer".into(), "status".into()])
         }
         ["/watch", rest @ ..] => LocalCommand::Watch(rest.join(" ")),
+        ["/prompt", rest @ ..] => LocalCommand::Prompt(rest.join(" ")),
+        ["/logs"] => LocalCommand::Logs,
         ["/stt", "provider", provider] => {
             LocalCommand::Set("stt.conversation".into(), (*provider).into())
         }

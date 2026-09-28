@@ -9,6 +9,7 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
+    collections::HashSet,
     fs::{self, File, OpenOptions},
     path::PathBuf,
 };
@@ -17,6 +18,10 @@ use std::{
 pub const LIMIT: usize = 100;
 /// Suppress a repeat of the same finding from the same source for this long.
 const DEDUPE_SECONDS: u64 = 6 * 3600;
+/// How far back to look for a re-worded version of the same story.
+const NEAR_DUPLICATE_WINDOW_SECONDS: u64 = 72 * 3600;
+/// Overlap of significant words above which two findings are the same story.
+const NEAR_DUPLICATE_OVERLAP: f32 = 0.6;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Notification {
@@ -80,14 +85,16 @@ fn save(book: &Book) -> Result<()> {
     config::save_private(&path()?, &serde_json::to_vec_pretty(book)?)
 }
 
-/// Store a new unread notification and return it.
+/// Store a new unread notification and return it. Returns `None` when the
+/// finding is a repeat (exact or re-worded) of a recent one from the same
+/// source, in which case the existing item's time is refreshed instead.
 pub fn add(
     title: &str,
     text: &str,
     source: &str,
     relevance: Option<f32>,
     speak: bool,
-) -> Result<Notification> {
+) -> Result<Option<Notification>> {
     let text = text.trim();
     ensure!(!text.is_empty(), "Notification text is empty");
     let title = {
@@ -111,9 +118,32 @@ pub fn add(
             && now.saturating_sub(item.at_unix) < DEDUPE_SECONDS
     }) {
         existing.at_unix = now;
-        let item = existing.clone();
         save(&book)?;
-        return Ok(item);
+        crate::masterlog::debug(
+            "notification",
+            &format!("suppressed exact repeat [{source}]"),
+        );
+        return Ok(None);
+    }
+    // A later survey often re-words the same story. Suppress it by comparing
+    // significant words in the title or the body, so the user is not told the
+    // same fact repeatedly.
+    let incoming_title = significant_words(&title);
+    let incoming_text = significant_words(&text);
+    if let Some(existing) = book.items.iter_mut().find(|item| {
+        item.source == source
+            && now.saturating_sub(item.at_unix) < NEAR_DUPLICATE_WINDOW_SECONDS
+            && (overlap(&incoming_title, &significant_words(&item.title)) >= NEAR_DUPLICATE_OVERLAP
+                || overlap(&incoming_text, &significant_words(&item.text))
+                    >= NEAR_DUPLICATE_OVERLAP)
+    }) {
+        existing.at_unix = now;
+        save(&book)?;
+        crate::masterlog::debug(
+            "notification",
+            &format!("suppressed reworded repeat [{source}]"),
+        );
+        return Ok(None);
     }
     let item = Notification {
         id: uuid::Uuid::new_v4().to_string()[..8].into(),
@@ -127,6 +157,10 @@ pub fn add(
         announced: false,
     };
     book.items.push(item.clone());
+    crate::masterlog::event(
+        "notification",
+        &format!("raised [{}] {}", item.source, item.title),
+    );
     while book.items.len() > LIMIT {
         // Drop the oldest already-read item first; never silently discard an
         // unread alert unless everything is unread.
@@ -134,7 +168,85 @@ pub fn add(
         book.items.remove(victim);
     }
     save(&book)?;
-    Ok(item)
+    Ok(Some(item))
+}
+
+/// Recent notification titles, newest first, so a watch prompt can avoid
+/// re-reporting a story it already raised.
+pub fn recent_brief(hours: u64, limit: usize) -> Result<Vec<String>> {
+    let cutoff = crate::organizer::now_unix().saturating_sub(hours * 3600);
+    let mut items: Vec<Notification> = load()?
+        .items
+        .into_iter()
+        .filter(|item| item.at_unix >= cutoff)
+        .collect();
+    items.sort_by_key(|item| item.at_unix);
+    items.reverse();
+    let mut titles: Vec<String> = Vec::new();
+    for item in items {
+        let title = item.title.trim().to_string();
+        if title.is_empty() || titles.iter().any(|seen| seen.eq_ignore_ascii_case(&title)) {
+            continue;
+        }
+        titles.push(title);
+        if titles.len() >= limit {
+            break;
+        }
+    }
+    Ok(titles)
+}
+
+/// Words worth comparing for near-duplicates: lowercase, 3+ letters, and not
+/// common filler that would inflate overlap between unrelated stories.
+fn significant_words(text: &str) -> HashSet<String> {
+    const STOP: &[&str] = &[
+        "the",
+        "and",
+        "for",
+        "that",
+        "with",
+        "from",
+        "this",
+        "have",
+        "has",
+        "had",
+        "are",
+        "was",
+        "were",
+        "been",
+        "its",
+        "into",
+        "after",
+        "over",
+        "more",
+        "most",
+        "than",
+        "but",
+        "not",
+        "said",
+        "says",
+        "report",
+        "reports",
+        "reported",
+        "according",
+        "about",
+        "will",
+        "would",
+    ];
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| word.len() >= 3 && !STOP.contains(word))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Overlap coefficient: shared words over the smaller set, so a short re-wording
+/// still matches a longer original.
+fn overlap(a: &HashSet<String>, b: &HashSet<String>) -> f32 {
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    a.intersection(b).count() as f32 / a.len().min(b.len()) as f32
 }
 
 /// Notifications the live app has not announced yet, oldest first.
@@ -269,5 +381,13 @@ mod tests {
         assert_eq!(value["id"], "abc12345");
         assert_eq!(value["unread"], true);
         assert_eq!(value["relevance"], 0.5);
+    }
+    #[test]
+    fn overlap_catches_reworded_stories_but_not_distinct_ones() {
+        let a = significant_words("OpenAI pauses tool use across its most capable model work");
+        let b = significant_words("OpenAI pauses tool enabled work on its most capable models");
+        assert!(overlap(&a, &b) >= NEAR_DUPLICATE_OVERLAP);
+        let c = significant_words("Fed holds interest rates steady at its September meeting");
+        assert!(overlap(&a, &c) < NEAR_DUPLICATE_OVERLAP);
     }
 }

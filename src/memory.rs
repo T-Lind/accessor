@@ -217,7 +217,7 @@ impl Store {
     }
     pub fn forget(&self, scope: &str, key: &str, revision: u64) -> Result<Entry> {
         let scope = self.scope(scope)?;
-        self.locked(|entries| {
+        let entry = self.locked(|entries| {
             let e = entries
                 .iter_mut()
                 .find(|e| e.scope == scope && e.key == key)
@@ -232,7 +232,9 @@ impl Store {
             e.revision = e.revision.checked_add(1).context("Revision overflow")?;
             e.updated_unix = crate::organizer::now_unix();
             Ok((e.clone(), true))
-        })
+        })?;
+        crate::masterlog::event("memory", &format!("forgot [{}] {}", entry.scope, entry.key));
+        Ok(entry)
     }
 }
 fn words(text: &str) -> HashSet<String> {
@@ -428,6 +430,10 @@ fn capture_at(path: PathBuf, workspace: &Path, utterance: &str) -> Result<Vec<En
             revision,
             &candidate.kind,
         ) {
+            crate::masterlog::event(
+                "memory",
+                &format!("captured [{}] {}: {}", entry.scope, entry.key, entry.text),
+            );
             saved.push(entry);
         }
     }

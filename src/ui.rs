@@ -36,6 +36,18 @@ pub enum Kind {
     Progress,
     Notice,
 }
+impl Kind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::User => "user",
+            Self::Agent => "agent",
+            Self::Tool => "tool",
+            Self::Progress => "progress",
+            Self::Notice => "notice",
+        }
+    }
+}
 
 struct Entry {
     kind: Kind,
@@ -146,10 +158,11 @@ impl Ui {
         self.dirty = true;
         Ok(())
     }
-    pub fn ignored(&mut self, text: &str, reason: &str) {
+    pub fn ignored(&mut self, text: &str, reason: &str, note: Option<String>) {
         crate::usage::record_diagnostic("Voice ignored");
+        let note = note.map(|note| format!(" · {note}")).unwrap_or_default();
         self.message(format!(
-            "Ignored ({reason}): {}",
+            "Ignored ({reason}{note}): {}",
             if text.trim().is_empty() {
                 "[no words recognized]"
             } else {
@@ -172,6 +185,11 @@ impl Ui {
     }
     fn push(&mut self, kind: Kind, text: &str) {
         let text = safe(text);
+        // The master log mirrors everything the UI shows, plus filtered lines,
+        // so one file holds the whole session when logging is enabled.
+        if crate::masterlog::enabled() {
+            crate::masterlog::event("ui", &format!("{}: {text}", kind.label()));
+        }
         if !self.visible(kind) {
             return;
         }

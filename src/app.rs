@@ -79,10 +79,24 @@ fn watch_prompt(survey: &str, watch: &crate::organizer::Watch) -> String {
     } else {
         watch.guidelines.trim()
     };
+    let recent = crate::notifications::recent_brief(72, 12).unwrap_or_default();
+    let already = if recent.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nAlready reported in the last three days — do not raise these again, and skip any finding that is merely a new wording of one of them:\n{}",
+            recent
+                .iter()
+                .map(|title| format!("- {title}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
     format!(
-        "You are an Accessor watch performing a recurring survey. Survey: {survey}\n\nUse your own tools and connectors (web search and fetch, connected email, calendars, and so on). Do not invent or guess data; rely on what you actually found. Compare findings against the user's guidelines: {guidelines}\n\nIf, and only if, a finding clearly meets the guidelines and is worth interrupting the user for, emit one line of JSON per finding, exactly:\n{{\"accessor\":{{\"action\":\"notify\",\"title\":\"short title\",\"text\":\"one or two sentences\",\"speak\":true}}}}\nIf nothing meets the guidelines, emit no notify line. Do not use any other Accessor control. Any other text is kept as an unspoken one-line summary.",
+        "You are an Accessor watch performing a recurring survey. Survey: {survey}\n\nUse your own tools and connectors (web search and fetch, connected email, calendars, and so on). Do not invent or guess data; rely on what you actually found. Compare findings against the user's guidelines: {guidelines}{already}\n\nA finding qualifies only if it is new since the last survey, changes what the user should do or know today, and clearly meets every part of the guidelines. If it is the same story as something already reported, or only a re-wording of it, emit nothing.\n\nIf, and only if, a finding qualifies, emit one line of JSON per finding, exactly:\n{{\"accessor\":{{\"action\":\"notify\",\"title\":\"short title\",\"text\":\"one or two sentences\",\"speak\":true}}}}\nIf nothing qualifies, emit no notify line. Do not use any other Accessor control. Any other text is kept as an unspoken one-line summary.",
         survey = survey.trim(),
         guidelines = guidelines,
+        already = already,
     )
 }
 
@@ -92,9 +106,9 @@ async fn raise_watch(
     output: &str,
     watch: &crate::organizer::Watch,
     source: &str,
-) -> (usize, usize) {
+) -> (usize, usize, usize) {
     let (_text, directives) = crate::organizer::take_directives(output);
-    let (mut raised, mut gated) = (0, 0);
+    let (mut raised, mut gated, mut suppressed) = (0, 0, 0);
     for directive in directives {
         let crate::organizer::Directive::Notify { text, title, speak } = directive else {
             continue;
@@ -120,19 +134,20 @@ async fn raise_watch(
                 }
             }
         };
-        if crate::notifications::add(
+        match crate::notifications::add(
             &title,
             &text,
             source,
             score,
             watch.speak || speak.unwrap_or(false),
-        )
-        .is_ok()
-        {
-            raised += 1;
+        ) {
+            Ok(Some(_)) => raised += 1,
+            // A re-wording of a recent finding: not a new alert.
+            Ok(None) => suppressed += 1,
+            Err(_) => {}
         }
     }
-    (raised, gated)
+    (raised, gated, suppressed)
 }
 
 /// Parse a watch cadence like 30m, 2h, 1800s, or a bare number of minutes.
@@ -179,6 +194,101 @@ fn humanize_seconds(seconds: u64) -> String {
     } else {
         format!("{seconds}s")
     }
+}
+
+/// `/prompt …` — inspect or edit the voice metaprompt. Tone presets swap the
+/// whole prompt; extra instructions are appended and survive preset changes.
+fn prompt_command(
+    rest: &str,
+    settings: &mut config::Settings,
+    ui: &mut crate::ui::Ui,
+) -> Result<String> {
+    let rest = rest.trim();
+    if rest.is_empty() || rest.eq_ignore_ascii_case("show") {
+        let mut out = format!("Current metaprompt:\n{}", settings.prompt);
+        if !settings.prompt_extra.trim().is_empty() {
+            out.push_str(&format!(
+                "\n\nAdditional instructions:\n{}",
+                settings.prompt_extra.trim()
+            ));
+        }
+        return Ok(out);
+    }
+    if rest.eq_ignore_ascii_case("reset") {
+        settings.assign("prompt", "default")?;
+        settings.assign("prompt.extra", "")?;
+        settings.save()?;
+        return Ok("Metaprompt reset to the default voice.".into());
+    }
+    if let Some(name) = rest
+        .strip_prefix("preset ")
+        .or_else(|| rest.strip_prefix("tone "))
+    {
+        let name = name.trim();
+        anyhow::ensure!(
+            !name.is_empty(),
+            "Usage: /prompt preset butler|warm|terse|plain"
+        );
+        settings.assign("prompt", name)?;
+        settings.save()?;
+        return Ok(format!("Metaprompt tone set to {}.", name.to_lowercase()));
+    }
+    if rest.eq_ignore_ascii_case("extra") {
+        settings.assign("prompt.extra", "")?;
+        settings.save()?;
+        return Ok("Additional instructions cleared.".into());
+    }
+    if let Some(text) = rest.strip_prefix("extra ") {
+        let text = text.trim();
+        settings.assign("prompt.extra", text)?;
+        settings.save()?;
+        return Ok(if text.is_empty() {
+            "Additional instructions cleared.".into()
+        } else {
+            format!(
+                "Additional instructions saved ({} characters).",
+                text.chars().count()
+            )
+        });
+    }
+    if rest.eq_ignore_ascii_case("edit") {
+        return prompt_edit(settings, ui);
+    }
+    Ok("Usage: /prompt [show] · /prompt preset butler|warm|terse|plain · /prompt extra <text> · /prompt reset · /prompt edit".into())
+}
+
+/// Open the metaprompt in the user's editor ($EDITOR, then $VISUAL, then vi).
+/// The UI is suspended for the editor and restored afterwards.
+fn prompt_edit(settings: &mut config::Settings, ui: &mut crate::ui::Ui) -> Result<String> {
+    let editor = std::env::var("EDITOR")
+        .or_else(|_| std::env::var("VISUAL"))
+        .unwrap_or_else(|_| {
+            if cfg!(windows) {
+                "notepad".into()
+            } else {
+                "vi".into()
+            }
+        });
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("accessor-metaprompt.txt");
+    std::fs::write(&path, format!("{}\n", settings.prompt))?;
+    ui.suspend()?;
+    let status = std::process::Command::new(&editor).arg(&path).status();
+    ui.resume()?;
+    let status = status.map_err(|e| anyhow::anyhow!("Could not launch editor {editor:?}: {e}"))?;
+    anyhow::ensure!(status.success(), "Editor exited with {status}");
+    let text = std::fs::read_to_string(&path)?;
+    let text = text.trim_end();
+    anyhow::ensure!(
+        !text.trim().is_empty(),
+        "Empty metaprompt ignored; the previous prompt is unchanged"
+    );
+    settings.assign("prompt", text)?;
+    settings.save()?;
+    Ok(format!(
+        "Metaprompt saved ({} characters).",
+        text.chars().count()
+    ))
 }
 
 /// `/watch every 30m <guidelines>` creates a recurring survey whose findings are
@@ -415,6 +525,21 @@ fn banner(state: BannerState, identity: &str) -> String {
 pub async fn run(mut args: Run) -> Result<()> {
     let _instance = crate::auth::Instance::acquire()?;
     let mut settings = config::Settings::load()?;
+    crate::masterlog::init(&settings);
+    crate::masterlog::event(
+        "startup",
+        &format!(
+            "Accessor {} ready; wake code {}, main {} · {}, STT {} · {}, TTS {} · {}.",
+            env!("CARGO_PKG_VERSION"),
+            settings.wake_code,
+            settings.routing.main,
+            settings.routing.main_model.as_deref().unwrap_or("default"),
+            settings.stt.engine,
+            settings.stt.conversation,
+            settings.tts.provider,
+            settings.tts.piper_voice
+        ),
+    );
     let mut access = crate::auth::Lock::load()?;
     let mut lock_requested = access.locked();
     let mut password_entry: Option<crate::auth::Entry> = None;
@@ -1080,7 +1205,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                 if matches!(&input,Input::GatedVoice{epoch:e,..} if *e==epoch.load(Ordering::SeqCst)) {gate_job=None;}
                 if let Input::GatedVoice{decision,text,epoch:e,..}=&input {
                     if *e==epoch.load(Ordering::SeqCst) {
-                        if !decision.accepted {ui.ignored(text,&decision.reason);continue;}
+                        if !decision.accepted {ui.ignored(text,&decision.reason,None);continue;}
                         if decision.reason.contains("unavailable") {ui.message(&decision.reason);}
                     }
                 }
@@ -1113,6 +1238,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                     Err(e)=>serde_json::json!({"error":format!("{e:#}")}),
                                     Ok(next)=>{
                                         settings=next;
+                                        crate::masterlog::init(&settings);
                                         speak=settings.speak;
                                         cloud_stt.store(settings.stt.conversation=="cartesia",Ordering::SeqCst);
                                         streaming_stt.store(settings.stt.streaming,Ordering::SeqCst);
@@ -1217,7 +1343,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                     }
                     Input::Voice { text, confidence, epoch: captured_epoch, .. } => {
                         if muted.load(Ordering::SeqCst) || captured_epoch != epoch.load(Ordering::SeqCst) { continue; }
-                        if text.trim().is_empty() {if session.active() {ui.ignored(&text,"transcription produced no usable words");}continue;}
+                        if text.trim().is_empty() {if session.active() {ui.ignored(&text,"transcription produced no usable words",confidence_note(confidence));}continue;}
                         voice_confidence = confidence;
                         let captured_during_output = false;
                         let addressed=session.addressed(&text);
@@ -1225,7 +1351,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                     }
                     Input::GatedVoice { text, epoch: captured_epoch, .. } | Input::CloudVoice { text, epoch: captured_epoch, .. } => {
                         if muted.load(Ordering::SeqCst) || captured_epoch != epoch.load(Ordering::SeqCst) { continue; }
-                        if text.trim().is_empty() {if session.active() {ui.ignored(&text,"transcription produced no usable words");}continue;}
+                        if text.trim().is_empty() {if session.active() {ui.ignored(&text,"transcription produced no usable words",None);}continue;}
                         let captured_during_output = false;
                         let addressed=session.addressed(&text);
                         (text, false, addressed, captured_during_output, None)
@@ -1264,7 +1390,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                             continue;
                         }
                     }
-                    Input::IgnoredVoice{text,reason,epoch:e}=>{if e==epoch.load(Ordering::SeqCst) && session.active() {ui.ignored(&text,&reason);}continue;},
+                    Input::IgnoredVoice{text,reason,epoch:e,confidence}=>{if e==epoch.load(Ordering::SeqCst) && session.active() {ui.ignored(&text,&reason,confidence_note(confidence));}continue;},
                     Input::NoiseCalibrated{floor_db,epoch:e}=>{
                         if e==epoch.load(Ordering::SeqCst) {
                             match settings.set("stt.noise-floor-db",&format!("{floor_db:.1}")) {
@@ -1331,7 +1457,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                         match w.answer(&text) {
                             Ok(Some(next))=>{
                                 match next.save() {
-                                    Ok(())=>{settings=next;speak=settings.speak;display.set_enabled(settings.wake_display);auth_wake=wake::WakeCode::new(&settings.wake_code,&args.wake_alias)?;session=Session::new(wake::WakeCode::new(&settings.wake_code,&args.wake_alias)?,Duration::from_secs(settings.idle_seconds));ui.message("Setup saved. Use /tts test to hear the selected voice; /tts key adds a Cartesia key.");
+                                    Ok(())=>{settings=next;speak=settings.speak;crate::masterlog::init(&settings);display.set_enabled(settings.wake_display);auth_wake=wake::WakeCode::new(&settings.wake_code,&args.wake_alias)?;session=Session::new(wake::WakeCode::new(&settings.wake_code,&args.wake_alias)?,Duration::from_secs(settings.idle_seconds));ui.message("Setup saved. Use /tts test to hear the selected voice; /tts key adds a Cartesia key.");
                                         if speak && intro_marker.as_ref().is_some_and(|path|!path.exists()) {
                                             speech_queue.push_back(crate::settings_ui::device_intro(&settings));
                                             if let Some(path)=&intro_marker {let _=std::fs::write(path,"1");}
@@ -1400,6 +1526,17 @@ pub async fn run(mut args: Run) -> Result<()> {
                             LocalCommand::Locations=>ui.message(crate::config::locations(&settings)),
                             LocalCommand::Tts=>ui.message(crate::dashboard::tts_help(&settings)),
                             LocalCommand::Watch(rest)=>match watch_command(&rest,&settings){Ok(message)=>ui.message(message),Err(e)=>ui.message(format!("{e:#}"))},
+                            LocalCommand::Prompt(rest)=>match prompt_command(&rest,&mut settings,&mut ui){Ok(message)=>ui.message(message),Err(e)=>ui.message(format!("{e:#}"))},
+                            LocalCommand::Logs=>match crate::masterlog::path(){
+                                Some(path)=>{
+                                    let tail=std::fs::read_to_string(&path).ok().map(|text|{
+                                        let lines:Vec<&str>=text.lines().rev().take(20).collect();
+                                        lines.into_iter().rev().collect::<Vec<_>>().join("\n")
+                                    }).unwrap_or_default();
+                                    ui.message(format!("Master log: {}\n{}",path.display(),if tail.trim().is_empty(){"(empty)".into()}else{tail}));
+                                }
+                                None=>ui.message("Master logging is off. Enable it in /settings (Display) or: /config set logging.enabled true"),
+                            },
                             LocalCommand::Setup=>{
                                 if busy || speaker.is_some() {ui.message("Cancel or finish the current task/playback before setup.");continue;}
                                 muted.store(true,Ordering::SeqCst);epoch.fetch_add(1,Ordering::SeqCst);
@@ -1442,6 +1579,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 match candidate.set(&key,&value) {
                                     Ok(())=>{
                                         settings=candidate;
+                                        crate::masterlog::init(&settings);
                                         cloud_stt.store(settings.stt.conversation=="cartesia", Ordering::SeqCst);
                                         lazy_stt.store(settings.stt.lazy, Ordering::SeqCst);
                                         streaming_stt.store(settings.stt.streaming, Ordering::SeqCst);
@@ -1642,7 +1780,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                     match parts.as_slice() {
                         ["/quit"] => break,
                         ["/status"] => ui.message(format!("{} | {} | {} · {} · {}",if mic_unavailable{"MICROPHONE UNAVAILABLE"}else if session.active(){"GREEN: conversation open"}else{"WHITE: waiting for wake code"},if busy{"agent working"}else{"idle"},crate::identity::code(&active_harness, active_model.as_deref()),active_harness,active_model.as_deref().unwrap_or("default"))),
-                        ["/help"] => ui.message("/quit /stop /sleep /cancel /audio /status /memory review /approve N /deny N"),
+                        ["/help"] => ui.message("/quit /stop /sleep /cancel /audio /status /memory review /prompt /logs /approve N /deny N"),
                         ["/disconnect"] | ["/sleep"] => {
                             alarm=None;wake_listening=false;
                             session.close(); epoch.fetch_add(1,Ordering::SeqCst);
@@ -1835,7 +1973,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                             if let Some(job)=cloud_job.take() {job.abort();}
                         }
                         if !typed && !is_automatic && !is_gated {
-                            if settings.routing.input_gate!="off" && !crate::route::meaningful_input(&text) {ui.ignored(&text,"local filter: filler or non-speech");continue;}
+                            if settings.routing.input_gate!="off" && !crate::route::meaningful_input(&text) {ui.ignored(&text,"local filter: filler or non-speech",confidence_note(voice_confidence));continue;}
                             if settings.routing.input_gate=="jev" && crate::route::jev_available() {
                                 let tx=input_tx.clone();let history=transcript.iter().cloned().collect::<Vec<_>>();
                                 let captured_epoch=epoch.load(Ordering::SeqCst);
@@ -1851,7 +1989,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                         let wake_followup = wake_listening;
                         wake_listening = false;
                         if !typed && !is_automatic && !spoken_addressed && !wake_followup && !was_active && spoken_word_count(&text) < 2 {
-                            ui.ignored(&text,"one-word transcript outside an established follow-up; say 29 first");
+                            ui.ignored(&text,"one-word transcript outside an established follow-up; say 29 first",confidence_note(voice_confidence));
                             continue;
                         }
                         if !typed && !is_automatic && !args.text {
@@ -1878,7 +2016,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                             }
                         }
                         if !is_automatic {
-                            if (busy || worker.is_some() || speaker.is_some()) && !settings.barge_in && (!typed || args.text) {ui.ignored(&text,"Barge-ins are off. Use /cancel or change /settings.");continue;}
+                            if (busy || worker.is_some() || speaker.is_some()) && !settings.barge_in && (!typed || args.text) {ui.ignored(&text,"Barge-ins are off. Use /cancel or change /settings.",confidence_note(voice_confidence));continue;}
                             if let Some(command)=crate::settings_ui::voice_command(&text,&models, Some(&settings)) {
                                 speech_queue.clear();speaker=None;think=None;echo_guard.finish();silence_reply=true;
                                 match command {
@@ -1970,7 +2108,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 compaction=Some(CompactionJob::start(transcript.iter().cloned().collect(),&settings,args.codex_bin.as_ref()));
                             }
                         }
-                        let instructions=format!("{}\n\n{}\nMain reasoning preference: {}",settings.prompt,crate::route::handoff_guide(&settings,&models),settings.routing.reasoning);
+                        let instructions=format!("{}\n\n{}\nMain reasoning preference: {}",settings.effective_prompt(),crate::route::handoff_guide(&settings,&models),settings.routing.reasoning);
                         // Fresh durable facts and the connector inventory are
                         // injected when a harness starts, not on every turn, so a
                         // memory save or a connector refresh does not restart a
@@ -2082,8 +2220,8 @@ pub async fn run(mut args: Run) -> Result<()> {
                                     ui.message(format!("Watch ({harness_name}) failed; no notification raised."));
                                     continue;
                                 }
-                                let (raised,gated)=raise_watch(&output,&watch,&source).await;
-                                let message=if raised==0 && gated==0 {format!("Watch ({harness_name}) finished; nothing met the guidelines.")} else {format!("Watch ({harness_name}) raised {raised} notification(s); {gated} gated out.")};
+                                let (raised,gated,suppressed)=raise_watch(&output,&watch,&source).await;
+                                let message=if raised==0 && gated==0 && suppressed==0 {format!("Watch ({harness_name}) finished; nothing met the guidelines.")} else {format!("Watch ({harness_name}) raised {raised} notification(s); {gated} gated out, {suppressed} already covered.")};
                                 ui.message(message);
                                 continue;
                             }
@@ -2184,8 +2322,11 @@ pub async fn run(mut args: Run) -> Result<()> {
                                         .map(|item|format!("Scheduled task {} saved for Unix {}.",item.id,item.next_unix))
                                 }
                                 crate::organizer::Directive::Notify { text, title, speak } => {
-                                    crate::notifications::add(title.as_deref().unwrap_or("Notification"), &text, "agent", None, speak.unwrap_or(false))
-                                        .map(|item|format!("Notification {} saved.",item.id))
+                                    match crate::notifications::add(title.as_deref().unwrap_or("Notification"), &text, "agent", None, speak.unwrap_or(false)) {
+                                        Ok(Some(item)) => Ok(format!("Notification {} saved.", item.id)),
+                                        Ok(None) => Ok("Notification suppressed: a recent one already covers this.".into()),
+                                        Err(e) => Err(e),
+                                    }
                                 }
                             };
                             let message=match result {Ok(message)=>message,Err(e)=>format!("Accessor control rejected: {e:#}")};
@@ -2565,6 +2706,11 @@ fn spoken_input_allowed(
 /// Short UI annotation of local speech confidence, or empty when unavailable.
 fn confidence_suffix(confidence: Option<audio::Confidence>) -> String {
     match confidence {
+        Some(value) if value.min < 0.5 => format!(
+            "  ·  low confidence, min {:.0}% (mean {:.0}%)",
+            (value.min * 100.0).clamp(0.0, 100.0),
+            (value.mean * 100.0).clamp(0.0, 100.0)
+        ),
         Some(value) => format!(
             "  ·  {:.0}% confident (min {:.0}%)",
             (value.mean * 100.0).clamp(0.0, 100.0),
@@ -2572,6 +2718,18 @@ fn confidence_suffix(confidence: Option<audio::Confidence>) -> String {
         ),
         None => String::new(),
     }
+}
+
+/// Note for an ignored or unusable transcript, so Activity still records how
+/// confident the local recognizer was.
+fn confidence_note(confidence: Option<audio::Confidence>) -> Option<String> {
+    let value = confidence?;
+    let min = (value.min * 100.0).clamp(0.0, 100.0);
+    Some(if value.min < 0.5 {
+        format!("low confidence, min {min:.0}%")
+    } else {
+        format!("min {min:.0}% confidence")
+    })
 }
 
 /// A caution added to the agent prompt when recognition was uncertain, so the

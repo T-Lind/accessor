@@ -33,6 +33,15 @@ impl Worker {
             options.model.as_deref().unwrap_or(""),
             &options.reasoning,
         )?;
+        crate::masterlog::event(
+            "worker",
+            &format!(
+                "start {harness} · {} · {} ({} chars)",
+                options.model.as_deref().unwrap_or("default"),
+                options.reasoning,
+                prompt.chars().count()
+            ),
+        );
         if options.instructions.trim().is_empty() {
             options.instructions = "You are an isolated Accessor worker executing a bounded user-authorized task. Use your harness tools and existing permissions. Do not create further agents or emit Accessor controls. Return a concise result including outcome, evidence, changed files, unresolved work, and any usage/approval blockers. Never claim success without evidence. Do not retry uncertain external actions. The main conversation will receive and explain your result.".into();
         }

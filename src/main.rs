@@ -15,6 +15,7 @@ mod identity;
 mod journal;
 mod limits;
 mod markdown;
+mod masterlog;
 mod mcp;
 mod memory;
 mod noise;
@@ -63,6 +64,7 @@ pub enum Input {
         text: String,
         reason: String,
         epoch: u64,
+        confidence: Option<audio::Confidence>,
     },
     NoiseCalibrated {
         floor_db: f32,

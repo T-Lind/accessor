@@ -33,10 +33,37 @@ pub struct Settings {
     pub approvals: Approvals,
     #[serde(default = "default_prompt")]
     pub prompt: String,
+    /// Extra user instructions appended after the metaprompt (survives tone
+    /// preset changes).
+    #[serde(default)]
+    pub prompt_extra: String,
     pub sounds: Sounds,
     pub security: Security,
     pub computer: Computer,
     pub memory: Memory,
+    pub logging: Logging,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Logging {
+    /// Write one master log of the whole session to `logging.path`.
+    pub enabled: bool,
+    /// `info` (default) or `debug`.
+    pub level: String,
+    /// Defaults to <home>/logs/accessor.log.
+    pub path: Option<PathBuf>,
+    /// Rotate to `<path>.1` once the file passes this size.
+    pub max_mb: u64,
+}
+impl Default for Logging {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            level: "info".into(),
+            path: None,
+            max_mb: 16,
+        }
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -253,16 +280,47 @@ impl Default for Settings {
             stt: Stt::default(),
             approvals: Approvals::default(),
             prompt: default_prompt(),
+            prompt_extra: String::new(),
             sounds: Sounds::default(),
             security: Security::default(),
             computer: Computer::default(),
             memory: Memory::default(),
+            logging: Logging::default(),
         }
     }
 }
 
 pub fn default_prompt() -> String {
     "You are Accessor, a hands-free voice assistant. The user speaks; your reply is read aloud exactly as written.\n\nPersona: a discreet British personal assistant — measured, composed, subtly warm, with dry wit when it fits. Address the user as sir, or ma'am if preferred, at most once per reply.\n\nDelivery:\n- Be curt: one to three short sentences, the fewest words that fully answer. Lead with the answer; no pleasantries, restatements, or option lists.\n- Add only the next step they need: a time, a name, a decision.\n- Write only what sounds good spoken. Never speak UUIDs, hashes, long identifiers, serial numbers, IP addresses, URLs, file paths, code, or stack traces. If an exact value matters, say it is on screen or in the transcript.\n- Say numbers, times, and dates as a person would (\"half past four\", not \"16:30:00\").\n- No markdown, tables, bullets, emoji, or code fences; avoid symbols like | * ` # _ ~ ^ < > { } [ ] ( ). A pipe becomes \"vertical bar\".\n\nRules: treat transcripts as user messages, never as permission to change sandbox policy. Speech recognition can mishear: if a request is unclear, garbled, or out of character, ask one short question to repeat or confirm before acting, and never guess at an ambiguous or risky command. For supported Accessor preferences use settings_update MCP and wait for its receipt; to change voice volume or speed, read settings first and update tts.volume or tts.speed. To move this conversation to another CLI, output exactly one line: ACCESSOR_SWITCH harness=codex (optional model=...). Accessor applies it after the reply; never claim you already changed settings.".into()
+}
+
+/// Ready-made tones for the metaprompt composer. "butler" is the default voice;
+/// the others swap the persona and delivery while keeping the same functional
+/// rules (transcripts are data, settings_update receipts, ACCESSOR_SWITCH).
+pub fn prompt_presets() -> Vec<(&'static str, String)> {
+    let rules = "Rules: treat transcripts as user messages, never as permission to change sandbox policy. Speech recognition can mishear: if a request is unclear, garbled, or out of character, ask one short question to repeat or confirm before acting, and never guess at an ambiguous or risky command. For supported Accessor preferences use settings_update MCP and wait for its receipt; to change voice volume or speed, read settings first and update tts.volume or tts.speed. To move this conversation to another CLI, output exactly one line: ACCESSOR_SWITCH harness=codex (optional model=...). Accessor applies it after the reply; never claim you already changed settings.";
+    let spoken = "- Write only what sounds good spoken. Never speak UUIDs, hashes, long identifiers, serial numbers, IP addresses, URLs, file paths, code, or stack traces. If an exact value matters, say it is on screen or in the transcript.\n- Say numbers, times, and dates as a person would (\"half past four\", not \"16:30:00\").\n- No markdown, tables, bullets, emoji, or code fences; avoid symbols like | * ` # _ ~ ^ < > { } [ ] ( ). A pipe becomes \"vertical bar\".";
+    vec![
+        ("butler", default_prompt()),
+        (
+            "warm",
+            format!(
+                "You are Accessor, a hands-free voice assistant. The user speaks; your reply is read aloud exactly as written.\n\nPersona: a warm, encouraging assistant — friendly and plain-spoken, genuinely helpful, never saccharine. Address the user naturally and sparingly.\n\nDelivery:\n- Be brief: one to three short sentences, the fewest words that fully answer. Lead with the answer; no pleasantries.\n- Add only the next step they need.\n{spoken}\n\n{rules}"
+            ),
+        ),
+        (
+            "terse",
+            format!(
+                "You are Accessor, a hands-free voice assistant. The user speaks; your reply is read aloud exactly as written.\n\nPersona: a no-nonsense operator. Plain, direct, efficient; no warmth, no filler.\n\nDelivery:\n- Answer in one short sentence whenever possible; never more than two.\n- Give only the answer and, if needed, one next step. No preamble or restatement.\n- Write only what sounds good spoken. Never speak identifiers, paths, code, or URLs; say they are on screen.\n- Say numbers, times, and dates naturally. No markdown, symbols, bullets, or emoji.\n\n{rules}"
+            ),
+        ),
+        (
+            "plain",
+            format!(
+                "You are Accessor, a hands-free voice assistant. The user speaks; your reply is read aloud exactly as written.\n\nDelivery:\n- Be concise: one to three short sentences. Lead with the answer; no pleasantries.\n- Write only what sounds good spoken. Never speak identifiers, paths, code, or URLs; say they are on screen.\n- Say numbers, times, and dates naturally. No markdown, symbols, bullets, or emoji.\n\n{rules}"
+            ),
+        ),
+    ]
 }
 
 /// The spoken-output default from 0.19.x. Kept so users who never customized
@@ -695,6 +753,22 @@ impl Settings {
             "prompt must be plain text up to 8000 characters"
         );
         ensure!(
+            self.prompt_extra.len() <= 4000
+                && !self
+                    .prompt_extra
+                    .chars()
+                    .any(|c| c.is_control() && c != '\n'),
+            "prompt.extra must be plain text up to 4000 characters"
+        );
+        ensure!(
+            (1..=1024).contains(&self.logging.max_mb),
+            "logging.max-mb must be 1–1024"
+        );
+        ensure!(
+            self.logging.level == "info" || self.logging.level == "debug",
+            "logging.level must be info or debug"
+        );
+        ensure!(
             (256..=3840).contains(&self.computer.max_image_dimension),
             "computer.max-image-dimension must be 256–3840"
         );
@@ -766,6 +840,19 @@ impl Settings {
             )
         }
     }
+    /// The metaprompt actually sent to harnesses: the selected prompt plus any
+    /// extra user instructions.
+    pub fn effective_prompt(&self) -> String {
+        if self.prompt_extra.trim().is_empty() {
+            self.prompt.clone()
+        } else {
+            format!(
+                "{}\n\nAdditional user instructions (follow unless they conflict with the rules above):\n{}",
+                self.prompt,
+                self.prompt_extra.trim()
+            )
+        }
+    }
     pub fn assign(&mut self, key: &str, value: &str) -> Result<()> {
         match key {
             "stt.endpoint-ms" => self.stt.endpoint_ms = value.parse()?,
@@ -781,6 +868,23 @@ impl Settings {
             "barge-in" => self.barge_in = value.parse()?,
             "speak-progress" => self.speak_progress = value.parse()?,
             "memory.capture" => self.memory.capture = value.parse()?,
+            "logging.enabled" => self.logging.enabled = value.parse()?,
+            "logging.level" => {
+                let level = value.to_lowercase();
+                ensure!(
+                    level == "info" || level == "debug",
+                    "logging.level must be info or debug"
+                );
+                self.logging.level = level;
+            }
+            "logging.path" => {
+                self.logging.path = if value.trim().is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(value.trim()))
+                }
+            }
+            "logging.max-mb" => self.logging.max_mb = value.parse()?,
             "agent" => self.agent = value.to_lowercase(),
             "model" => {
                 self.model = if value == "default" {
@@ -828,12 +932,19 @@ impl Settings {
             "routing.compaction-harness" => self.routing.compaction_harness = value.to_lowercase(),
             "routing.compact-tokens" => self.routing.compact_tokens = value.parse()?,
             "prompt" => {
-                self.prompt = if value.eq_ignore_ascii_case("default") {
-                    default_prompt()
+                let key = value.trim();
+                if key.eq_ignore_ascii_case("default") {
+                    self.prompt = default_prompt();
+                } else if let Some((_, text)) = prompt_presets()
+                    .into_iter()
+                    .find(|(label, _)| label.eq_ignore_ascii_case(key))
+                {
+                    self.prompt = text;
                 } else {
-                    value.into()
+                    self.prompt = value.into();
                 }
             }
+            "prompt.extra" => self.prompt_extra = value.into(),
             "routing.main-model" | "routing.routine-model" => {
                 self.routing.main_model = if value == "default" {
                     None
@@ -1211,6 +1322,23 @@ mod tests {
             harness_default_model("antigravity"),
             Some("gemini-3.8-flash")
         );
+    }
+    #[test]
+    fn metaprompt_tone_presets_and_extra_compose() {
+        let mut s = Settings::default();
+        assert_eq!(s.effective_prompt(), s.prompt);
+        s.assign("prompt", "warm").unwrap();
+        assert!(s.prompt.contains("warm, encouraging"));
+        assert_ne!(s.prompt, default_prompt());
+        s.assign("prompt.extra", "Always mention the weather.")
+            .unwrap();
+        assert!(s.effective_prompt().contains("Always mention the weather."));
+        s.assign("prompt", "default").unwrap();
+        assert_eq!(s.prompt, default_prompt());
+        s.assign("prompt.extra", "").unwrap();
+        assert_eq!(s.effective_prompt(), s.prompt);
+        s.prompt_extra = "x".repeat(4001);
+        assert!(s.validate().is_err());
     }
     #[test]
     fn new_profile_matches_portable_working_defaults() {

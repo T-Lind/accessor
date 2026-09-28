@@ -1247,6 +1247,7 @@ pub fn listen(
                         text,
                         reason: "local transcription produced no usable words".into(),
                         epoch: u.epoch,
+                        confidence: None,
                     });
                 }
                 continue;
@@ -1277,13 +1278,14 @@ pub fn listen(
                         confidence,
                     });
                 }
-                Ok((text, _)) => {
+                Ok((text, confidence)) => {
                     if asr_awake.load(Ordering::SeqCst) {
                         crate::usage::record_diagnostic("No words recognized");
                         let _ = output.blocking_send(crate::Input::IgnoredVoice {
                             text,
                             reason: "local transcription produced no usable words".into(),
                             epoch: u.epoch,
+                            confidence,
                         });
                     }
                 }

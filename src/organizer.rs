@@ -1058,6 +1058,10 @@ fn take_due(
                         quiet.start, quiet.end
                     ),
                 });
+                crate::masterlog::event(
+                    "organizer",
+                    &format!("deferred {} to {when} (quiet hours)", task.id),
+                );
                 task.next_unix = next;
                 changed = true;
                 remaining.push(task);
@@ -1066,6 +1070,10 @@ fn take_due(
         }
         due.push(Due::Task(task.clone()));
         changed = true;
+        crate::masterlog::event(
+            "organizer",
+            &format!("claimed {} ({})", task.id, task.label),
+        );
         book.runs.push(RunRecord {
             id: task.id.clone(),
             at_unix: now,
@@ -1084,6 +1092,10 @@ fn take_due(
                         steps - 1
                     ),
                 });
+                crate::masterlog::event(
+                    "organizer",
+                    &format!("{} skipped {} run(s) while away", task.id, steps - 1),
+                );
             }
             task.next_unix = task.next_unix.saturating_add(steps.saturating_mul(every));
             remaining.push(task);

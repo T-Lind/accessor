@@ -9,6 +9,7 @@ enum Page {
     Speech,
     Harnesses,
     Display,
+    Prompt,
     Tests,
     Computer,
 }
@@ -21,6 +22,7 @@ impl Page {
             Self::Speech => "Speech",
             Self::Harnesses => "Harnesses",
             Self::Display => "Display",
+            Self::Prompt => "Metaprompt",
             Self::Tests => "Tests",
             Self::Computer => "Computer",
         }
@@ -68,6 +70,8 @@ enum Action {
     Cycle(&'static str, &'static [&'static str]),
     Edit(&'static str),
     Run(&'static str),
+    /// Cycle the metaprompt through its ready-made tones.
+    PromptPreset,
     Close,
 }
 
@@ -412,10 +416,53 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
             ),
             row(
                 "Voice metaprompt",
-                &prompt_preview(&s.prompt),
-                Action::Edit("prompt"),
+                &prompt_tone(s),
+                Action::Open(Page::Prompt),
             ),
+            row(
+                "Master log",
+                on(s.logging.enabled),
+                Action::Toggle("logging.enabled"),
+            ),
+            row(
+                "Log level",
+                &s.logging.level,
+                Action::Cycle("logging.level", &["info", "debug"]),
+            ),
+            row(
+                "Log size cap",
+                &format!("{} MB", s.logging.max_mb),
+                Action::Edit("logging.max-mb"),
+            ),
+            row("Show / tail log", "/logs", Action::Run("/logs")),
         ],
+        Page::Prompt => {
+            let extra = if s.prompt_extra.trim().is_empty() {
+                "none".to_string()
+            } else {
+                prompt_preview(&s.prompt_extra)
+            };
+            vec![
+                row("Tone", &prompt_tone(s), Action::PromptPreset),
+                row(
+                    "Additional instructions",
+                    &extra,
+                    Action::Edit("prompt.extra"),
+                ),
+                row(
+                    "Edit in your editor",
+                    "$EDITOR",
+                    Action::Run("/prompt edit"),
+                ),
+                row("Show full prompt", "print it", Action::Run("/prompt show")),
+                row(
+                    "Reset to default",
+                    "butler tone, clear extra",
+                    Action::Run("/prompt reset"),
+                ),
+                row("Back", "display", Action::Open(Page::Display)),
+            ]
+        }
         Page::Tests => vec![
             row(
                 "Transcription test",
@@ -478,6 +525,26 @@ fn hint(action: &Action) -> &'static str {
         Action::Open(Page::Display) => {
             "What the chat shows, spoken identity letters, and the editable voice metaprompt."
         }
+        Action::Open(Page::Prompt) => {
+            "The metaprompt sent to Codex, Claude, and Antigravity. Pick a tone, add instructions, or edit the full text in your editor."
+        }
+        Action::PromptPreset => {
+            "Cycle ready-made tones (butler, warm, terse, plain). Extra instructions are kept when you switch."
+        }
+        Action::Edit("prompt.extra") => {
+            "Appended after the metaprompt and kept across tone changes. Type default to clear."
+        }
+        Action::Run("/prompt edit") => "Open the full metaprompt in $EDITOR (then $VISUAL, then vi).",
+        Action::Run("/prompt show") => "Print the current metaprompt and any extra instructions.",
+        Action::Run("/prompt reset") => "Restore the default butler tone and clear extra instructions.",
+        Action::Toggle("logging.enabled") => {
+            "Write one master log of the whole session to <home>/logs/accessor.log. Off by default; when on, every UI line plus routing, agent, worker, watch, notification, memory, and organizer events are included."
+        }
+        Action::Cycle("logging.level", _) => "info logs events; debug adds verbose detail.",
+        Action::Edit("logging.max-mb") => {
+            "Rotate the master log to <path>.1 once it passes this size (1–1024 MB)."
+        }
+        Action::Run("/logs") => "Print the master log path and its last 20 lines.",
         Action::Open(Page::Tests) => {
             "Live mic transcription test, a sample of the current voice, and usage analytics."
         }
@@ -671,6 +738,20 @@ fn prompt_preview(prompt: &str) -> String {
     } else {
         format!("{}…", one.chars().take(41).collect::<String>())
     }
+}
+fn prompt_tone(s: &Settings) -> String {
+    for (label, text) in crate::config::prompt_presets() {
+        if text == s.prompt {
+            return match label {
+                "butler" => "Butler (default)".into(),
+                "warm" => "Warm".into(),
+                "terse" => "Terse".into(),
+                "plain" => "Plain".into(),
+                other => other.into(),
+            };
+        }
+    }
+    "Custom".into()
 }
 fn model_picker(key: &str, s: &Settings, discovered: &[Model]) -> String {
     let (role, harness) = match key {
@@ -1830,6 +1911,15 @@ impl Panel {
                 self.page = *page;
                 self.cursor = 0;
                 Ok(Answer::Show)
+            }
+            Action::PromptPreset => {
+                let presets = crate::config::prompt_presets();
+                let current = presets.iter().position(|(_, text)| *text == s.prompt);
+                let next = match current {
+                    Some(index) => presets[(index + 1) % presets.len()].0,
+                    None => presets[0].0,
+                };
+                Ok(Answer::Command(format!("/prompt preset {next}")))
             }
             Action::Close => Ok(Answer::Close),
             Action::Toggle(key) => {
