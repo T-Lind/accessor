@@ -1,0 +1,59 @@
+// Accessor core voice pipeline ("29").
+//
+// Editable source for docs/diagrams/29.png. Render with Graphviz:
+//
+//   dot -Tpng docs/diagrams/29.dot -o docs/diagrams/29.png
+//
+// Keep the labels short; the README "How it works" section is the prose copy.
+digraph accessor {
+  rankdir = TB;
+  graph [fontname = "Helvetica", bgcolor = "white", pad = 0.35, nodesep = 0.35, ranksep = 0.5];
+  node  [shape = box, style = "rounded,filled", fontname = "Helvetica", fontsize = 11,
+         color = "#5B6B7A", fillcolor = "#EEF3F8", penwidth = 1.2, margin = "0.16,0.10"];
+  edge  [fontname = "Helvetica", fontsize = 9, color = "#5B6B7A", arrowsize = 0.7];
+
+  capture  [label = "Microphone\n(CPAL)", fillcolor = "#DBEAFE"];
+  dsp      [label = "Downmix · resample 16 kHz\nAEC3 echo cancellation (Sonora)"];
+  wake     [label = "Earshot VAD\nLocal wake detector — “29”", fillcolor = "#DCFCE7"];
+  awake    [label = "Awake?", shape = diamond, fillcolor = "#FEF9C3", margin = "0.05,0.03"];
+  stt      [label = "Speech recognition\nCanary 180M · Parakeet TDT · Whisper (local)\nCartesia Ink-2 streaming (opt-in cloud)", fillcolor = "#E0E7FF"];
+  gate     [label = "Room-noise gate · high-pass\n(finished clips before recognition)"];
+  rel      [label = "Jev relevance gate → routing\nmain · coding · plugin · coordinator", fillcolor = "#FAE8FF"];
+  harness  [label = "Harness + Accessor metaprompt\nCodex · Claude Code · Antigravity · opencode · Cursor", fillcolor = "#DBEAFE"];
+  worker   [label = "Isolated worker ≤ 15 min\ncoding / analysis result", fillcolor = "#E0E7FF"];
+  tts      [label = "Spoken reply — one ordered speech queue\nPiper · Kokoro · System · Cartesia", fillcolor = "#DCFCE7"];
+  speaker  [label = "Speaker\n(fed back as the AEC3 echo reference)", fillcolor = "#DBEAFE"];
+
+  capture -> dsp -> wake -> awake;
+  awake -> stt [label = "yes"];
+  stt -> gate -> rel -> harness;
+  harness -> worker [label = "delegate"];
+  worker -> harness [label = "bounded result", style = dashed, constraint = false];
+  harness -> tts;
+  tts -> speaker;
+  speaker -> dsp [label = "echo reference", style = dashed, constraint = false];
+
+  // Local state and controls that surround the loop.
+  subgraph cluster_state {
+    label = "Local state (persists across harnesses and restarts)";
+    fontname = "Helvetica"; fontsize = 10; color = "#9AA7B4"; style = "rounded";
+    memory  [label = "memory.json\nshared facts", fillcolor = "#F1F5F9"];
+    notes   [label = "notes/ + schedules.json\nalarms, tasks, watches", fillcolor = "#F1F5F9"];
+    notices [label = "notifications.json\ncapped, deduped alerts", fillcolor = "#F1F5F9"];
+    journal [label = "journal.enc\nXChaCha20 dictation", fillcolor = "#F1F5F9"];
+  }
+  subgraph cluster_surface {
+    label = "Surfaces";
+    fontname = "Helvetica"; fontsize = 10; color = "#9AA7B4"; style = "rounded";
+    dash  [label = "Ratatui dashboard\nstatus · activity · commands", fillcolor = "#FFFFFF"];
+    mcp   [label = "MCP tools\nsettings · memory · notes · organizer", fillcolor = "#FFFFFF"];
+    lock  [label = "Password lock + quiet hours\ngate access and scheduling", fillcolor = "#FFFFFF"];
+  }
+
+  harness -> memory  [style = dotted, constraint = false];
+  harness -> notes   [style = dotted, constraint = false];
+  harness -> notices [style = dotted, constraint = false];
+  dash  -> harness   [style = dotted, constraint = false];
+  mcp   -> harness   [style = dotted, constraint = false];
+  lock  -> harness   [style = dotted, constraint = false];
+}

@@ -1,0 +1,17 @@
+{
+  "date": "2026-09-27",
+  "cpu": "Intel(R) Core(TM) i7-3520M @ 2.90GHz (Ivy Bridge, 2 cores / 4 threads)",
+  "memory_mb": 7840,
+  "os": "Ubuntu 24.04.5 LTS, Linux 7.0.0-31-generic x86_64",
+  "build": "accessor 0.34.1, cargo build --release --bin acc",
+  "command": "acc tts benchmark --provider piper --runs 5",
+  "piper_voice": "en_GB-alan-medium",
+  "text": "I'm ready to help. What would you like to do?",
+  "playback": false,
+  "notes": [
+    "No disk or memory audio cache and no playback; timings are software synthesis only.",
+    "The first run includes persistent Piper worker startup; the remaining runs reuse it.",
+    "This is a 2012 dual-core Ivy Bridge laptop CPU, close in class to the intended target but not the exact Dell.",
+    "Host virtualization was not detectable; treat these as indicative, not a controlled benchmark."
+  ]
+}

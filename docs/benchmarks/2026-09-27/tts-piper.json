@@ -1,0 +1,36 @@
+{
+  "note": "No disk/memory audio cache, no playback. First run includes connection/worker startup. First byte is network arrival, not audible playback.",
+  "provider": "piper",
+  "runs": [
+    {
+      "audio_seconds": 2.8613151927437643,
+      "first_byte_ms": null,
+      "real_time_factor": 0.3389932438970075,
+      "total_ms": 969.966519
+    },
+    {
+      "audio_seconds": 2.849705215419501,
+      "first_byte_ms": null,
+      "real_time_factor": 0.13725519884779425,
+      "total_ms": 391.13685599999997
+    },
+    {
+      "audio_seconds": 2.9658049886621316,
+      "first_byte_ms": null,
+      "real_time_factor": 0.14423909078154626,
+      "total_ms": 427.785015
+    },
+    {
+      "audio_seconds": 2.9890249433106577,
+      "first_byte_ms": null,
+      "real_time_factor": 0.13720306145915517,
+      "total_ms": 410.103373
+    },
+    {
+      "audio_seconds": 2.8845351473922904,
+      "first_byte_ms": null,
+      "real_time_factor": 0.15355552640793033,
+      "total_ms": 442.93631300000004
+    }
+  ]
+}

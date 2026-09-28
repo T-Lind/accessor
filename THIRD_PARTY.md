@@ -15,8 +15,10 @@ Accessor uses these projects as dependencies; it is not affiliated with their au
 
 Model files and runtime binaries are downloaded separately, not committed. Keep upstream license/attribution notices when redistributing them. Other Rust dependency licenses are recorded in their package metadata.
 
-Optional local speech:
+Local neural speech:
 
+- [Piper](https://github.com/rhasspy/piper), MIT: fast local text-to-speech engine (default voice path). The pinned release binary is downloaded separately, not committed.
+- [piper-voices](https://huggingface.co/rhasspy/piper-voices): the voice models. Each voice carries its own dataset license; review the model card for the voice you ship before redistributing it.
 - [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), Apache-2.0 model weights.
 - [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx), MIT, with model-files-v1.1 ONNX/voice exports verified by SHA-256.
 - The separate Kokoro environment includes phonemizer/espeak-ng dependencies, whose GPL and other upstream license requirements apply when redistributing them. Keep their package license notices; Accessor does not relicense these components.

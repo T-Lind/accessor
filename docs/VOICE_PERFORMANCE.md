@@ -9,6 +9,10 @@ helps loading models, not their steady-state computation.
 
 ## Changes
 
+- **Piper is now the default spoken voice** on new profiles: a pinned local
+  neural engine with a persistent worker, one WAV per completed chunk, no key
+  and no network. System, Kokoro, and Cartesia remain selectable. `acc tts
+  benchmark --provider piper` measures it on your machine.
 - End-of-speech silence is configurable from 300–2000 ms, default **600 ms**,
   previously 1000 ms. This removes 400 ms of intentional waiting for continuous
   speech; set it back to 1000–1200 ms if thoughtful pauses split sentences. The
@@ -42,6 +46,7 @@ Generate a non-private speech sample once, or copy the synthetic WAV used here:
 acc tts test "Twenty nine. What is on my calendar tomorrow morning?" --provider cartesia --output sample.wav
 acc stt benchmark sample.wav --runs 7 --engine canary
 python scripts/benchmark_voice.py sample.wav --assets PATH_TO_ACCESSOR_ASSETS --output results/voice.json --runs 7
+acc tts benchmark --provider piper --runs 4
 acc tts benchmark --provider system --runs 4
 acc tts benchmark --provider kokoro --runs 4
 acc tts benchmark --provider cartesia --runs 4
@@ -61,26 +66,27 @@ itself about wake false positives or far-field accuracy.
 
 The checked-in [synthetic WAV](../tests/fixtures/voice-benchmark.wav) can be used
 without a Cartesia account. Raw results and fixture metadata are in
-[benchmarks/2026-09-21](benchmarks/2026-09-21/RESULTS.md).
+[benchmarks/2026-09-21](benchmarks/2026-09-21/RESULTS.md). The default Piper voice
+was measured separately on a 2012 dual-core i7-3520M (warm median 418.9 ms, RTF
+0.14 for a 2.9-second reply); see
+[benchmarks/2026-09-27](benchmarks/2026-09-27/RESULTS.md). That is a machine of
+the intended class but not the exact Dell, so re-run there before relying on it.
 
 ## Suggested starting setups
 
 | Setup | Local recognition | After-wake STT | TTS | Tradeoff |
 | --- | --- | --- | --- | --- |
+| Default local (new profiles) | Canary warm, 2 threads, no spin | Local | Piper | No key, no network; fast local synthesis on any supported desktop CPU |
 | Responsive cloud-assisted | Canary warm, 2 threads, no spin | Cartesia streaming | Cartesia streaming | Lowest cloud result wait; awake speech uploads before relevance is known |
 | Conservative cloud upload | Canary warm, 2 threads, no spin | Cartesia finished clip | Cartesia streaming | Local word check before upload, additional transcription round trip |
-| Entirely local voice | Canary warm, 1–2 threads | Local | System | No speech-service key; agent/harness can still be cloud-backed |
+| Entirely local voice | Canary warm, 1–2 threads | Local | System | Smallest footprint; OS voice quality varies |
 | Local neural voice | Canary | Local | Kokoro warm | Better neural voice; competing CPU load, particularly on the old Dell |
 
-For the Dell, start with System or Cartesia TTS and Canary kept warm. Kokoro's
-cold start and CPU demand can dominate response time. The current Whisper adapter
-spawns `whisper-cli` and reloads the model per utterance; a tiny model does not
-automatically mean a faster always-on experience. Lazy STT frees RAM when asleep
-but introduces wake-time loading. Parakeet's larger model needs measurements before
-choosing it for a dual-core machine. None of these settings requires an OpenAI API
-key; agent login remains the harness's own responsibility.
+For the Dell, start with Piper (neutral, fast) or System TTS and Canary kept warm; use Cartesia streaming when network latency is acceptable and a key is available. Kokoro's cold start and CPU demand can dominate response time. The current Whisper adapter spawns `whisper-cli` and reloads the model per utterance; a tiny model does not automatically mean a faster always-on experience. Lazy STT frees RAM when asleep but introduces wake-time loading. Parakeet's larger model needs measurements before choosing it for a dual-core machine. None of these settings requires an OpenAI API key; agent login remains the harness's own responsibility.
 
 ```sh
+acc config set tts.provider piper
+acc config set tts.piper-voice en_GB-alan-medium
 acc config set stt.endpoint-ms 600
 acc config set stt.threads 2
 acc config set stt.spin false

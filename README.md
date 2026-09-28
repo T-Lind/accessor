@@ -2,7 +2,7 @@
 
 Say “twenty-nine”, hear a gentle chime, and talk to your agent. Accessor keeps speech recognition local, manages the conversation and terminal display, and reuses the agent’s tools and account connections.
 
-The stack is Rust/Tokio, Clap, Ratatui, CPAL, Earshot voice detection, and Canary 180M Flash INT8 via [transcribe-rs](https://github.com/cjpais/transcribe-rs), the transcription library behind [Handy](https://github.com/cjpais/Handy). Codex App Server, Claude Code, Antigravity (`agy`), opencode, and Cursor (`cursor-agent`) are supported harnesses; mock mode needs no account. Platform notes (history, Jev routing, Ink-2, overflow) live in [docs/PLATFORM.md](docs/PLATFORM.md).
+The stack is Rust/Tokio, Clap, Ratatui, CPAL, Earshot voice detection, and Canary 180M Flash INT8 via [transcribe-rs](https://github.com/cjpais/transcribe-rs), the transcription library behind [Handy](https://github.com/cjpais/Handy). Codex App Server, Claude Code, Antigravity (`agy`), opencode, and Cursor (`cursor-agent`) are supported harnesses; mock mode needs no account. New profiles default to local speech recognition (Canary) and fast local [Piper](https://github.com/rhasspy/piper) speech, so the default path needs no key; Cartesia is an opt-in cloud option for both transcription and speech. Platform notes (history, Jev routing, Ink-2, overflow) live in [docs/PLATFORM.md](docs/PLATFORM.md).
 
 See [local password locking](docs/SECURITY.md) and [voice performance, benchmarks, and deployment priorities](docs/VOICE_PERFORMANCE.md) for the latest security and latency work.
 
@@ -15,10 +15,9 @@ See [local password locking](docs/SECURITY.md) and [voice performance, benchmark
 - **Capture & wake.** The microphone is downmixed, resampled to 16 kHz, and echo-cancelled (WebRTC AEC3); Earshot VAD segments speech, and the local wake detector watches for "29" to open a conversation or unlock the session.
 - **Speech recognition.** Completed awake utterances are transcribed offline with Canary 180M Flash, Parakeet TDT, or Whisper, or streamed to Cartesia Ink-2 over a WebSocket that submits only the final transcript. Wake probes and dictation always stay local, with a non-streaming HTTP fallback.
 - **Relevance & routing.** A Jev (TypeSafe) classifier drops filler and decides whether speech is addressed to the agent; routing then picks the main, coding, or plugin role, or a lightweight coordinator model owns the conversation and delegates the rest.
-- **Harness & metaprompt.** The chosen harness (Codex App Server, Claude Code, Antigravity, opencode, or Cursor) runs under the Accessor metaprompt — persona, handoff guide, and a shared-memory digest — with Accessor's MCP tools attached. Coding and difficult work runs in an isolated 15-minute worker that returns a bounded result.
-- **Local controls & memory.** Strict one-line JSON directives in a reply become notes, alarms, and schedules; shared memory and the encrypted dictation journal persist across harnesses, and `ACCESSOR_SWITCH` hands the conversation to another CLI.
-- **Playback.** Replies are synthesized by the system voice, a local Kokoro worker, or Cartesia, ordered in a single speech queue, and played back while feeding the echo canceller that keeps the microphone from hearing the agent.
-- **Events.** An authenticated email reply emitted by your own automation can start an agent turn even while Accessor is asleep.
+- **Harness & metaprompt.** The chosen harness (Codex App Server, Claude Code, Antigravity, opencode, or Cursor) runs under the Accessor metaprompt — a selectable persona, an extra-instructions field, a handoff guide, and a shared-memory digest — with Accessor's MCP tools attached. Coding and difficult work runs in an isolated 15-minute worker that returns a bounded result.
+- **Local controls & memory.** Strict one-line JSON directives in a reply become notes, alarms, schedules, and notifications; shared memory and the encrypted dictation journal persist across harnesses, and `ACCESSOR_SWITCH` hands the conversation to another CLI.
+- **Playback.** Replies are synthesized by fast local Piper, the system voice, a local Kokoro worker, or Cartesia, ordered in a single speech queue, and played back while feeding the echo canceller that keeps the microphone from hearing the agent.
 
 ## Contents
 
@@ -32,6 +31,7 @@ See [local password locking](docs/SECURITY.md) and [voice performance, benchmark
 - [Choose a voice](#choose-a-voice)
 - [Reuse agent connectors](#reuse-agent-connectors)
 - [Notes, alarms, sleep, and scheduled tasks](#notes-alarms-sleep-and-scheduled-tasks)
+- [Notifications and watches](#notifications-and-watches)
 - [Incoming replies through an event trigger](#incoming-replies-through-an-event-trigger)
 - [Desktop control (computer use)](#desktop-control-computer-use)
 - [Local-only dictation](#local-only-dictation)
@@ -57,9 +57,9 @@ cargo install --path . --bin acc --locked
 acc
 ```
 
-The first run downloads ONNX Runtime and the default Canary speech model into Accessor’s assets folder (`~/.config/accessor/assets` on Linux, `~/Library/Application Support/Accessor/assets` on macOS). No Python and no `assets-dir` pointing at the git checkout. `acc setup` and `acc doctor` do the same download if files are still missing.
+The first run downloads ONNX Runtime and the default Canary speech model, and installs the pinned Piper engine plus its default voice, into Accessor’s assets folder (`~/.config/accessor/assets` on Linux, `~/Library/Application Support/Accessor/assets` on macOS). No Python and no `assets-dir` pointing at the git checkout. `acc setup` and `acc doctor` re-check the speech downloads if files are still missing, and `python scripts/setup_piper.py` (with `PIPER_VOICE=en_US-amy-medium` and so on) installs a different Piper voice. Python is needed only for the optional Kokoro worker; Canary, Piper, and the gateway run in the native Rust process.
 
-Python is needed only for the optional Kokoro worker. Canary and the gateway run in the native Rust process. Codex uses its existing login; Accessor does not call the OpenAI API directly. Windows automatically prefers the desktop-bundled Codex executable when available. Override with `acc config set codex-bin PATH` or `--codex-bin PATH`.
+Codex uses its existing login; Accessor does not call the OpenAI API directly. Windows automatically prefers the desktop-bundled Codex executable when available. Override with `acc config set codex-bin PATH` or `--codex-bin PATH`.
 
 ## A CLI for main use
 
@@ -79,6 +79,10 @@ acc update
 acc computer test
 acc computer screenshot --output shot.png
 acc computer enable
+acc organizer status
+acc notifications list --unread
+acc events status
+acc memory list
 acc journal show
 acc config locations
 acc config export portable.json
@@ -95,14 +99,20 @@ Everything needed day to day is available inside the screen:
 
 | In-screen command | Behavior |
 | --- | --- |
-| `/settings` | Category menu: Voice, Speech, Harnesses, Display, Tests. ↑/↓, Enter, Esc |
-| `/setup` | Four-step setup wizard; Enter keeps defaults, Escape cancels |
+| `/settings` | Category menu: Voice, Speech, Harnesses, Display, Metaprompt, Tests, Security, Computer. ↑/↓, Enter, Esc |
+| `/setup` | Five-step setup wizard; Enter keeps defaults, Escape cancels |
 | `/config`, `/config set KEY VALUE` | Inspect and save settings |
-| `/tts`, `/tts provider kokoro`, `/tts voice af_heart` | Configure spoken replies |
+| `/tts`, `/tts provider piper`, `/tts voice en_GB-alan-medium` | Configure spoken replies (system, kokoro, piper, cartesia, off) |
 | `/tts test`, `/tts voices [search]` | Audition or list/search voices; the current one is marked |
 | `/tts key` | Masked Cartesia key entry; saved in the OS credential store |
 | `/stt test`, `/stt off` | Start/stop live transcription testing |
 | `/noise` | Room-noise gate: `/noise calibrate`, `reset`, `on`, `off` |
+| `/prompt` | Show the metaprompt; `preset butler\|warm\|terse\|plain`, `extra TEXT`, `edit`, `reset` |
+| `/memory` | Inspect shared facts; `/memory review`, `/memory infer`, `/memory forget N` |
+| `/watch every 30m …` | Create a recurring, Jev-gated survey; `/watch list`, `edit ID`, `stop ID` |
+| `/notifications` | Review raised notifications: `list`, `read ID`, `readall`, `dismiss ID` |
+| `/organizer` | Notes, alarms, and scheduled tasks (aliases `/notes`, `/alarms`, `/tasks`) |
+| `/logs` | Show the master log path and tail it (enable under Display) |
 | `/devices` | List microphones in the conversation area |
 | `/connectors` | Check the agent's connected apps |
 | `/connectors setup` | Open the configured plugin harness for native plugin/MCP setup; exit it to return |
@@ -115,9 +125,15 @@ Wake, timeout, speech, and voice changes take effect immediately. Microphone, as
 
 ## Settings and spoken switching
 
-Open `/settings` for a category menu (Voice, Speech, Harnesses, Display, Tests). **↑/↓** moves, **Enter** opens or toggles, **Esc** goes up one level. Typed `/settings KEY VALUE` still works for scripts. Changes persist and apply immediately. The status bar always shows the live **harness · model** and a short identity code (`X S` Codex Sol, `C F` Claude Fable, `A F` Antigravity Flash).
+Open `/settings` for a category menu (Voice, Speech, Harnesses, Display, Metaprompt, Tests, Security, Computer). **↑/↓** moves, **Enter** opens or toggles, **Esc** goes up one level. Typed `/settings KEY VALUE` still works for scripts. Changes persist and apply immediately. The status bar always shows the live **harness · model** and a short identity code (`X S` Codex Sol, `C F` Claude Fable, `A F` Antigravity Flash).
 
 **Harnesses:** **Main** is the persistent main conversation, with a lightweight model by default (Codex Luna, Claude Haiku, Antigravity Flash). **Coding** and **Plugin** select separate worker roles and independent models. The metaprompt tells the main agent to delegate coding, difficult analysis, and plugin work, even when all roles use the same CLI. A worker has a fresh process, its own model and low/medium/high reasoning, a 15-minute deadline, and a bounded result returned to the main conversation. Only one worker runs at a time. Accessor worker controls cannot recursively delegate. Existing native tools still enforce their own policies.
+
+Settings → Harnesses → **Fast mode** (`routing.fast-mode`, off by default) is a best-effort low-latency path: it forces low effort and each harness's light model for the main conversation and workers.
+
+**Metaprompt.** Settings → Display → **Voice metaprompt** (or `/prompt`) controls the persona and delivery rules sent to every harness. `/prompt preset butler|warm|terse|plain` swaps the whole prompt, `/prompt extra TEXT` appends instructions that survive preset changes, `/prompt edit` opens it in `$EDITOR`, and `/prompt reset` restores the default. The metaprompt is not exposed to agent-editable settings, so an agent cannot rewrite its own instructions.
+
+**Master log.** Settings → Display → **Master log** (`logging.enabled`, off by default) writes one timestamped line per event to `logs/accessor.log`, rotating to `.1` at `logging.max-mb` (default 16 MB). Level is `info` or `debug`; `/logs` prints the path and the last lines. Logs never contain credentials or raw audio.
 
 Settings → Harnesses → **Lightweight main conversation** is on by default (`routing.coordinator=true`). The agent selects delegation from the metaprompt; this is a routing policy, not a sandbox that prevents the main harness using its own tools. Turn it off to restore keyword/Jev routing. Jev remains an optional legacy classifier; the coordinator does not call it. Plugin delegation uses `agent` and `routing.plugin-model`, independently of the main model, even for the same harness.
 
@@ -189,6 +205,7 @@ acc tts setup
 acc tts test
 ```
 
+- **Piper** (default): fast local neural speech. Accessor downloads a pinned Piper build and one voice into its assets folder and warms a persistent worker, so there is no API key, no network request during synthesis, and a short first-audio time. Voices are `en_GB-alan-medium` (default), `en_GB-cori-high`, `en_US-lessac-medium`, and `en_US-amy-medium`; set one with `/tts voice NAME`, `tts.piper-voice`, or `PIPER_VOICE` when running `python scripts/setup_piper.py`. Platforms without a Piper build fall back to Kokoro or Cartesia. Measured warm on a 2012 dual-core i7-3520M: median 419 ms and RTF 0.14 for a 2.9-second reply ([details](docs/VOICE_PERFORMANCE.md)).
 - **System**: Windows System.Speech, macOS `say`, Linux `espeak-ng`. No model download; quality depends on installed voices.
 - **Kokoro**: local neural speech, with an optional persistent Python/ONNX worker. No API key or network requests during synthesis. The model loads on the first request and stays loaded for later replies; CPU inference uses two threads with spinning disabled.
 - **Cartesia**: cloud speech with a key saved in the OS credential store. This output setting sends reply text to Cartesia. Microphone audio is sent only if after-wake STT is separately set to Cartesia. `CARTESIA_API_KEY` can supply the credential instead. API version 2026-08-14 is pinned; the default model is sonic-3.
@@ -197,14 +214,20 @@ acc tts test
 Install local neural speech:
 
 ```sh
-python scripts/setup_tts.py
+python scripts/setup_piper.py            # default fast local voice
+acc tts test --provider piper
+acc tts voices --provider piper
+acc config set tts.provider piper
+acc config set tts.piper-voice en_GB-alan-medium
+
+python scripts/setup_tts.py              # Kokoro alternative
 acc tts test --provider kokoro
 acc tts voices --provider kokoro
 acc config set tts.provider kokoro
 acc config set tts.local-voice af_heart
 ```
 
-The helper creates an isolated environment under runtime/kokoro and verifies the approximately 325 MB model plus 28 MB voice file by SHA-256. It supports Python 3.10–3.13 where upstream wheels are available. Initial loading can take several seconds. Performance on an old laptop needs measurement; no real-time guarantee is implied. [Piper](https://github.com/OHF-Voice/piper1-gpl) is a possible lighter future adapter, not bundled here.
+The Piper helper downloads the pinned release and one voice by SHA-256 and needs no Python at runtime. The Kokoro helper creates an isolated environment under runtime/kokoro and verifies the approximately 325 MB model plus 28 MB voice file by SHA-256; it supports Python 3.10–3.13 where upstream wheels are available. Initial loading can take several seconds. Performance on an old laptop needs measurement; no real-time guarantee is implied.
 
 For Cartesia, choose it in `acc tts setup`; the password prompt hides the key, then the setup lists your account voices by name so you can pick one instead of pasting a UUID. `acc tts voices --provider cartesia` lists up to 100 voices with descriptions and marks the current one; add a search term to filter (for example `acc tts voices --provider cartesia --search british`). The list is cached in `voices.json` under the settings folder so the in-screen picker works offline after the first fetch. `acc tts forget-key` deletes the saved key. Linux credential storage needs a running Secret Service such as GNOME Keyring; there is no plaintext fallback.
 
@@ -214,7 +237,7 @@ Export a sample without playing it:
 acc tts test "Hello, I'm Accessor." --provider kokoro --output sample.wav
 ```
 
-The output must be a new file. Markdown, link destinations, and code blocks are removed from spoken text. Completed agent commentary is spoken as soon as it arrives, before the final response. Cartesia plays incoming PCM packets by default (`tts.streaming=true`); local voices and the buffered Cartesia fallback synthesize completed chunks. Progress and final responses share an ordered speech queue. Disable progress speech in `/settings` if preferred. Tool output and private reasoning are not read aloud. `/tts speed 1.1` (range 0.6–1.5) applies to system voices, Kokoro, and Cartesia.
+The output must be a new file. Markdown, link destinations, and code blocks are removed from spoken text. Completed agent commentary is spoken as soon as it arrives, before the final response. Cartesia synthesizes each completed reply in one request and plays incoming PCM packets by default (`tts.streaming=true`); with streaming disabled, it buffers the reply before playback. Local voices synthesize completed chunks. Progress and final responses share an ordered speech queue. Disable progress speech in `/settings` if preferred. Tool output and private reasoning are not read aloud. `/tts speed 1.1` (range 0.6–2.5; Cartesia is clamped to 1.5) applies to system voices, Piper, Kokoro, and Cartesia.
 
 ## Reuse agent connectors
 
@@ -239,7 +262,7 @@ For a user-requested notification, or when a requested task needs an out-of-band
 
 The voice metaprompt tells every supported harness about Accessor's structured local controls. You can say things such as “make a note that the filter size is 20 by 25,” “set an alarm for five minutes,” “run this every morning using Codex and Sol,” or “go to sleep.” The agent emits a strict one-line JSON directive; Accessor removes it from the reply, validates it, performs the local action, and reports what was saved. A sleep directive closes voice access after the reply and waits for the wake code again.
 
-Notes are private Markdown files under `notes/` in the directory shown by `acc config locations`. The MCP server advertises `notes_search` and `note_read`, and the harness metaprompt tells agents to use them when prior notes could answer a request. Note contents remain untrusted user data, not instructions or authorization. Alarms and scheduled tasks persist in `schedules.json`. An alarm repeats a two-beep cue until you say “29 stop” or type `/stop`. Alarms and tasks are checked once per second only while an `acc` process is running; this release does not install a background service or wake a powered-off/suspended computer.
+Notes are private Markdown files under `notes/` in the directory shown by `acc config locations`. The MCP server advertises `notes_search`, `note_read`, and `note_delete`; deletion requires explicit user authorization and an exact ID returned by search, with no bulk-delete form. The harness metaprompt tells agents to use notes when prior notes could answer a request. Note contents remain untrusted user data, not instructions or authorization. Alarms and scheduled tasks persist in `schedules.json`. An alarm repeats a two-beep cue until you say “29 stop” or type `/stop`. Alarms and tasks are checked once per second only while an `acc` process is running; this release does not install a background service or wake a powered-off/suspended computer.
 
 Scheduled tasks require instructions, a first run time, a harness, an explicit model (or supported alias), and a reasoning level (default low). They can be listed, edited, paused/resumed, and deleted by any of the three main harnesses through validated local controls. The agent receives the actual local result, including task IDs or errors. Editing preserves omitted fields; changing the harness also requires a model. Relative repeats use elapsed seconds. Calendar repeats use `local_time` plus `every_days`; Accessor detects the device's IANA timezone and recomputes the next Unix deadline if the device timezone changes. DST gaps run at the first valid minute and duplicated clock times run once.
 
@@ -259,6 +282,32 @@ acc organizer edit ITEM_ID --every-seconds 0
 acc organizer cancel ITEM_ID
 ```
 
+## Notifications and watches
+
+Agents and recurring **watches** can raise reviewable notifications. They are stored privately in `notifications.json` (capped at 100, newest kept; read items are evicted before unread). While Accessor is idle the newest unread items appear in Activity as `Notice` lines, ding once with `sounds.notify`, and are spoken when the raise asked for it and `speak` is on; each is then marked announced so the ding and speech are not repeated across restarts. The status bar shows `· N notice(s)`, and the startup message points at `/notifications`. Announcements persist across runs, and an identical finding from the same source is suppressed for six hours; a re-worded repeat is suppressed for 72 hours by significant-word overlap. Watch prompts are seeded with the last three days of titles and told to skip stories already reported.
+
+```sh
+acc notifications list --unread
+acc notifications list --limit 50
+acc notifications read ID
+acc notifications read-all
+acc notifications dismiss ID
+```
+
+MCP exposes the same as `notifications` (`list`, `read`, `dismiss`, `read_all`), and an agent can raise one with the `notify` control: `{"accessor":{"action":"notify","title":"…","text":"…","speak":true}}`. Notifications are user-facing data, never instructions or authorization.
+
+A **watch** is a recurring scheduled survey that runs through your connectors. Create one from the console:
+
+```
+/watch every 30m [quiet] [threshold=0.7] [night=20:00-07:00] urgent email about the release
+```
+
+The cadence accepts `30m`, `2h`, or `1800s` (minimum 60 seconds, default unit minutes). Each run is an isolated worker using Main's harness and light model; it may emit only `notify` findings, and each is scored by Jev against the guidelines. A finding below `threshold` (default 0.5) is dropped, and a Jev failure fails closed rather than spamming you. `quiet` (aliases `silent`, `nospeak`) makes findings silent; the default is spoken. `/watch list` shows cadence, next run, harness/model, threshold and quiet window; `/watch edit ID [every …] [quiet|speak] [threshold=…] [night=…] [guidelines]` changes one; `/watch stop ID` ends it.
+
+**Quiet hours** (`night=20:00-07:00`, also `quiet-hours=`) are per task or watch. A due task inside the window is deferred to the window's end — wrapping past midnight is supported — and records a receipt and a master-log event. Alarms are not deferred. Watches and tasks run only while an `acc` process is running; this release installs no background service.
+
+Skipped runs are visible: an elapsed-repeat task that missed cycles while Accessor was off records `skipped N run(s) while Accessor was not running`, and a quiet-hours deferral records `deferred to … (quiet hours …)`. `acc organizer status` and `/organizer` show the newest ten receipts (the last 100 are retained).
+
 ## Incoming replies through an event trigger
 
 This release provides the **local handoff** for an existing email automation. It never polls Gmail or invokes an LLM just to check for mail. Configure the reply address and explicitly enable event handling:
@@ -276,11 +325,13 @@ acc events emit --thread-id GMAIL_THREAD_ID --message-id GMAIL_MESSAGE_ID
 
 Use Gmail API IDs, not an email address or the RFC Message-ID header. Both values are validated; no raw email text or shell command is accepted. Do not paste untrusted message content into a shell command. A remote automation needs an authenticated way to invoke the local command. Accessor opens no HTTP listener and stores no Gmail credentials.
 
-Notifications persist as metadata in the user configuration directory. One process can consume the queue at a time. While idle, it checks this local queue once per second (no provider requests). An event starts an agent turn even while voice access is asleep; it does not open the voice conversation or read the response aloud. It asks the agent to use its Gmail connector, verify the configured owner and reply context, and respond in that thread. It instructs the agent to limit email-originated work to email replies and seek local authorization for machine actions. These instructions are not an independent security sandbox; the external trigger must authenticate the source, and the agent/connector must enforce its own permissions.
+Incoming-event records persist as metadata in the user configuration directory. One process can consume the queue at a time. While idle, it checks this local queue once per second (no provider requests). An event starts an agent turn even while voice access is asleep; it does not open the voice conversation or read the response aloud. It asks the agent to use its Gmail connector, verify the configured owner and reply context, and respond in that thread. It instructs the agent to limit email-originated work to email replies and seek local authorization for machine actions. These instructions are not an independent security sandbox; the external trigger must authenticate the source, and the agent/connector must enforce its own permissions.
 
 Duplicate message IDs are suppressed across restarts. A receipt is written before dispatch, so crashes and uncertain sends are not blindly retried. Receipts report agent-turn completion, not proof of email delivery. Inspect Gmail and receipts before retrying an uncertain action. `acc events status` shows the queue location/counts. `/sleep` closes active listening; it does not disable the explicitly enabled event consumer. Quit Accessor to stop both.
 
 **The upstream email automation is not installed or configured by this repository.** Connect that source to the local handoff before expecting replies to wake Accessor. No live email has been sent as part of development/testing.
+
+**Future:** broader event triggers — authenticated new-email notifications, incoming webhooks, and other validated, appropriately scoped sources — may be added natively or as capability guidance in the agent metaprompt. Today the only supported source is the local `acc events emit` handoff above.
 
 ## Desktop control (computer use)
 
@@ -323,7 +374,7 @@ One lightweight main agent owns the conversation; isolated workers return their 
 
 ## Platform and development status
 
-Windows x64 is the tested development platform. Linux x64/ARM64, Apple Silicon macOS, and Windows ARM64 use cross-platform libraries and have runtime download entries, but require testing on actual hardware. Intel macOS needs a separately supplied compatible ONNX Runtime 1.24+ build; 32-bit machines are not supported by the provided setup. Kokoro wheel availability is a separate platform constraint.
+Windows x64 is the tested development platform. Linux x64/ARM64, Apple Silicon macOS, and Windows ARM64 use cross-platform libraries and have runtime download entries, but require testing on actual hardware. Intel macOS needs a separately supplied compatible ONNX Runtime 1.24+ build; 32-bit machines are not supported by the provided setup. Piper has a pinned build for Windows x64, Linux x64/ARM64, and macOS x64/ARM64; if no build exists for the platform, choose Kokoro or Cartesia. Kokoro wheel availability is a separate platform constraint.
 
 Linux compilation needs ALSA headers, pkg-config, and D-Bus development headers (`libasound2-dev libdbus-1-dev pkg-config` on Debian/Ubuntu). Desktop control additionally needs `libpipewire-0.3-dev libwayland-dev libxcb1-dev libxrandr-dev libclang-dev`. Windows needs Rust MSVC/C++ build tools; macOS needs Xcode command-line tools. System TTS on Linux needs espeak-ng. A physical light, startup/service packaging, and additional agent adapters remain future work. Echo cancellation and spoken interruption are implemented; physical laptop testing is still needed.
 
@@ -336,7 +387,7 @@ python tests/smoke.py
 python tests/runtime.py
 ```
 
-The offline tests cover wake boundaries, interruption and replacement of a busy turn, disabling barge-ins, speech queuing for early progress, model discovery/selection and spoken switching, live wake-policy changes, synthetic echo attenuation, stop/sleep, active work delaying timeout, typed permissions, denied unsupported requests, saved settings, and event deduplication. Real-model WAV tests are separate from microphone/noise and long-running power measurements. Cartesia needs a user-provided key for a live test. See [THIRD_PARTY.md](THIRD_PARTY.md) for attribution.
+The offline tests cover wake boundaries, interruption and replacement of a busy turn, disabling barge-ins, speech queuing for early progress, model discovery/selection and spoken switching, live wake-policy changes, synthetic echo attenuation, stop/sleep, active work delaying timeout, typed permissions, denied unsupported requests, saved settings, event deduplication, watch create/edit/stop, notification dedupe and review, quiet-hours deferral receipts, and off-hot-path memory capture. Real-model WAV tests are separate from microphone/noise and long-running power measurements. Cartesia needs a user-provided key for a live test. See [THIRD_PARTY.md](THIRD_PARTY.md) for attribution.
 
 ### Measured on this Windows machine
 
@@ -359,9 +410,11 @@ Wake interruption stops output/work and waits silently for your request. Ordinar
 
 ### Shared memory and MCP
 
-Accessor stores stable facts and preferences in `memory.json` alongside its settings, shared by all harnesses. Agents may save user-supported stable information automatically. Raw room speech, secrets, temporary guesses and permissions must not be saved as memories. Global scope is for cross-project preferences; project scope is tied to a canonical workspace directory. Repository instructions remain in native harness files. Memory is fallible context, never authority over current instructions. A bounded digest of the most recently updated in-scope facts is injected into a harness's instructions when it starts, so the agent has durable context without searching first; it refreshes on the next reconnect rather than every turn, so saving a memory does not restart a warm session or break prompt caching.
+Accessor stores stable facts and preferences in `memory.json` alongside its settings, shared by all harnesses. Agents may save user-supported stable information automatically. Raw room speech, secrets, temporary guesses and permissions must not be saved as memories. Global scope is for cross-project preferences; project scope is tied to a canonical workspace directory. Repository instructions remain in native harness files. Memory is fallible context, never authority over current instructions. A bounded digest of the highest-scoring in-scope facts is injected into a harness's instructions when it starts, so the agent has durable context without searching first; it refreshes on the next reconnect rather than every turn, so saving a memory does not restart a warm session or break prompt caching.
 
-Use `/memory` in the console to inspect shared facts. `acc memory list`, `acc memory search "query"`, `acc memory save key "fact" --source "user statement"`, and `acc memory forget key --revision N` inspect and maintain the store from any shell. Add `--scope global` for a personal preference. Corrections require the revision returned by search; new keys use revision 0. File locks and atomic replacement protect concurrent writers. Forget clears text/source and retains a key tombstone, which blocks old agents from recreating that key. It does not erase copies in provider history, backups, native memories, or previously compacted context. Do not mirror Accessor facts into those stores.
+Facts are ranked by `importance × 0.995^age_hours × (1 + ln(1 + access_count))`. Importance starts from the fact's kind — explicit 1.0, identity 0.9, preference 0.7, fact 0.6, inferred 0.5 — and a fact's access count rises at most once an hour when the digest or a search returns it, so frequently useful memories stay near the top without pinning stale ones. With **memory capture** on (`memory.capture`, default true), ordinary statements are captured automatically off the speech hot path: explicit "remember this", identity and preference phrases immediately, and a debounced pass every 15 minutes asks the configured **compaction model** for durable facts the heuristics miss, tagging them `inferred`. Inferred facts that merely restate a recent key are deduplicated. Set `memory.capture false` (or `/config set memory.capture false`) to turn off automatic capture; the explicit memory commands and MCP tools still work.
+
+Use `/memory` in the console to inspect shared facts, `/memory review` to list live entries with their kind, and `/memory forget N` to forget the numbered entry. `/memory infer` extracts durable facts from the last twelve turns with the compaction model and saves the new ones. `acc memory list`, `acc memory search "query"`, `acc memory save key "fact" --source "user statement"`, and `acc memory forget key --revision N` inspect and maintain the store from any shell. Add `--scope global` for a personal preference. Corrections require the revision returned by search; new keys use revision 0. File locks and atomic replacement protect concurrent writers. Forget clears text/source and retains a key tombstone, which blocks old agents from recreating that key. It does not erase copies in provider history, backups, native memories, or previously compacted context. Do not mirror Accessor facts into those stores.
 
 `acc mcp` serves memory, note search/read, organizer, harness health, live session/settings controls, and subscription usage over stdio. `harness_health` reports executable discovery, configured roles, workspace, cached model count, live-session attachment, and current device timezone; it does not claim that login or an external connector call succeeded. Codex and Claude launched by Accessor receive a session-specific MCP connection; existing connectors remain available. Startup detects available harnesses and checks Antigravity registration automatically; `acc mcp-install` is also available for manual repair. Connections open when each harness starts. Registration preserves unrelated entries and refuses name collisions. Accessor passes the active workspace to Antigravity's server. Native harness tool permissions still apply. Main and worker prompts include the same memory/note policy; compaction prompts do not instruct memory retrieval or saving.
 
@@ -373,7 +426,7 @@ Memory search first filters global/current-project entries and ranks keyword mat
 
 An ignored awake input now appears in Activity as `Ignored (reason): words`, including Jev's addressed/actionable scores when available. Accepted input appears only once as `You`; there is no extra `Heard` line. The status line distinguishes hearing speech, local/cloud transcription, and relevance checking. Rejected words never enter agent history, shared memory, or analytics. Sleeping ambient speech stays hidden; `/stt-test` explicitly shows everything.
 
-New profiles default to Cartesia after-wake STT with streaming enabled. This uploads detected awake speech before local relevance filtering; wake detection and spoken unlocking remain local. Cartesia requires an API key in the OS credential store. Existing saved profiles keep their choices. To enable streaming on a different profile, select Cartesia for **After wake STT** and enable **Speech → Cartesia streaming**, or run:
+New profiles use **local** after-wake STT (Canary) and fast local Piper speech; `stt.streaming` is on by default but only takes effect when Cartesia is selected for after-wake transcription. Selecting Cartesia uploads detected awake speech before local relevance filtering; wake detection and spoken unlocking remain local, and Cartesia requires an API key in the OS credential store. Existing saved profiles keep their choices. To use cloud transcription, select Cartesia for **After wake STT** and leave **Speech → Cartesia streaming** enabled, or run:
 
 ```sh
 acc config set stt.conversation cartesia
@@ -405,7 +458,7 @@ An agent can call `settings_read`, then `settings_update` with a `changes` objec
 {"changes":{"tts.speed":1.2,"tts.volume":0.7,"sounds.think":0.3,"sounds.alarm":0.8}}
 ```
 
-Supported preferences include speech provider/voice/model/speed/volume, spoken replies/progress, wake/sleep/think/alarm volumes, barge-in, idle timeout, display mode, after-wake STT/streaming/relevance, and main/coding/plugin harness/model/reasoning. Speed accepts 0.6–1.5; volumes accept 0–1.5 (0 is silent, 1 is normal). Speech gain is applied at playback, before echo-reference submission, so cached voices use the selected volume too.
+Supported preferences include speech provider/voice/model/speed/volume, spoken replies/progress, wake/sleep/think/alarm volumes, barge-in, idle timeout, display mode, after-wake STT/streaming/relevance, and main/coding/plugin harness/model/reasoning. Speed accepts 0.6–2.5 (Cartesia is clamped to 1.5); volumes accept 0–1.5 (0 is silent, 1 is normal). Speech gain is applied at playback, before echo-reference submission, so cached voices use the selected volume too. The metaprompt, master-log settings, `memory.capture`, and security settings are deliberately outside the agent-editable surface.
 
 The agent treats requests such as “speak more quietly” as settings changes: it reads the current settings, updates `tts.volume` through MCP, and waits for the receipt. The next spoken reply uses the new volume. Cartesia defaults to **Classy British Man** (`95856005-0332-41b0-935f-352e296aa0df`); existing profiles that still have the former built-in Skylar default migrate automatically, while explicitly selected voices are preserved. Set a Cartesia voice by friendly name or id (`/tts voice Classy British Man`, `/settings tts.voice british`); the name is resolved against the cached account list, and an unknown multi-word name is rejected instead of being saved as a broken id.
 
@@ -421,11 +474,12 @@ Agents should discover and use Accessor's MCP memory tools rather than shelling 
 | --- | --- |
 | Cartesia Ink-2 STT | Optional live PCM WebSocket upload while awake; only finalized transcripts go to the agent. |
 | Canary / Parakeet TDT / Whisper STT | Local decoding of completed utterance chunks, plus rolling local wake checks. No incremental transcript stream. |
-| Cartesia TTS | Incoming PCM playback through the HTTP streaming endpoint, with bounded buffering, echo references and cancellation. `tts.streaming=false` restores completed-WAV sentence prefetch. |
+| Cartesia TTS | One synthesis request per completed reply, with incoming PCM playback, bounded buffering, echo references and cancellation. `tts.streaming=false` buffers the completed WAV before playback. |
+| Piper TTS | Persistent local worker, one WAV per completed chunk; no network or key, completed WAV chunks before playback. |
 | Kokoro TTS | Persistent local worker, sentence-sized synthesis and prefetch; completed WAV chunks before playback. |
 | System TTS | OS synthesis into a completed WAV chunk before playback. |
 
-Cartesia STT and TTS both support streaming in Accessor, and new profiles enable both. Local TTS still uses completed WAV chunks. See [Cartesia streaming bytes](https://docs.cartesia.ai/api-reference/tts/bytes).
+Cartesia STT and TTS both support streaming. New profiles transcribe and speak locally (Canary and Piper) and need no key; selecting Cartesia enables its streaming path for that provider. Local TTS still uses completed WAV chunks. See [Cartesia streaming bytes](https://docs.cartesia.ai/api-reference/tts/bytes).
 
 
 ### Password and privacy controls
