@@ -161,3 +161,24 @@ flowchart LR
   worker output are capped. Agent-authored data is never authority.
 - **Fail closed.** Malformed password files, unreadable journal keys, and
   unsupported approval requests are refused rather than guessed.
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    if (!window.mermaid) return;
+    mermaid.initialize({ startOnLoad: false, theme: "neutral" });
+    document
+      .querySelectorAll("pre > code.language-mermaid")
+      .forEach(function (code) {
+        var host = document.createElement("div");
+        host.className = "mermaid";
+        host.textContent = code.textContent;
+        code.parentElement.replaceWith(host);
+      });
+    mermaid.run({ nodes: document.querySelectorAll(".mermaid") });
+  });
+</script>
+<style>
+  .mermaid { max-width: 100%; overflow-x: auto; margin: 1.25rem 0; }
+  .mermaid svg { max-width: 100%; height: auto; }
+</style>
