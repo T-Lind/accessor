@@ -271,6 +271,7 @@ fn input() -> Result<Enigo> {
         .context("Cannot open the desktop input session; a local desktop session must be active")
 }
 
+#[allow(dead_code)]
 pub(crate) fn input_handle() -> Result<Enigo> {
     input()
 }
