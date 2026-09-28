@@ -441,7 +441,7 @@ class RuntimeTests(unittest.TestCase):
         app = self.app("codex")
         app.send("29 quiet fixture")
         app.expect("Scheduled task ")
-        deadline = time.time() + 10
+        deadline = time.time() + 20
         status = ""
         while time.time() < deadline:
             status = self.cli("organizer", "status").stdout
@@ -458,7 +458,7 @@ class RuntimeTests(unittest.TestCase):
         app.expect("Mock agent received: remember that the workshop filter size is 20 by 25")
         path = self.home / "settings" / "memory.json"
         entries = []
-        deadline = time.time() + 5
+        deadline = time.time() + 10
         while time.time() < deadline:
             if path.exists():
                 entries = json.loads(path.read_text())

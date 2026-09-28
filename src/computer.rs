@@ -299,6 +299,27 @@ pub(crate) fn key_combo(enigo: &mut Enigo, combo: &str, repeat: u32) -> Result<(
     Ok(())
 }
 
+/// `Insert` exists on Windows and Linux but not on macOS; fall back to the
+/// macOS Help/Insert virtual keycode.
+#[cfg(not(target_os = "macos"))]
+fn key_insert() -> Key {
+    Key::Insert
+}
+#[cfg(target_os = "macos")]
+fn key_insert() -> Key {
+    Key::Other(0x72)
+}
+
+/// macOS has no Print Screen key; use F13 so the request is still accepted.
+#[cfg(not(target_os = "macos"))]
+fn key_print_screen() -> Key {
+    Key::PrintScr
+}
+#[cfg(target_os = "macos")]
+fn key_print_screen() -> Key {
+    Key::Other(0x69)
+}
+
 fn parse_key(token: &str) -> Result<Key> {
     let token = token.trim();
     ensure!(!token.is_empty(), "Empty key");
@@ -310,7 +331,7 @@ fn parse_key(token: &str) -> Result<Key> {
         "space" => Key::Space,
         "backspace" => Key::Backspace,
         "delete" | "del" => Key::Delete,
-        "insert" => Key::Insert,
+        "insert" => key_insert(),
         "home" => Key::Home,
         "end" => Key::End,
         "pageup" | "page_up" | "pgup" => Key::PageUp,
@@ -324,7 +345,7 @@ fn parse_key(token: &str) -> Result<Key> {
         "shift" => Key::Shift,
         "meta" | "cmd" | "command" | "super" | "win" | "windows" => Key::Meta,
         "capslock" | "caps" => Key::CapsLock,
-        "printscreen" | "printscr" | "prtsc" => Key::PrintScr,
+        "printscreen" | "printscr" | "prtsc" => key_print_screen(),
         "f1" => Key::F1,
         "f2" => Key::F2,
         "f3" => Key::F3,
@@ -802,6 +823,10 @@ mod tests {
         assert_eq!(parse_key("enter").unwrap(), Key::Return);
         assert_eq!(parse_key("ctrl").unwrap(), Key::Control);
         assert_eq!(parse_key("A").unwrap(), Key::Unicode('A'));
+        // These exist on Windows/Linux but are emulated on macOS, so they must
+        // parse everywhere.
+        assert!(parse_key("insert").is_ok());
+        assert!(parse_key("printscreen").is_ok());
         assert_eq!(
             parse_combo("ctrl+shift+s").unwrap(),
             vec![Key::Control, Key::Shift, Key::Unicode('s')]
