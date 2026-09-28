@@ -613,6 +613,8 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut limits = crate::limits::Limits::load();
     let mut control_count = 0usize;
     let mut compaction: Option<CompactionJob> = None;
+    let mut memory_job: Option<tokio::task::JoinHandle<()>> = None;
+    let mut last_memory_extract = Instant::now() - Duration::from_secs(900);
     let mut last_organizer_poll = Instant::now();
     let mut last_notify_poll = Instant::now();
     let mut notice_count = crate::notifications::unread_count().unwrap_or(0);
@@ -1824,6 +1826,30 @@ pub async fn run(mut args: Run) -> Result<()> {
                             })();
                             match result {Ok(message)=>ui.message(message),Err(e)=>ui.message(format!("{e:#}"))}
                         },
+                        ["/memory","infer"] => {
+                            let window: String = transcript
+                                .iter()
+                                .rev()
+                                .take(12)
+                                .collect::<Vec<_>>()
+                                .into_iter()
+                                .rev()
+                                .map(|(role, line)| format!("{role}: {line}"))
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            ui.message(format!("Extracting durable facts with the {} model...", settings.routing.compaction_model));
+                            match crate::route::extract_facts(&window, &settings).await {
+                                Ok(candidates) => {
+                                    let found = candidates.len();
+                                    match crate::memory::store_candidates(&workspace, candidates) {
+                                        Ok(saved) if saved.is_empty() => ui.message(format!("Extracted {found} candidate(s); nothing new to save.")),
+                                        Ok(saved) => ui.message(format!("Saved {} inferred fact(s): {}", saved.len(), saved.iter().map(|entry| entry.key.clone()).collect::<Vec<_>>().join(", "))),
+                                        Err(e) => ui.message(format!("Could not save inferred facts: {e:#}")),
+                                    }
+                                }
+                                Err(e) => ui.message(format!("Extraction failed: {e:#}")),
+                            }
+                        },
                         ["/audio"] => ui.message(format!("Local wake checks: {wake_checks}; wake hits: {wake_hits}; speaker echoes rejected: {wake_echoes}; last decode: {wake_decode_ms} ms. Rolling checks active: {}. Local engine: {}. Say {}, pause, then your request. No recordings saved. Noise gate: {} at {:.1} dBFS; denoise: {}.\n{}; {}; capture paused: {}; decoder errors: {wake_errors}; last wake-window recognition (diagnostic only): {}",interrupting.load(Ordering::SeqCst),settings.stt.engine,settings.wake_code,if settings.stt.noise_gate {"on"} else {"off"},noise_control.floor_db(),settings.stt.denoise,audio_diagnostics.summary(),speech_state.summary(),muted.load(Ordering::SeqCst),last_wake_probe)),
                         ["/limits"] => ui.message(limits.report()),
                         [action @ ("/worker-approve" | "/worker-deny"), number] => {
@@ -2152,6 +2178,46 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 while transcript.len() > 30 { transcript.pop_front(); }
                                 seen_history.clear();
                             }
+                        }
+                        // Debounced background inference: ask the compaction model
+                        // for durable facts the heuristics miss, off the hot path.
+                        if !is_automatic
+                            && settings.memory.capture
+                            && memory_job.as_ref().is_none_or(|job| job.is_finished())
+                            && last_memory_extract.elapsed() >= Duration::from_secs(900)
+                        {
+                            last_memory_extract = Instant::now();
+                            let window: String = transcript
+                                .iter()
+                                .rev()
+                                .take(12)
+                                .collect::<Vec<_>>()
+                                .into_iter()
+                                .rev()
+                                .map(|(role, line)| format!("{role}: {line}"))
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            let settings_clone = settings.clone();
+                            let workspace_clone = workspace.clone();
+                            memory_job = Some(tokio::spawn(async move {
+                                if let Ok(candidates) =
+                                    crate::route::extract_facts(&window, &settings_clone).await
+                                {
+                                    if !candidates.is_empty() {
+                                        if let Ok(saved) = crate::memory::store_candidates(
+                                            &workspace_clone,
+                                            candidates,
+                                        ) {
+                                            if !saved.is_empty() {
+                                                crate::masterlog::event(
+                                                    "memory",
+                                                    &format!("inferred {} fact(s)", saved.len()),
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }));
                         }
                         seen_history.insert(target.harness.clone(), transcript.len());
                         busy=true;

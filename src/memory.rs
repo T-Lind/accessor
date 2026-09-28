@@ -236,6 +236,12 @@ impl Store {
                 ensure!(revision == 0, "New memory requires revision 0");
                 ensure!(entries.len() < 5000, "Memory store is full");
             }
+            let (kind_value, importance_value) = match existing {
+                Some(i) if entries[i].importance > kind_importance(kind) => {
+                    (entries[i].kind.clone(), entries[i].importance)
+                }
+                _ => (kind.to_string(), kind_importance(kind)),
+            };
             let entry = Entry {
                 scope,
                 key: key.into(),
@@ -244,8 +250,8 @@ impl Store {
                 updated_unix: crate::organizer::now_unix(),
                 revision: revision.checked_add(1).context("Revision overflow")?,
                 deleted: false,
-                kind: kind.into(),
-                importance: kind_importance(kind),
+                kind: kind_value,
+                importance: importance_value,
                 access_count: 0,
                 last_accessed_unix: 0,
                 archived: false,
@@ -327,6 +333,15 @@ fn words_for(entry: &Entry) -> HashSet<String> {
     words(&format!("{} {}", entry.key, entry.text))
 }
 
+/// True when two facts say essentially the same thing, so a re-worded
+/// re-extraction does not churn or duplicate the store. Compares key + text, so
+/// `location` and `user-location` with the same place still match.
+fn near_same(a: &str, b: &str) -> bool {
+    let (a, b) = (words(a), words(b));
+    let shared = a.intersection(&b).count();
+    shared >= 2 && shared as f32 / a.len().min(b.len()) as f32 >= 0.9
+}
+
 /// Importance seeded from how a fact arrived. User-stated facts outrank
 /// agent-inferred ones.
 fn kind_importance(kind: &str) -> f32 {
@@ -394,7 +409,13 @@ fn slug(text: &str) -> String {
 }
 
 fn clean(value: &str) -> String {
-    value
+    let value = value.trim();
+    let cut = [". ", "; ", "! ", "? ", ", and ", " and ", " but ", ", "]
+        .iter()
+        .filter_map(|separator| value.find(separator))
+        .min()
+        .unwrap_or(value.len());
+    value[..cut]
         .trim()
         .trim_matches(|c: char| matches!(c, '.' | ',' | ';' | '!' | '?'))
         .trim()
@@ -411,6 +432,27 @@ fn after_prefix<'a>(text: &'a str, lower: &str, prefix: &str) -> Option<&'a str>
         .then(|| text[prefix.len()..].trim())
 }
 
+/// Drop a leading filler word so "Actually I moved to Munich" still matches the
+/// "i moved to" pattern. Returns the remaining text and its lowercase form.
+fn strip_leading_filler<'a>(text: &'a str, lower: &str) -> (&'a str, String) {
+    for filler in [
+        "actually ",
+        "by the way ",
+        "also ",
+        "well ",
+        "so ",
+        "oh ",
+        "and ",
+        "btw ",
+    ] {
+        if lower.starts_with(filler) {
+            let rest = text[filler.len()..].trim_start();
+            return (rest, rest.to_lowercase());
+        }
+    }
+    (text, lower.to_string())
+}
+
 /// Detect durable facts in one user utterance. Deliberately high precision: it
 /// fires only on explicit memory requests, identity statements, and stated
 /// preferences, so the store does not fill with noise. An explicit request
@@ -420,8 +462,8 @@ pub fn candidates(utterance: &str) -> Vec<Candidate> {
     if text.is_empty() || opted_out(text) {
         return Vec::new();
     }
-    let lower = text.to_lowercase();
     let source = format!("user said: {}", truncated(text, 200));
+    let (text, lower) = strip_leading_filler(text, &text.to_lowercase());
     for prefix in [
         "please remember that ",
         "please remember ",
@@ -458,6 +500,7 @@ pub fn candidates(utterance: &str) -> Vec<Candidate> {
         ("i live in ", "location", "Location"),
         ("i'm based in ", "location", "Location"),
         ("i am based in ", "location", "Location"),
+        ("i moved to ", "location", "Location"),
         ("i work at ", "employer", "Employer"),
         ("i work for ", "employer", "Employer"),
     ] {
@@ -503,15 +546,29 @@ pub fn candidates(utterance: &str) -> Vec<Candidate> {
 /// Skips exact duplicates, updates corrections in place, and never resurrects
 /// a forgotten key. Best-effort: an individual failure does not abort the rest.
 pub fn capture(workspace: &Path, utterance: &str) -> Result<Vec<Entry>> {
-    capture_at(
+    store_candidates(workspace, candidates(utterance))
+}
+
+/// Store already-extracted candidates (from heuristics or a model) through the
+/// same dedupe/update path. Best-effort: one failure does not abort the rest.
+pub fn store_candidates(workspace: &Path, candidates: Vec<Candidate>) -> Result<Vec<Entry>> {
+    store_candidates_at(
         crate::config::home()?.join("memory.json"),
         workspace,
-        utterance,
+        candidates,
     )
 }
 
+#[cfg(test)]
 fn capture_at(path: PathBuf, workspace: &Path, utterance: &str) -> Result<Vec<Entry>> {
-    let candidates = candidates(utterance);
+    store_candidates_at(path, workspace, candidates(utterance))
+}
+
+fn store_candidates_at(
+    path: PathBuf,
+    workspace: &Path,
+    candidates: Vec<Candidate>,
+) -> Result<Vec<Entry>> {
     if candidates.is_empty() {
         return Ok(Vec::new());
     }
@@ -523,9 +580,25 @@ fn capture_at(path: PathBuf, workspace: &Path, utterance: &str) -> Result<Vec<En
             .search(&candidate.key, 100)?
             .into_iter()
             .find(|entry| entry.scope == scope && entry.key == candidate.key && !entry.deleted);
-        if existing
-            .as_ref()
-            .is_some_and(|entry| entry.text == candidate.text)
+        let incoming = format!("{} {}", candidate.key, candidate.text);
+        // Near-duplicate suppression is for model-extracted facts, where the
+        // same fact comes back re-worded. Heuristic (user-stated) captures keep
+        // the exact-text rule so a genuine correction still updates in place.
+        let inferred = candidate.kind == "inferred";
+        if existing.as_ref().is_some_and(|entry| {
+            entry.text == candidate.text
+                || (inferred && near_same(&format!("{} {}", entry.key, entry.text), &incoming))
+        }) {
+            continue;
+        }
+        // Do not store the same inferred fact twice under a different key or
+        // scope: a model that varies the key between runs would duplicate it.
+        if inferred
+            && existing.is_none()
+            && store
+                .scoped()?
+                .into_iter()
+                .any(|entry| near_same(&format!("{} {}", entry.key, entry.text), &incoming))
         {
             continue;
         }
