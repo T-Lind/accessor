@@ -613,6 +613,9 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut limits = crate::limits::Limits::load();
     let mut control_count = 0usize;
     let mut compaction: Option<CompactionJob> = None;
+    let mut pending_fragment: Option<(String, Instant)> = None;
+    let mut recent_fragments: std::collections::VecDeque<(String, Instant)> =
+        std::collections::VecDeque::new();
     let mut memory_job: Option<tokio::task::JoinHandle<()>> = None;
     let mut last_memory_extract = Instant::now() - Duration::from_secs(900);
     let mut last_organizer_poll = Instant::now();
@@ -1207,7 +1210,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                 if matches!(&input,Input::GatedVoice{epoch:e,..} if *e==epoch.load(Ordering::SeqCst)) {gate_job=None;}
                 if let Input::GatedVoice{decision,text,epoch:e,..}=&input {
                     if *e==epoch.load(Ordering::SeqCst) {
-                        if !decision.accepted {ui.ignored(text,&decision.reason,None);continue;}
+                        if !decision.accepted {ui.ignored(text,&decision.reason,None);note_ignored(&mut pending_fragment,text);continue;}
                         if decision.reason.contains("unavailable") {ui.message(&decision.reason);}
                     }
                 }
@@ -1999,9 +2002,24 @@ pub async fn run(mut args: Run) -> Result<()> {
                             if let Some(job)=cloud_job.take() {job.abort();}
                         }
                         if !typed && !is_automatic && !is_gated {
+                            let previous: Vec<(String, String)> = recent_fragments
+                                .iter()
+                                .filter(|(_, at)| at.elapsed() < Duration::from_secs(30))
+                                .map(|(fragment, _)| {
+                                    (
+                                        "User (possibly split speech fragment)".to_string(),
+                                        fragment.clone(),
+                                    )
+                                })
+                                .collect();
+                            recent_fragments.push_back((text.clone(), Instant::now()));
+                            while recent_fragments.len() > 6 {
+                                recent_fragments.pop_front();
+                            }
                             if settings.routing.input_gate!="off" && !crate::route::meaningful_input(&text) {ui.ignored(&text,"local filter: filler or non-speech",confidence_note(voice_confidence));continue;}
                             if settings.routing.input_gate=="jev" && crate::route::jev_available() {
-                                let tx=input_tx.clone();let history=transcript.iter().cloned().collect::<Vec<_>>();
+                                let tx=input_tx.clone();let mut history=transcript.iter().cloned().collect::<Vec<_>>();
+                                history.extend(previous);
                                 let captured_epoch=epoch.load(Ordering::SeqCst);
                                 let addressed=spoken_addressed || wake_listening;
                                 gate_job=Some(tokio::spawn(async move {
@@ -2016,6 +2034,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                         wake_listening = false;
                         if !typed && !is_automatic && !spoken_addressed && !wake_followup && !was_active && spoken_word_count(&text) < 2 {
                             ui.ignored(&text,"one-word transcript outside an established follow-up; say 29 first",confidence_note(voice_confidence));
+                            note_ignored(&mut pending_fragment,&text);
                             continue;
                         }
                         if !typed && !is_automatic && !args.text {
@@ -2167,6 +2186,20 @@ pub async fn run(mut args: Run) -> Result<()> {
                         } else {
                             crate::route::bridge_prompt(&missed, &text, &settings).await
                         };
+                        // If a pause split the user's sentence and Jev dropped the
+                        // head, carry it into the prompt as context so the model
+                        // still sees the whole sentence.
+                        if !typed {
+                            if let Some((fragment, at)) = pending_fragment.take() {
+                                if at.elapsed() < Duration::from_secs(8)
+                                    && !fragment.trim().is_empty()
+                                {
+                                    outbound = format!(
+                                        "[Accessor: the user's speech may have been split by a pause; the preceding fragment was: \"{fragment}\"]\n{outbound}"
+                                    );
+                                }
+                            }
+                        }
                         if let Some(caution) = low_confidence_caution(voice_confidence) {
                             outbound.push_str("\n\n[Accessor: ");
                             outbound.push_str(&caution);
@@ -2737,6 +2770,20 @@ fn spoken_notification(title: &str, text: &str) -> String {
     }
 }
 
+/// Remember an ignored awake fragment briefly, so when the next fragment of a
+/// split sentence is accepted it can carry the head as context.
+fn note_ignored(pending: &mut Option<(String, Instant)>, text: &str) {
+    let now = Instant::now();
+    *pending = Some(match pending.take() {
+        Some((mut acc, at)) if at.elapsed() < Duration::from_secs(8) => {
+            acc.push(' ');
+            acc.push_str(text);
+            (acc, now)
+        }
+        _ => (text.to_string(), now),
+    });
+}
+
 fn spoken_word_count(text: &str) -> usize {
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|word| !word.is_empty())
@@ -2852,6 +2899,15 @@ mod tests {
         assert_eq!(spoken_word_count("Hope."), 1);
         assert_eq!(spoken_word_count("please help"), 2);
         assert_eq!(spoken_word_count("29 stop"), 2);
+    }
+
+    #[test]
+    fn ignored_fragments_accumulate_for_stitching() {
+        let mut pending = None;
+        note_ignored(&mut pending, "so the thing is");
+        note_ignored(&mut pending, "we should ship friday");
+        let (text, _) = pending.expect("accumulated");
+        assert_eq!(text, "so the thing is we should ship friday");
     }
 
     #[test]
