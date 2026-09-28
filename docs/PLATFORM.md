@@ -71,7 +71,7 @@ Interactive dashboard: **↑/↓** move, **Enter** opens a category or toggles, 
 
 ## What you need installed
 
-1. Rebuild: `.\install-accessor.ps1` or `cargo build --release --bin acc`
+1. Install `acc`: use a prebuilt binary from the Releases page (`scripts/install.sh` on Linux/Apple Silicon macOS, `scripts/install.ps1` on Windows) or rebuild from a checkout with `.\install-accessor.ps1` / `cargo build --release --bin acc`
 2. `acc` or `acc doctor` — downloads ONNX Runtime + the selected local STT model if missing (the Piper engine and voice install automatically when Piper is the selected provider)
 3. `acc tts setup` — Piper (default) / system / Kokoro / Cartesia
 4. At least one harness login: Codex (`acc agent`), optional `claude`, optional `agy`

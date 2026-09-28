@@ -41,6 +41,27 @@ See [local password locking](docs/SECURITY.md) and [voice performance, benchmark
 
 ## Quick start
 
+Prebuilt binaries for Windows x64, Linux x64/ARM64, and Apple Silicon macOS are on the [Releases page](https://github.com/T-Lind/accessor/releases). Install the latest with:
+
+```sh
+# Linux and Apple Silicon macOS
+curl -fsSL https://raw.githubusercontent.com/T-Lind/accessor/main/scripts/install.sh | sh
+```
+
+```powershell
+# Windows x64 (PowerShell)
+irm https://raw.githubusercontent.com/T-Lind/accessor/main/scripts/install.ps1 | iex
+```
+
+Then start it:
+
+```sh
+acc doctor
+acc -wakecode 29 speak
+```
+
+The installer downloads only the small `acc` binary and verifies its SHA-256 against the release's `SHA256SUMS`. Build from source instead:
+
 On Windows, from this checkout:
 
 ```powershell
@@ -57,7 +78,7 @@ cargo install --path . --bin acc --locked
 acc
 ```
 
-The first run downloads ONNX Runtime and the default Canary speech model, and installs the pinned Piper engine plus its default voice, into Accessor’s assets folder (`~/.config/accessor/assets` on Linux, `~/Library/Application Support/Accessor/assets` on macOS). No Python and no `assets-dir` pointing at the git checkout. `acc setup` and `acc doctor` re-check the speech downloads if files are still missing, and `python scripts/setup_piper.py` (with `PIPER_VOICE=en_US-amy-medium` and so on) installs a different Piper voice. Python is needed only for the optional Kokoro worker; Canary, Piper, and the gateway run in the native Rust process.
+The first run downloads ONNX Runtime and the default Canary speech model, and installs the pinned Piper engine plus its default voice, into Accessor’s assets folder (`~/.config/accessor/assets` on Linux, `~/Library/Application Support/Accessor/assets` on macOS). No Python and no `assets-dir` pointing at the git checkout. `acc setup` and `acc doctor` re-check the speech downloads if files are still missing, and `python scripts/setup_piper.py` (with `PIPER_VOICE=en_US-amy-medium` and so on) installs a different Piper voice. Python is needed only for the optional Kokoro worker; Canary, Piper, and the gateway run in the native Rust process. Maintainers tagging a release should follow [docs/RELEASING.md](docs/RELEASING.md).
 
 Codex uses its existing login; Accessor does not call the OpenAI API directly. Windows automatically prefers the desktop-bundled Codex executable when available. Override with `acc config set codex-bin PATH` or `--codex-bin PATH`.
 
