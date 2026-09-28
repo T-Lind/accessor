@@ -33,15 +33,16 @@ builds and publishes:
 
 | Runner | Rust target | Archive |
 | --- | --- | --- |
-| `ubuntu-22.04` | `x86_64-unknown-linux-gnu` | `acc-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+| `ubuntu-24.04` | `x86_64-unknown-linux-gnu` | `acc-<version>-x86_64-unknown-linux-gnu.tar.gz` |
 | `ubuntu-24.04-arm` | `aarch64-unknown-linux-gnu` | `acc-<version>-aarch64-unknown-linux-gnu.tar.gz` |
 | `macos-14` | `aarch64-apple-darwin` | `acc-<version>-aarch64-apple-darwin.tar.gz` |
 | `windows-latest` | `x86_64-pc-windows-msvc` | `acc-<version>-x86_64-pc-windows-msvc.zip` |
 
 Each archive contains `acc` (`acc.exe`), `LICENSE`, and `THIRD_PARTY.md`. The
-workflow also publishes a combined `SHA256SUMS`. Linux x64 is built on Ubuntu
-22.04 to keep the glibc floor at 2.35; the ARM64 build uses Ubuntu 24.04, so it
-needs glibc 2.39+.
+workflow also publishes a combined `SHA256SUMS`. Both Linux builds use Ubuntu
+24.04 because the PipeWire headers on 22.04 are too old for the desktop-capture
+bindings, so the Linux binaries need **glibc 2.39+** (Ubuntu 24.04, Fedora 40+,
+Debian 13+). Older distributions should build from source.
 
 Use **Actions → Release → Run workflow** to build the matrix without publishing;
 the release job only runs for tags.
