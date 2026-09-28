@@ -14,6 +14,10 @@ fn default_kind() -> String {
     "fact".into()
 }
 
+fn default_importance() -> f32 {
+    0.6
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Entry {
     pub scope: String,
@@ -28,6 +32,18 @@ pub struct Entry {
     /// conversation). Older stores default to `fact`.
     #[serde(default = "default_kind")]
     pub kind: String,
+    /// 0–1 importance, seeded from `kind`; drives decay-based selection.
+    #[serde(default = "default_importance")]
+    pub importance: f32,
+    /// Times this fact was retrieved into context (usage reinforcement).
+    #[serde(default)]
+    pub access_count: u32,
+    /// Last retrieval or update; drives recency decay.
+    #[serde(default)]
+    pub last_accessed_unix: u64,
+    /// Hidden from the prompt digest but still searchable.
+    #[serde(default)]
+    pub archived: bool,
 }
 
 /// A durable fact detected in the user's own words, before it is written.
@@ -113,29 +129,52 @@ impl Store {
             ))
         })
     }
-    /// A short, bounded digest of the most recently updated in-scope facts for
-    /// the metaprompt, so an agent need not remember to search first.
-    pub fn digest(workspace: &Path, limit: usize) -> Result<String> {
-        let store = Store::open(workspace)?;
-        let entries = store.search("", limit)?;
-        let mut out = String::new();
-        for entry in entries.iter().filter(|e| !e.deleted) {
-            let line = format!(
-                "- [{}] {}: {}\n",
-                if entry.scope == "global" {
-                    "global"
-                } else {
-                    "project"
-                },
-                entry.key,
-                entry.text.split_whitespace().collect::<Vec<_>>().join(" ")
-            );
-            if out.len() + line.len() > 2000 {
-                break;
-            }
-            out.push_str(&line);
+    /// Every live (non-deleted) entry in this store's scopes.
+    fn scoped(&self) -> Result<Vec<Entry>> {
+        self.locked(|entries| {
+            Ok((
+                entries
+                    .iter()
+                    .filter(|entry| {
+                        (entry.scope == "global" || entry.scope == self.project) && !entry.deleted
+                    })
+                    .cloned()
+                    .collect(),
+                false,
+            ))
+        })
+    }
+
+    /// Record that these facts were retrieved, so usage reinforces retention.
+    /// Throttled to at most once an hour per fact.
+    pub fn touch(&self, entries: &[Entry]) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
         }
-        Ok(out)
+        let now = crate::organizer::now_unix();
+        let keys: HashSet<(String, String)> = entries
+            .iter()
+            .map(|entry| (entry.scope.clone(), entry.key.clone()))
+            .collect();
+        self.locked(|all| {
+            let mut changed = false;
+            for entry in all.iter_mut() {
+                if keys.contains(&(entry.scope.clone(), entry.key.clone()))
+                    && now.saturating_sub(entry.last_accessed_unix) >= 3600
+                {
+                    entry.access_count = entry.access_count.saturating_add(1);
+                    entry.last_accessed_unix = now;
+                    changed = true;
+                }
+            }
+            Ok(((), changed))
+        })
+    }
+
+    /// A short, bounded digest of the facts worth injecting into the metaprompt,
+    /// chosen by importance × recency decay × usage rather than recency alone.
+    pub fn digest(workspace: &Path, limit: usize) -> Result<String> {
+        digest_at(crate::config::home()?.join("memory.json"), workspace, limit)
     }
     pub fn save(
         &self,
@@ -206,6 +245,10 @@ impl Store {
                 revision: revision.checked_add(1).context("Revision overflow")?,
                 deleted: false,
                 kind: kind.into(),
+                importance: kind_importance(kind),
+                access_count: 0,
+                last_accessed_unix: 0,
+                archived: false,
             };
             if let Some(i) = existing {
                 entries[i] = entry.clone();
@@ -237,6 +280,42 @@ impl Store {
         Ok(entry)
     }
 }
+/// Digest for a specific store path, so tests and capture share one path.
+fn digest_at(path: PathBuf, workspace: &Path, limit: usize) -> Result<String> {
+    let store = Store::at(path, workspace)?;
+    let now = crate::organizer::now_unix();
+    let mut entries: Vec<Entry> = store
+        .scoped()?
+        .into_iter()
+        .filter(|entry| !entry.archived)
+        .collect();
+    entries.sort_by(|a, b| {
+        score(b, now)
+            .partial_cmp(&score(a, now))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.updated_unix.cmp(&a.updated_unix))
+    });
+    entries.truncate(limit.clamp(1, 100));
+    let mut out = String::new();
+    for entry in &entries {
+        let line = format!(
+            "- [{}] {}: {}\n",
+            if entry.scope == "global" {
+                "global"
+            } else {
+                "project"
+            },
+            entry.key,
+            entry.text.split_whitespace().collect::<Vec<_>>().join(" ")
+        );
+        if out.len() + line.len() > 2000 {
+            break;
+        }
+        out.push_str(&line);
+    }
+    Ok(out)
+}
+
 fn words(text: &str) -> HashSet<String> {
     text.to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
@@ -246,6 +325,35 @@ fn words(text: &str) -> HashSet<String> {
 }
 fn words_for(entry: &Entry) -> HashSet<String> {
     words(&format!("{} {}", entry.key, entry.text))
+}
+
+/// Importance seeded from how a fact arrived. User-stated facts outrank
+/// agent-inferred ones.
+fn kind_importance(kind: &str) -> f32 {
+    match kind {
+        "explicit" => 1.0,
+        "identity" => 0.9,
+        "preference" => 0.7,
+        "fact" => 0.6,
+        "inferred" => 0.5,
+        _ => 0.6,
+    }
+}
+
+/// Retrieval score: importance × recency decay × log usage, following
+/// Generative Agents (recency/importance/relevance) and MemoryBank's
+/// usage-reinforced retention. Recency decays ~0.995 per hour since last use.
+fn score(entry: &Entry, now: u64) -> f32 {
+    let base = if entry.importance > 0.0 {
+        entry.importance
+    } else {
+        kind_importance(&entry.kind)
+    };
+    let last = entry.last_accessed_unix.max(entry.updated_unix);
+    let age_hours = now.saturating_sub(last) as f32 / 3600.0;
+    let recency = 0.995_f32.powf(age_hours);
+    let usage = 1.0 + (1.0 + entry.access_count as f32).ln();
+    base * recency * usage
 }
 
 const OPT_OUT: &[&str] = &[
@@ -540,5 +648,85 @@ mod tests {
         )
         .unwrap()
         .is_empty());
+    }
+    #[test]
+    fn score_prefers_important_recent_used_facts() {
+        let now = 100_000_000u64;
+        let entry = |kind: &str, updated: u64, access: u32| Entry {
+            scope: "global".into(),
+            key: "k".into(),
+            text: "t".into(),
+            source: "s".into(),
+            updated_unix: updated,
+            revision: 1,
+            deleted: false,
+            kind: kind.into(),
+            importance: kind_importance(kind),
+            access_count: access,
+            last_accessed_unix: updated,
+            archived: false,
+        };
+        let strong = entry("explicit", now, 3);
+        let weak = entry("inferred", now - 30 * 24 * 3600, 0);
+        assert!(score(&strong, now) > score(&weak, now));
+    }
+    #[test]
+    fn touch_reinforces_usage_at_most_once_an_hour() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("memory.json");
+        let store = Store::at(path, tmp.path()).unwrap();
+        let entry = store.save("global", "k", "v", "src", 0).unwrap();
+        store.touch(std::slice::from_ref(&entry)).unwrap();
+        let after = store
+            .search("k", 5)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.key == "k")
+            .unwrap();
+        assert_eq!(after.access_count, 1);
+        assert!(after.last_accessed_unix > 0);
+        store.touch(std::slice::from_ref(&after)).unwrap();
+        let again = store
+            .search("k", 5)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.key == "k")
+            .unwrap();
+        assert_eq!(again.access_count, 1);
+    }
+    #[test]
+    fn digest_ranks_identity_above_a_stale_inferred_fact() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("memory.json");
+        let store = Store::at(path.clone(), tmp.path()).unwrap();
+        store
+            .save_kind("global", "name", "Name: Dana", "user", 0, "identity")
+            .unwrap();
+        store
+            .save_kind(
+                "global",
+                "stale-note",
+                "An old throwaway detail",
+                "agent",
+                0,
+                "inferred",
+            )
+            .unwrap();
+        let old = crate::organizer::now_unix() - 400 * 24 * 3600;
+        store
+            .locked(|entries| {
+                for entry in entries.iter_mut() {
+                    if entry.key == "stale-note" {
+                        entry.updated_unix = old;
+                        entry.last_accessed_unix = old;
+                    }
+                }
+                Ok(((), true))
+            })
+            .unwrap();
+        let digest = digest_at(path, tmp.path(), 10).unwrap();
+        let name = digest.find("name").unwrap();
+        let stale = digest.find("stale-note").unwrap();
+        assert!(name < stale);
     }
 }
