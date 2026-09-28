@@ -37,10 +37,11 @@ pub const KEYS: &[&str] = &[
     "routing.input-gate",
     "routing.announce",
     "routing.fast-mode",
-    "stt.conversation",
-    "stt.streaming",
     "stt.noise-gate",
     "stt.denoise",
+    // `stt.conversation` and `stt.streaming` are deliberately not agent-editable:
+    // flipping them moves microphone audio off-device to Cartesia, which must be
+    // an explicit user choice rather than something a prompt-injected agent can do.
 ];
 pub fn read(s: &Settings) -> Value {
     let source = serde_json::to_value(s).unwrap();

@@ -59,8 +59,9 @@ impl Limits {
         true
     }
     pub fn blocked(&self, harness: &str) -> Option<String> {
-        self.blocks.get(harness).filter(|b| b.until > now_unix()).map(|b|
-            format!("{harness} is cooling down for {}s after a provider limit: {}. This is a local backoff, not a verified provider reset. No action was retried.", b.until - now_unix(), b.reason))
+        let now = now_unix();
+        self.blocks.get(harness).filter(|b| b.until > now).map(|b|
+            format!("{harness} is cooling down for {}s after a provider limit: {}. This is a local backoff, not a verified provider reset. No action was retried.", b.until - now, b.reason))
     }
     pub fn report(&self) -> String {
         let lines: Vec<_> = ["codex", "claude", "antigravity"]

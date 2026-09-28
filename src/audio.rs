@@ -1167,7 +1167,10 @@ pub fn listen(
             }) {
                 let Some(loaded) = ensure_asr(&mut model, &asr_assets, &loaded_engine, &output)
                 else {
-                    break;
+                    // Keep the recognizer thread alive: a failed model load is
+                    // recoverable (lazy_asr_tick retries), and exiting here would
+                    // wedge SpeechState::holding() forever.
+                    continue;
                 };
                 let began = Instant::now();
                 let decoded =
@@ -1220,7 +1223,7 @@ pub fn listen(
             if asr_cloud.load(Ordering::SeqCst) && asr_awake.load(Ordering::SeqCst) {
                 let Some(loaded) = ensure_asr(&mut model, &asr_assets, &loaded_engine, &output)
                 else {
-                    break;
+                    continue;
                 };
                 let began = Instant::now();
                 let decoded = transcribe_utterance(
@@ -1253,7 +1256,7 @@ pub fn listen(
                 continue;
             }
             let Some(loaded) = ensure_asr(&mut model, &asr_assets, &loaded_engine, &output) else {
-                break;
+                continue;
             };
             let began = Instant::now();
             let decoded = transcribe_utterance_confidence(
@@ -1290,9 +1293,11 @@ pub fn listen(
                     }
                 }
                 Err(e) => {
+                    // A single bad clip must not kill the recognizer thread;
+                    // keep serving later utterances.
                     let _ =
                         output.try_send(crate::Input::Error(format!("Transcription failed: {e}")));
-                    break;
+                    continue;
                 }
             }
         }

@@ -1,5 +1,7 @@
 name: Check
 on: [push, pull_request]
+permissions:
+  contents: read
 jobs:
   check:
     strategy:
@@ -20,5 +22,12 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
-      - run: cargo build --release --locked
+      - run: cargo build --release --locked --bin acc
       - run: python tests/smoke.py
+      # The offline gate declared in AGENTS.md/RELEASING.md also includes the
+      # runtime, memory, and security regression suites. Run them on Linux.
+      - if: runner.os == 'Linux'
+        run: |
+          python tests/runtime.py
+          python tests/memory_runtime.py
+          python tests/security_runtime.py

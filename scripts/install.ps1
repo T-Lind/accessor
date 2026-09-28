@@ -3,7 +3,7 @@
 #   irm https://raw.githubusercontent.com/T-Lind/accessor/main/scripts/install.ps1 | iex
 #
 # Optional parameters when run from a saved copy:
-#   -Version 0.34.1   install a specific release instead of the latest
+#   -Version 0.34.3   install a specific release instead of the latest
 #   -BinDir  DIR      install into DIR instead of %LOCALAPPDATA%\Programs\accessor
 #
 # This downloads only the small acc binary; the first run fetches ONNX Runtime,
@@ -28,6 +28,8 @@ if (-not $Version) {
     if (-not $latest.tag_name) { throw 'Could not find the latest release; set -Version to override.' }
     $Version = $latest.tag_name -replace '^v', ''
 }
+# Accept both `0.34.3` and `v0.34.3`; a bare `v` prefix would build a `vv` URL.
+$Version = $Version -replace '^v', ''
 if (-not $BinDir) {
     $BinDir = Join-Path $env:LOCALAPPDATA 'Programs\accessor'
 }

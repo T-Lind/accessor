@@ -1,0 +1,52 @@
+name: Feature request
+description: Suggest an improvement or a new capability.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Accessor keeps speech local by default and reuses the agent CLIs' own
+        connectors. Describe the problem first, then the behavior you want.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you unable to do today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Wake / speech recognition (STT)
+        - Speech output (TTS)
+        - Agent harness / routing
+        - Memory / notes / organizer
+        - Desktop control (computer use)
+        - Security / locking
+        - Packaging / install / update
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: local
+    attributes:
+      label: Privacy
+      options:
+        - label: This proposal can keep working with local STT/TTS (no cloud key required).
+          required: false

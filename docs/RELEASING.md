@@ -23,9 +23,9 @@ python tests/runtime.py
 ## 2. Tag and push
 
 ```sh
-git add -A && git commit -m "Release 0.34.2"
-git tag v0.34.2
-git push origin main v0.34.2
+git add -A && git commit -m "Release 0.34.3"
+git tag v0.34.3
+git push origin main v0.34.3
 ```
 
 The `Release` workflow (`.github/workflows/release.yml`) runs on any `v*` tag. It

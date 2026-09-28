@@ -54,6 +54,23 @@ pub fn init(settings: &Settings) {
             Ok(path) => {
                 if let Some(parent) = path.parent() {
                     let _ = fs::create_dir_all(parent);
+                    // The log mirrors transcripts, so keep Accessor-owned log
+                    // directories private (custom logging.path values are left
+                    // as the user set them).
+                    #[cfg(unix)]
+                    if crate::config::home()
+                        .map(|h| parent.starts_with(&h))
+                        .unwrap_or(false)
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+                    }
+                }
+                // Tighten a log file created by an older build.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
                 }
                 Some(path)
             }
@@ -124,7 +141,14 @@ fn write(level: &str, category: &str, message: &str) {
             let _ = fs::rename(&path, path.with_extension("1"));
         }
     }
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    if let Ok(mut file) = options.open(&path) {
         let _ = file.write_all(line.as_bytes());
     }
 }

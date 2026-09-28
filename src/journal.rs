@@ -35,6 +35,17 @@ fn key() -> Result<[u8; 32]> {
         key.copy_from_slice(&bytes);
         return Ok(key);
     }
+    // `optional_secret` collapses any credential-store failure (locked or
+    // unavailable keyring, D-Bus error) into `None`. Generating a key here would
+    // overwrite the stored one and permanently orphan an existing journal, so
+    // fail closed whenever an encrypted file is already present.
+    if path()?.exists() {
+        anyhow::bail!(
+            "The journal key could not be read, but an encrypted journal already exists. \
+             Refusing to generate a new key and overwrite it. Unlock the OS credential store \
+             (or set JOURNAL_KEY) and retry; see docs/SECURITY.md."
+        );
+    }
     let generated = XChaCha20Poly1305::generate_key(&mut OsRng);
     config::save_secret("journal", &STANDARD.encode(generated))?;
     let mut key = [0u8; 32];

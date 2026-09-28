@@ -640,7 +640,7 @@ fn dispatch(action: &str, args: &Value, settings: &Settings) -> Result<Vec<Value
             Ok(vec![text_block(crate::desktop::focus_window(window)?)])
         }
         "ui_snapshot" => {
-            let max = args["max"].as_u64().unwrap_or(200) as usize;
+            let max = args["max"].as_u64().unwrap_or(200).clamp(1, 400) as usize;
             Ok(vec![text_block(crate::desktop::ui_snapshot(max)?)])
         }
         "ui_invoke" => {

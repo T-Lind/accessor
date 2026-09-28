@@ -725,6 +725,18 @@ impl Settings {
             (0.6..=2.5).contains(&self.tts.speed),
             "tts.speed must be between 0.6 and 2.5"
         );
+        // Voice names become part of a filesystem path for the Piper worker, so
+        // reject separators, dots and length overruns (also agent-settable).
+        ensure!(
+            !self.tts.piper_voice.is_empty()
+                && self.tts.piper_voice.len() <= 64
+                && self
+                    .tts
+                    .piper_voice
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "_-".contains(c)),
+            "tts.piper-voice must be a plain voice name"
+        );
         ensure!(
             (0.0..=1.5).contains(&self.sounds.think)
                 && (0.0..=1.5).contains(&self.sounds.wake)
@@ -987,8 +999,11 @@ impl Settings {
 pub fn save_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().context("No parent directory")?;
     std::fs::create_dir_all(parent)?;
+    // Only lock down Accessor-owned directories. Some callers write into another
+    // app's config folder (for example the shared Antigravity MCP registry), and
+    // chmod-ing those to 0700 would be an unwelcome side effect.
     #[cfg(unix)]
-    {
+    if home().map(|h| parent.starts_with(&h)).unwrap_or(false) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
     }

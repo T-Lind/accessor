@@ -1,0 +1,92 @@
+name: Bug report
+description: Report a reproducible problem with Accessor.
+title: "[Bug]: "
+labels: ["bug", "needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a report. Accessor touches audio
+        hardware and third-party agent CLIs, so the details below matter.
+
+        Do **not** paste API keys, passphrases, private transcripts, or the
+        contents of your `config.json`. Redact device names if you prefer.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: I am running a release binary or a fresh build of `main`.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: Accessor version
+      description: Output of `acc --version`.
+      placeholder: 0.34.3
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows x64
+        - Windows ARM64
+        - Linux x64
+        - Linux ARM64
+        - macOS (Apple Silicon)
+        - macOS (Intel, source build)
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: harness
+    attributes:
+      label: Agent harness
+      description: Which CLI harness is selected?
+      options:
+        - Codex
+        - Claude Code
+        - Antigravity
+        - opencode
+        - Cursor
+        - mock
+        - Not sure / not applicable
+    validations:
+      required: false
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: Describe the actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `acc ...`
+        2. Say "29 ..."
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: >
+        Paste the output of `acc doctor` and any relevant plain-mode (`acc --plain`)
+        lines. For speech issues, `/audio` and `acc mic` output also help.
+      render: text
+    validations:
+      required: false

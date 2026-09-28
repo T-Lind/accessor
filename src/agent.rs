@@ -223,7 +223,15 @@ async fn codex(
         tokio::select! {
             line = lines.next_line() => {
                 let Some(line) = line? else { bail!("Codex connection closed"); };
-                let msg: Value = serde_json::from_str(&line).context("Invalid Codex protocol message")?;
+                // Tolerate banner/warning lines a harness may print to stdout:
+                // aborting the whole session on one non-JSON line is too brittle.
+                let Ok(msg) = serde_json::from_str::<Value>(&line) else {
+                    crate::masterlog::debug(
+                        "codex",
+                        &format!("ignoring non-JSON stdout line ({} bytes)", line.len()),
+                    );
+                    continue;
+                };
                 if let Some(method) = msg["method"].as_str() {
                     if let Some(id) = msg.get("id") {
                         if (matches!(method, "item/commandExecution/requestApproval" | "item/fileChange/requestApproval") || (method=="mcpServer/elicitation/request" && confirmation_only(&msg["params"]))) && turn.is_some() {

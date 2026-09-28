@@ -1,0 +1,10 @@
+title: Accessor
+description: Local voice gateway for command-line agents
+theme: jekyll-theme-cayman
+
+# Maintainer-facing material and raw benchmark data stay in the repo, not on the
+# published site.
+exclude:
+  - RELEASING.md
+  - benchmarks/
+  - diagrams/*.dot

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security policy and recovery
+    url: https://github.com/T-Lind/accessor/blob/main/docs/SECURITY.md
+    about: Read this before reporting an access-lock or privacy issue.
+  - name: Platform notes and voice performance
+    url: https://github.com/T-Lind/accessor/blob/main/docs/VOICE_PERFORMANCE.md
+    about: Latency guidance, measured benchmarks, and deployment priorities.

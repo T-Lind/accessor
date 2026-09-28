@@ -7,6 +7,30 @@
 //! coordinates remain the fallback for surfaces that expose no controls.
 use anyhow::Result;
 
+/// Launch a helper process detached from Accessor: stdio is nulled so it can
+/// never write into the MCP JSON-RPC pipe, and a small thread reaps it so it
+/// cannot linger as a zombie while the long-lived `acc mcp` server runs.
+fn launch_detached(command: &mut std::process::Command) -> std::io::Result<()> {
+    use std::process::Stdio;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let child = command.spawn()?;
+    // Unix keeps a zombie until the parent reaps it; Windows does not, so avoid
+    // parking a thread for the lifetime of a long-running app there.
+    #[cfg(unix)]
+    {
+        let mut child = child;
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
+    #[cfg(not(unix))]
+    drop(child);
+    Ok(())
+}
+
 #[cfg(windows)]
 mod platform {
     use super::*;
@@ -91,11 +115,19 @@ mod platform {
     }
 
     fn start(target: &str) -> Result<()> {
-        std::process::Command::new("cmd")
-            .args(["/C", "start", ""])
-            .arg(target)
-            .spawn()
-            .with_context(|| format!("Could not launch {target}"))?;
+        // `target` is a fixed URI or bare shell target from `known_app`, so it
+        // is safe to hand to `cmd`'s `start`.
+        let mut command = std::process::Command::new("cmd");
+        command.args(["/C", "start", ""]).arg(target);
+        launch_detached(&mut command).with_context(|| format!("Could not launch {target}"))?;
+        Ok(())
+    }
+
+    /// Launch a resolved executable directly, without `cmd` re-parsing the
+    /// command line (a path containing `&` or `|` would otherwise be split).
+    fn start_exe(path: &str) -> Result<()> {
+        let mut command = std::process::Command::new(path);
+        launch_detached(&mut command).with_context(|| format!("Could not launch {path}"))?;
         Ok(())
     }
 
@@ -117,7 +149,7 @@ mod platform {
                     .trim()
                     .to_string();
                 if !path.is_empty() {
-                    start(&path)?;
+                    start_exe(&path)?;
                     return Ok(format!("Launched {path}."));
                 }
             }
@@ -505,10 +537,15 @@ mod platform {
     const SCRIPT: &str = include_str!("platform/macos_ax.applescript");
 
     fn run(args: &[&str]) -> Result<String> {
-        let path = std::env::temp_dir().join("accessor-ax.applescript");
-        std::fs::write(&path, SCRIPT).context("Could not write the macOS bridge script")?;
+        let mut script = tempfile::Builder::new()
+            .prefix("accessor-ax")
+            .suffix(".applescript")
+            .tempfile()
+            .context("Could not create the macOS bridge script")?;
+        std::io::Write::write_all(&mut script, SCRIPT.as_bytes())
+            .context("Could not write the macOS bridge script")?;
         let output = std::process::Command::new("osascript")
-            .arg(&path)
+            .arg(script.path())
             .args(args)
             .output()
             .context("Could not run osascript; is this a desktop session?")?;
@@ -522,12 +559,12 @@ mod platform {
     pub fn open_app(name: &str) -> Result<String> {
         let name = name.trim();
         ensure!(!name.is_empty(), "open_app needs an app name");
-        let status = std::process::Command::new("open")
+        let output = std::process::Command::new("open")
             .arg("-a")
             .arg(name)
-            .status()
+            .output()
             .with_context(|| format!("Could not open {name}"))?;
-        ensure!(status.success(), "macOS could not open {name}");
+        ensure!(output.status.success(), "macOS could not open {name}");
         Ok(format!("Asked macOS to open {name}."))
     }
 
@@ -558,9 +595,9 @@ mod platform {
         run(&["set", name, text])
     }
     pub fn wake_display() {
-        let _ = std::process::Command::new("caffeinate")
-            .args(["-u", "-t", "1"])
-            .spawn();
+        let mut command = std::process::Command::new("caffeinate");
+        command.args(["-u", "-t", "1"]);
+        let _ = launch_detached(&mut command);
     }
 
     pub struct DisplayHold {
@@ -610,10 +647,15 @@ mod platform {
     const SCRIPT: &str = include_str!("platform/linux_atspi.py");
 
     fn atspi(args: &[&str]) -> Result<String> {
-        let path = std::env::temp_dir().join("accessor-atspi.py");
-        std::fs::write(&path, SCRIPT).context("Could not write the AT-SPI bridge script")?;
+        let mut script = tempfile::Builder::new()
+            .prefix("accessor-atspi")
+            .suffix(".py")
+            .tempfile()
+            .context("Could not create the AT-SPI bridge script")?;
+        std::io::Write::write_all(&mut script, SCRIPT.as_bytes())
+            .context("Could not write the AT-SPI bridge script")?;
         let output = std::process::Command::new("python3")
-            .arg(&path)
+            .arg(script.path())
             .args(args)
             .output()
             .context("Could not run python3 for the AT-SPI bridge")?;
@@ -639,19 +681,13 @@ mod platform {
     pub fn open_app(name: &str) -> Result<String> {
         let name = name.trim();
         ensure!(!name.is_empty(), "open_app needs an app name");
-        if std::process::Command::new("gtk-launch")
-            .arg(name)
-            .spawn()
-            .is_ok()
-        {
+        if launch_detached(std::process::Command::new("gtk-launch").arg(name)).is_ok() {
             return Ok(format!("Asked the desktop to launch {name}."));
         }
-        if std::process::Command::new(name).spawn().is_ok() {
+        if launch_detached(&mut std::process::Command::new(name)).is_ok() {
             return Ok(format!("Launched {name}."));
         }
-        std::process::Command::new("xdg-open")
-            .arg(name)
-            .spawn()
+        launch_detached(std::process::Command::new("xdg-open").arg(name))
             .with_context(|| format!("Could not open {name}"))?;
         Ok(format!("Opened {name}."))
     }

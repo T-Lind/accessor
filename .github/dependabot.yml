@@ -1,0 +1,25 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # Pinned exactly on purpose, and transcribe-rs is path-patched to the
+      # vendored Canary-confidence fork (see Cargo.toml). Bumping either in
+      # isolation breaks the build, so update them deliberately.
+      - dependency-name: transcribe-rs
+      - dependency-name: ort
+      - dependency-name: sonora
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        update-types: ["minor", "patch"]
