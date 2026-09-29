@@ -96,7 +96,10 @@ class SmokeTests(unittest.TestCase):
         app.expect("Interrupting;")
         app.expect("fixture: actually do this instead")
         app.expect("| idle")
-        self.assertNotIn("Agent: interrupted","".join(app.seen))
+        # The interrupted turn's partial output is kept as context, not
+        # discarded, but it must not block the replacement turn (above) or the
+        # next one (below).
+        self.assertIn("Interrupted; preserved", "".join(app.seen))
         app.send("29 a later request")
         app.expect("fixture: a later request")
 

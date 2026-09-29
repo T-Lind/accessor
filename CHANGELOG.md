@@ -6,7 +6,17 @@ GitHub, and full notes are generated there. This file starts at 0.34.3 — see t
 [releases page](https://github.com/T-Lind/accessor/releases) and `git log` for
 earlier history.
 
-## [Unreleased]
+## [0.34.4] - 2026-09-28
+
+### Changed
+
+- Interrupting with the wake code ("29") while the agent is thinking or speaking
+  now preserves what it had already produced — commentary, tool activity, and any
+  partial reply — in the conversation history, so the next request keeps that
+  context even when the harness session restarts. Harness adapters now surface
+  partial output when a turn is cancelled.
+
+## [0.34.3] - 2026-09-28
 
 ### Fixed
 

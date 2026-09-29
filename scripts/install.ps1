@@ -3,7 +3,7 @@
 #   irm https://raw.githubusercontent.com/T-Lind/accessor/main/scripts/install.ps1 | iex
 #
 # Optional parameters when run from a saved copy:
-#   -Version 0.34.3   install a specific release instead of the latest
+#   -Version 0.34.4   install a specific release instead of the latest
 #   -BinDir  DIR      install into DIR instead of %LOCALAPPDATA%\Programs\accessor
 #
 # This downloads only the small acc binary; the first run fetches ONNX Runtime,

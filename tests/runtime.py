@@ -87,7 +87,8 @@ class RuntimeTests(unittest.TestCase):
         app.send("and include Chicago please")
         app.expect("Interrupting;")
         app.expect("fixture: and include Chicago please")
-        self.assertNotIn("Agent: interrupted", "".join(app.seen))
+        # The interrupted turn's partial output is preserved as context.
+        self.assertIn("Interrupted; preserved", "".join(app.seen))
 
     def test_streaming_does_not_select_cloud_implicitly(self):
         self.config("stt.conversation", "local")

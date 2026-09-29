@@ -1,6 +1,6 @@
 name: Release
 
-# Cut a release by pushing a version tag (for example `git tag v0.34.3 && git push origin v0.34.3`).
+# Cut a release by pushing a version tag (for example `git tag v0.34.4 && git push origin v0.34.4`).
 # Builds prebuilt acc binaries for Windows x64, Linux x64/arm64, and Apple Silicon macOS,
 # packages them with checksums, and publishes them as a GitHub Release.
 on:

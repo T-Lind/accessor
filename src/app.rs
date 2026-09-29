@@ -811,6 +811,11 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut eof = false;
     let mut silence_reply = false;
     let mut cancelled_turn = false;
+    // Output produced by the active turn that is not yet part of the handoff
+    // history. If the turn is interrupted, it is preserved so the next request
+    // still has the context of what the agent had said and done.
+    let mut turn_trace: Vec<String> = Vec::new();
+    let mut interrupted_reply: Option<String> = None;
     let mut cancel_started: Option<Instant> = None;
     let mut tick = tokio::time::interval(Duration::from_millis(50));
     let mut speaker: Option<speech::Job> = None;
@@ -2363,6 +2368,8 @@ pub async fn run(mut args: Run) -> Result<()> {
                     agent::Event::Started => {
                         if harness == active_harness {
                             busy=true;
+                            turn_trace.clear();
+                            interrupted_reply=None;
                             if !args.text && speaker.is_none() && speech_queue.is_empty() && settings.sounds.think > 0.001 {
                                 match audio::think(settings.sounds.think) {
                                     Ok(cue) => think = Some(cue),
@@ -2379,11 +2386,20 @@ pub async fn run(mut args: Run) -> Result<()> {
                     agent::Event::Progress(text) => {
                         if harness != active_harness { continue; }
                         let (text,_)=crate::organizer::take_directives(&text);
+                        push_trace(&mut turn_trace, &text);
                         if pending_prompt.is_none() {ui.chat(Kind::Progress, &text);}
                         if speak && settings.speak_progress && !silence_reply && !mic_unavailable {think=None;speech_queue.push_back(text);}
                     }
                     agent::Event::Reply(text) => {
-                        if harness != active_harness || cancelled_turn || pending_prompt.is_some() || pending_setting.is_some() {continue;}
+                        if harness != active_harness { continue; }
+                        if cancelled_turn {
+                            // Keep the last thing the agent said before the
+                            // interruption; it is carried into the handoff
+                            // history when the turn finishes cancelling.
+                            interrupted_reply = Some(text);
+                            continue;
+                        }
+                        if pending_prompt.is_some() || pending_setting.is_some() {continue;}
                         let (text, mut directives) = crate::organizer::take_directives(&text);
                         if current_event.is_some() {directives.clear();}
                         for directive in directives {
@@ -2460,6 +2476,9 @@ pub async fn run(mut args: Run) -> Result<()> {
                             seen_history.clear();
                         }
                         seen_history.insert(harness.clone(), transcript.len());
+                        // A clean final reply supersedes the incremental trace.
+                        turn_trace.clear();
+                        interrupted_reply=None;
                         if speak && !silence_reply && !mic_unavailable {
                             think=None;
                             if announce_next {
@@ -2470,9 +2489,30 @@ pub async fn run(mut args: Run) -> Result<()> {
                             speech_queue.push_back(text);
                         }
                     }
-                    agent::Event::Tool(text) => { if harness == active_harness { ui.chat(Kind::Tool, text); } }
+                    agent::Event::Tool(text) => { if harness == active_harness { push_trace(&mut turn_trace, &text); ui.chat(Kind::Tool, &text); } }
                     agent::Event::Done | agent::Event::Cancelled => {
                         if harness != active_harness { continue; }
+                        if cancelled_turn {
+                            // Preserve what the agent produced before the
+                            // interruption so the next request keeps context,
+                            // even when the harness session is torn down.
+                            if let Some(summary) = interrupted_summary(interrupted_reply.take(), &turn_trace) {
+                                ui.chat(Kind::Agent, &summary);
+                                transcript.push_back((INTERRUPTED_TURN.into(), summary));
+                                if transcript.len() > 30 {
+                                    while transcript.len() > 30 { transcript.pop_front(); }
+                                    seen_history.clear();
+                                }
+                                // The live harness already knows this turn; a
+                                // harness that is being torn down (Event::Cancelled)
+                                // has its marker removed just below, so a fresh
+                                // session replays this entry with the handoff.
+                                seen_history.insert(harness.clone(), transcript.len());
+                                ui.message("Interrupted; preserved what the agent had produced so your next request keeps context.");
+                            }
+                        }
+                        turn_trace.clear();
+                        interrupted_reply=None;
                         think=None;busy=false; approval=false;session.touch(Instant::now());
                         if matches!(event,agent::Event::Cancelled) {
                             agents.remove(&active_harness);agent_tx=None;seen_history.remove(&active_harness);connected=false;
@@ -2819,6 +2859,45 @@ fn output_needs_wake(speaking: bool, alarm: bool, wake_listening: bool) -> bool 
     speaking || (alarm && !wake_listening)
 }
 
+/// Transcript label for output preserved from an interrupted turn.
+const INTERRUPTED_TURN: &str = "Agent (interrupted, partial; may be incomplete)";
+
+/// Record one bounded line of a turn's progress/tool activity for the case where
+/// the turn is interrupted before it produces a final reply.
+fn push_trace(trace: &mut Vec<String>, text: &str) {
+    let line: String = text.trim().chars().take(300).collect();
+    if line.is_empty() || trace.last().is_some_and(|last| last == &line) {
+        return;
+    }
+    trace.push(line);
+    if trace.len() > 20 {
+        trace.remove(0);
+    }
+}
+
+/// Build a bounded handoff entry for an interrupted turn from its final
+/// (possibly partial) reply and any activity observed before the cancellation.
+fn interrupted_summary(reply: Option<String>, trace: &[String]) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(reply) = reply {
+        let reply = reply.trim();
+        if !reply.is_empty() {
+            parts.push(reply.to_string());
+        }
+    }
+    if !trace.is_empty() {
+        if !parts.is_empty() {
+            parts.push(String::new());
+        }
+        parts.push("Work observed before the interruption:".into());
+        parts.extend(trace.iter().map(|line| format!("- {line}")));
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join("\n").chars().take(4000).collect())
+}
+
 fn spoken_input_allowed(
     typed: bool,
     event: bool,
@@ -2998,5 +3077,33 @@ mod tests {
         assert!(prompt.contains("Check email"));
         assert!(prompt.contains("urgent email only"));
         assert!(prompt.contains("\"action\":\"notify\""));
+    }
+
+    #[test]
+    fn interrupted_turn_keeps_partial_reply_and_activity() {
+        let mut trace = Vec::new();
+        push_trace(&mut trace, "Running cargo test");
+        push_trace(&mut trace, "Running cargo test"); // consecutive duplicate ignored
+        push_trace(&mut trace, "✓ commandExecution: cargo test");
+        let summary = interrupted_summary(Some("I started the tests".into()), &trace).unwrap();
+        assert!(summary.contains("I started the tests"));
+        assert!(summary.contains("cargo test"));
+        assert_eq!(summary.matches("Running cargo test").count(), 1);
+
+        let only_trace = interrupted_summary(None, &trace).unwrap();
+        assert!(only_trace.contains("Work observed before the interruption"));
+        assert!(interrupted_summary(None, &[]).is_none());
+    }
+
+    #[test]
+    fn push_trace_bounds_and_truncates() {
+        let mut trace = Vec::new();
+        for i in 0..30 {
+            push_trace(&mut trace, &format!("step {i}"));
+        }
+        assert_eq!(trace.len(), 20);
+        assert_eq!(trace.first().unwrap(), "step 10");
+        push_trace(&mut trace, &"x".repeat(1000));
+        assert_eq!(trace.last().unwrap().chars().count(), 300);
     }
 }

@@ -4,7 +4,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/T-Lind/accessor/main/scripts/install.sh | sh
 #
 # Overrides:
-#   ACC_VERSION=0.34.3   install a specific release instead of the latest
+#   ACC_VERSION=0.34.4   install a specific release instead of the latest
 #   ACC_BIN_DIR=DIR      install into DIR instead of ~/.local/bin
 #
 # This downloads only the small acc binary; the first run fetches ONNX Runtime,

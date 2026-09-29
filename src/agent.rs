@@ -276,7 +276,9 @@ async fn codex(
                             for (_, p) in pending.drain() { write(&mut stdin, rejected(p.id, &p.method)).await?; }
                             let completed = &msg["params"]["turn"];
                             if completed["status"] == "failed" { events.send(Event::Failed(format!("Task failed: {}", completed["error"]))).await?; }
-                            else if completed["status"]=="completed" {
+                            else {
+                                // Emit the final text even for an interrupted turn, so
+                                // Accessor can preserve what the model had produced.
                                 for text in replies.drain(..) {events.send(Event::Reply(text)).await?;}
                             }
                             replies.clear();
@@ -827,6 +829,11 @@ async fn stdio_agent(
                         tree.stop();
                         let _=process.start_kill();
                         process.wait().await?;
+                        // Surface any text produced before the cancel so the
+                        // interruption still carries context into the handoff.
+                        if !reply_buffer.is_empty() {
+                            events.send(Event::Reply(std::mem::take(&mut reply_buffer))).await?;
+                        }
                         events.send(Event::Note(format!("{name}: cancelled; reconnecting starts a fresh session with a handoff summary."))).await?;
                         events.send(Event::Cancelled).await?;
                         return Ok(());
@@ -1116,6 +1123,12 @@ async fn oneshot_agent(
             }
         }
         if cancelled {
+            // Preserve partial output produced before the cancel.
+            if let Some(partial) =
+                final_reply.or_else(|| (!reply.is_empty()).then(|| reply.trim_end().to_string()))
+            {
+                events.send(Event::Reply(partial)).await?;
+            }
             events.send(Event::Cancelled).await?;
             continue;
         }

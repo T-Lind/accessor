@@ -37,6 +37,13 @@ is thinking you can keep speaking; completed clips queue in order. During audibl
 speech, saying "29" interrupts and opens listening — the recognizer decodes only
 short wake windows, and mixed speaker/user text is never submitted as a request.
 
+Saying **"29"** while the assistant is thinking or speaking cancels the current
+turn and playback and returns to listening. Interrupting preserves whatever the
+agent had already produced — commentary, tool activity, and any partial reply — in
+the conversation history, so your next request keeps that context even when the
+harness restarts with a fresh session. Spoken interruption during playback
+requires barge-ins to be enabled (the default).
+
 The numeric word reduces accidental activations; it is not authentication. See the
 [local access lock](SECURITY.md) for the real boundary.
 
