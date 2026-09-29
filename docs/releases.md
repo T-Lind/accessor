@@ -21,14 +21,15 @@ Each tagged release publishes these archives plus a combined `SHA256SUMS`:
 
 | Runner | Rust target | Archive |
 | --- | --- | --- |
-| `ubuntu-22.04` | `x86_64-unknown-linux-gnu` | `acc-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+| `ubuntu-24.04` | `x86_64-unknown-linux-gnu` | `acc-<version>-x86_64-unknown-linux-gnu.tar.gz` |
 | `ubuntu-24.04-arm` | `aarch64-unknown-linux-gnu` | `acc-<version>-aarch64-unknown-linux-gnu.tar.gz` |
 | `macos-14` | `aarch64-apple-darwin` | `acc-<version>-aarch64-apple-darwin.tar.gz` |
 | `windows-latest` | `x86_64-pc-windows-msvc` | `acc-<version>-x86_64-pc-windows-msvc.zip` |
 
-Each archive contains `acc` (`acc.exe`), `LICENSE`, and `THIRD_PARTY.md`. Linux
-x64 is built on Ubuntu 22.04 to keep the glibc floor at 2.35; the ARM64 build uses
-Ubuntu 24.04, so it needs glibc 2.39+. Intel macOS is intentionally not shipped.
+Each archive contains `acc` (`acc.exe`), `LICENSE`, and `THIRD_PARTY.md`. Both
+Linux builds use Ubuntu 24.04, so they need **glibc 2.39+** (Ubuntu 24.04,
+Fedora 40+, Debian 13 or newer); older distributions build from source. Intel
+macOS is intentionally not shipped.
 
 Both installers download the archive and verify its SHA-256 against the release's
 `SHA256SUMS` before installing.
