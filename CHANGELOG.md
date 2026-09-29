@@ -6,6 +6,30 @@ GitHub, and full notes are generated there. This file starts at 0.34.3 — see t
 [releases page](https://github.com/T-Lind/accessor/releases) and `git log` for
 earlier history.
 
+## [0.34.5] - 2026-09-29
+
+### Changed
+
+- Dependency upgrades: `base64` 0.23 and `tokio-tungstenite` 0.30, plus current
+  GitHub Actions major versions.
+
+### Fixed
+
+- Cap organizer alarms and scheduled tasks at 500, so an agent cannot grow the
+  store without limit.
+- Drain an oversized MCP frame before resyncing, so its tail is not parsed as a
+  new request.
+
+### Security
+
+- Compare the loopback session token in constant time.
+- Mask CLI API-key entry instead of echoing it to the terminal.
+
+### Added
+
+- Declared the minimum supported Rust version (1.88, enforced by clippy) and
+  add crate metadata (authors, readme, keywords, categories).
+
 ## [0.34.4] - 2026-09-28
 
 ### Changed

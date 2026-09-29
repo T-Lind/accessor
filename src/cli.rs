@@ -1287,7 +1287,7 @@ async fn tts_setup() -> Result<()> {
     Ok(())
 }
 fn read_secret_line(prompt: &str) -> Result<String> {
-    use std::io::{self, IsTerminal, Read, Write};
+    use std::io::{self, IsTerminal, Read};
     if !io::stdin().is_terminal() {
         let mut buf = String::new();
         io::stdin().read_to_string(&mut buf)?;
@@ -1299,15 +1299,12 @@ fn read_secret_line(prompt: &str) -> Result<String> {
         ensure!(!key.is_empty(), "No key on stdin");
         return Ok(key.into());
     }
-    println!("{prompt}");
-    println!("Paste the key, then Enter. Ctrl+Shift+V / Shift+Insert work in most terminals.");
-    print!("key: ");
-    io::stdout().flush()?;
-    let mut line = String::new();
-    io::stdin().read_line(&mut line)?;
-    let key = line.trim();
-    ensure!(!key.is_empty(), "Empty key");
-    Ok(key.into())
+    // Masked entry so the key is not left visible in the terminal scrollback.
+    dialoguer::Password::new()
+        .with_prompt(prompt)
+        .allow_empty_password(false)
+        .interact()
+        .map_err(Into::into)
 }
 async fn doctor() -> Result<()> {
     let mut s = Settings::load()?;

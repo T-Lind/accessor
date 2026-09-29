@@ -14,6 +14,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+/// Upper bound on persisted alarms and scheduled tasks, so an agent cannot grow
+/// the organizer store without limit.
+const MAX_SCHEDULE_ITEMS: usize = 500;
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Directive {
@@ -727,6 +731,10 @@ pub fn add_note(text: &str, title: Option<&str>) -> Result<PathBuf> {
 pub fn add_alarm(label: Option<&str>, delay: Option<u64>, at: Option<u64>) -> Result<Alarm> {
     let _lock = lock()?;
     let mut book = load()?;
+    ensure!(
+        book.alarms.len() + book.tasks.len() < MAX_SCHEDULE_ITEMS,
+        "The organizer holds the maximum of {MAX_SCHEDULE_ITEMS} alarms and tasks; cancel or delete one first"
+    );
     let alarm = Alarm {
         id: uuid::Uuid::new_v4().to_string()[..8].into(),
         label: label.unwrap_or("Alarm").trim().chars().take(120).collect(),
@@ -782,6 +790,10 @@ pub fn add_task(
     );
     let _lock = lock()?;
     let mut book = load()?;
+    ensure!(
+        book.alarms.len() + book.tasks.len() < MAX_SCHEDULE_ITEMS,
+        "The organizer holds the maximum of {MAX_SCHEDULE_ITEMS} alarms and tasks; cancel or delete one first"
+    );
     let (next_unix, local_date, timezone) = if let Some(local_time) = local_time {
         ensure!(
             delay.is_none() && at.is_none() && every.is_none(),

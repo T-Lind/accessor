@@ -97,6 +97,23 @@ async fn frame(stream: &mut TcpStream) -> Result<Value> {
     );
     Ok(serde_json::from_slice(&bytes)?)
 }
+/// Constant-time comparison for the loopback session token, so a local caller
+/// cannot learn the token one byte at a time from response timing.
+fn token_matches(provided: Option<&str>, expected: &str) -> bool {
+    let Some(provided) = provided else {
+        return false;
+    };
+    let (a, b) = (provided.as_bytes(), expected.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 async fn handle(
     mut stream: TcpStream,
     auth: &str,
@@ -104,7 +121,7 @@ async fn handle(
 ) -> Result<()> {
     let request = frame(&mut stream).await?;
     ensure!(
-        request["token"].as_str() == Some(auth),
+        token_matches(request["token"].as_str(), auth),
         "Invalid session token"
     );
     let action: Action = serde_json::from_value(request["action"].clone())?;

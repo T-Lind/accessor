@@ -396,6 +396,16 @@ pub async fn serve(workspace: &Path) -> Result<()> {
             return Ok(());
         }
         if bytes.len() > 65_536 {
+            // Drain the rest of this oversized physical line so its tail cannot
+            // be misread as the next frame.
+            let mut sink = Vec::new();
+            loop {
+                sink.clear();
+                let n = std::io::Read::take(&mut input, 4096).read_until(b'\n', &mut sink)?;
+                if n == 0 || sink.last() == Some(&b'\n') {
+                    break;
+                }
+            }
             writeln!(
                 output,
                 "{}",

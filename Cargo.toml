@@ -1,10 +1,16 @@
 [package]
 name = "accessor"
-version = "0.34.4"
+version = "0.34.5"
 edition = "2021"
 description = "Local voice gateway for command-line agents"
 license = "MIT"
 repository = "https://github.com/T-Lind/accessor"
+authors = ["Tiernan Lindauer"]
+readme = "README.md"
+# Lower bound for source builds; clippy::incompatible_msrv enforces it.
+rust-version = "1.88"
+keywords = ["voice", "speech", "stt", "tts", "agent"]
+categories = ["command-line-utilities", "multimedia::audio"]
 default-run = "acc"
 
 [[bin]]
