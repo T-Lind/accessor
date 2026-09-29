@@ -37,7 +37,7 @@ fs2 = "0.4"
 pulldown-cmark = "0.13"
 sonora = "=0.2.0"
 tempfile = "3"
-sha2 = "0.10"
+sha2 = "0.11"
 argon2 = "0.5"
 zeroize = "1"
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
