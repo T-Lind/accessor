@@ -1,6 +1,8 @@
 """Offline Claude/Antigravity protocol fixture; no tools or network."""
 import json
+import os
 import sys
+import time
 from control_fixtures import control_reply
 
 kind = sys.argv[1]
@@ -55,6 +57,8 @@ for line in sys.stdin:
         text = value["message"]["content"]
     text = text.split("\n\n")[-1]
     text = text.removeprefix("Current request:\n")
+    if text.startswith("Accessor local control result"):
+        time.sleep(float(os.environ.get("ACC_FIXTURE_FEEDBACK_DELAY", "0")))
     if text == "permission fixture":
         send({"type": "control_request", "request_id": "perm-1", "request": {"subtype": "can_use_tool", "tool_name": "Bash", "input": {"command": "echo hi"}}})
         continue

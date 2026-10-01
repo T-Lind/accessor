@@ -55,6 +55,62 @@ class RuntimeTests(unittest.TestCase):
         self.addCleanup(app.close)
         return app
 
+    @unittest.skipIf(os.name == "nt", "Unix clipboard shim")
+    def test_copy_preserves_answer_as_data_and_jobs_stays_local(self):
+        captured = self.home / "clipboard.txt"
+        self.env["ACC_CLIPBOARD_FILE"] = str(captured)
+        shim = self.home / "wl-copy"
+        shim.write_text(f"#!{sys.executable}\nimport os, sys\nfrom pathlib import Path\nPath(os.environ['ACC_CLIPBOARD_FILE']).write_text(sys.stdin.read())\n")
+        shim.chmod(0o700)
+        app = self.app()
+        app.send("/copy")
+        app.expect("No answer to copy yet")
+        payload = "quotes ' dollars $ and backticks ` as plain text"
+        app.send("29 " + payload)
+        app.expect("fixture: " + payload)
+        app.send("/copy")
+        app.expect("Copied the last answer to the clipboard")
+        self.assertEqual(captured.read_text(), "fixture: " + payload)
+        app.send("/repeat")
+        app.expect("Speech is off")
+        app.send("/mic reconnect")
+        app.expect("Microphone is off in text mode")
+        app.send("/jobs")
+        app.expect("Waiting: 0 scheduled task(s)")
+        app.close()
+        analytics = json.loads((self.home / "settings" / "analytics.json").read_text())
+        self.assertEqual(analytics["lifetime"]["harness_turns"], 1)
+
+    @unittest.skipIf(os.name == "nt", "Unix advisory-lock regression")
+    def test_busy_organizer_lock_does_not_stall_commands_or_lose_due_task(self):
+        import fcntl
+        self.cli("organizer", "task", "scheduled fixture", "--in-seconds", "1", "--harness", "mock", "--model", "mock-light")
+        lockpath = self.home / "settings" / "organizer.lock"
+        with lockpath.open("a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            app = self.app("mock")
+            time.sleep(1.3)
+            app.send("/jobs")
+            app.expect("Waiting: 0 scheduled task(s)", timeout=3)
+            app.send("/status")
+            app.expect("WHITE: waiting for wake code", timeout=3)
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            app.expect("started in an isolated mock worker", timeout=5)
+            app.expect("finished (failed=false)")
+        self.assertIn("completed", self.cli("organizer", "status").stdout)
+
+    def test_logs_flush_before_tail_and_shutdown(self):
+        self.config("logging.enabled", "true")
+        app = self.app()
+        app.send("29 synthetic logging marker")
+        app.expect("fixture: synthetic logging marker")
+        app.send("/logs")
+        app.expect("Master log:")
+        app.expect("synthetic logging marker")
+        app.close()
+        log = (self.home / "settings" / "logs" / "accessor.log").read_text()
+        self.assertIn("fixture: synthetic logging marker", log)
+
     def test_continuation_before_harness_ready_keeps_original_request(self):
         self.env["ACC_FIXTURE_START_DELAY"] = "0.7"
         app = self.app()
@@ -192,8 +248,7 @@ class RuntimeTests(unittest.TestCase):
         app.expect("| idle")
         self.assertNotIn("Agent:", "".join(app.seen[before:]))
         app.send("hello after interruption")
-        app.expect("Agent: fixture:")
-        app.expect("hello after interruption")
+        app.expect("Agent: fixture: hello after interruption")
 
     def test_compaction_honors_harness_model_and_reasoning(self):
         for harness in ("codex", "claude", "antigravity"):
@@ -281,6 +336,68 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("Plugins reported by antigravity", status)
         self.assertIn("fixture-plugin (enabled)", status)
         self.assertIn("fixture-connector enabled", status)
+
+    def test_memory_inference_is_responsive_cancellable_and_honors_cli_binary(self):
+        self.env["ACC_FIXTURE_START_DELAY"] = "2"
+        configured = self.home / ("configured-codex.cmd" if os.name == "nt" else "configured-codex")
+        configured.write_text("@echo off\nexit /b 99\n" if os.name == "nt" else "#!/bin/sh\nexit 99\n")
+        if os.name != "nt":
+            configured.chmod(0o700)
+        self.config("codex-bin", str(configured))
+        self.config("memory.capture", "false")
+        app = self.app()
+        app.send("/memory infer")
+        app.expect("Extracting durable facts")
+        app.send("/jobs")
+        app.expect("Background helper: running", timeout=1)
+        app.send("/status")
+        app.expect("WHITE: waiting for wake code", timeout=1)
+        app.expect("Extracted 0 candidate(s); nothing new to save.", timeout=5)
+        app.send("/memory infer")
+        app.expect("Extracting durable facts")
+        app.send("/cancel")
+        app.send("/jobs")
+        app.expect("Main: idle")
+        before = len(app.seen)
+        app.expect("/cancel stops active work")
+        self.assertNotIn("Background helper: running", "".join(app.seen[before:]))
+        app.close()
+
+    @unittest.skipIf(os.name == "nt", "Unix executable marker")
+    def test_mock_does_not_launch_compactor_or_memory_model(self):
+        marker = self.home / "unexpected-model-call"
+        self.config("codex-bin", str(self.codex))
+        self.codex.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).write_text('called')\nraise SystemExit(97)\n")
+        self.codex.chmod(0o700)
+        app = self.app("mock")
+        app.send("29 remember that I prefer concise replies")
+        app.expect("Mock agent received:")
+        app.send("/compact")
+        app.expect("Compacted Accessor-owned history")
+        app.send("/memory infer")
+        app.expect("model inference is off")
+        app.send("/jobs")
+        app.expect("Waiting: 0 scheduled task(s)")
+        app.close()
+        self.assertFalse(marker.exists(), "mock launched a model process")
+
+    def test_followup_interrupts_control_feedback_without_losing_request(self):
+        self.env["ACC_FIXTURE_FEEDBACK_DELAY"] = "0.4"
+        for harness in ("codex", "claude", "antigravity"):
+            with self.subTest(harness=harness):
+                app = self.app(harness)
+                app.send("29 schedule fixture")
+                app.expect("Scheduled task ")
+                path = self.home / "settings" / "schedules.json"
+                task_id = json.loads(path.read_text())["tasks"][0]["id"]
+                app.expect("Returning the local result")
+                app.send("29 edit fixture " + task_id)
+                app.expect("Updated task " + task_id)
+                task = json.loads(path.read_text())["tasks"][0]
+                self.assertTrue(task["paused"])
+                self.assertEqual(task["reasoning"], "high")
+                app.close()
+                self.cli("organizer", "cancel", task_id)
 
     def test_all_harnesses_create_edit_and_delete_schedules(self):
         for harness in ("codex", "claude", "antigravity"):

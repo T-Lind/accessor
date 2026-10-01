@@ -189,6 +189,7 @@ impl Drop for PendingSpeech {
         self.0.pending.fetch_sub(1, Ordering::SeqCst);
     }
 }
+#[derive(Clone)]
 pub struct MicFlags {
     pub endpoint_ms: Arc<AtomicU64>,
     pub streaming: Arc<AtomicBool>,
@@ -448,8 +449,9 @@ fn ensure_asr<'a>(
         match load_asr(assets, engine) {
             Ok(loaded) => *model = Some(loaded),
             Err(e) => {
-                let _ =
-                    output.try_send(crate::Input::Error(format!("Transcription failed: {e:#}")));
+                let _ = output.try_send(crate::Input::Warning(format!(
+                    "Transcription failed: {e:#}"
+                )));
                 return None;
             }
         }
@@ -703,14 +705,133 @@ pub fn mic_check(name: Option<&str>, seconds: u64) -> Result<()> {
 }
 
 pub struct Capture {
-    _stream: cpal::Stream,
+    stream: Option<cpal::Stream>,
     stop: Arc<AtomicBool>,
+    failed: Arc<AtomicBool>,
+    tasks: Vec<std::thread::JoinHandle<()>>,
 }
 impl Drop for Capture {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        drop(self.stream.take());
+        for task in self.tasks.drain(..) {
+            let _ = task.join();
+        }
     }
 }
+
+/// Preserve clip order under backpressure, but allow capture teardown to cancel
+/// a pending delivery even if the UI has stopped draining its input channel.
+fn send_capture(
+    output: &tokio::sync::mpsc::Sender<crate::Input>,
+    mut input: crate::Input,
+    stop: &AtomicBool,
+) {
+    while !stop.load(Ordering::SeqCst) {
+        match output.try_send(input) {
+            Ok(()) | Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
+            Err(tokio::sync::mpsc::error::TrySendError::Full(value)) => input = value,
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MicrophoneStatus {
+    Connecting,
+    Listening,
+    Unavailable(String),
+}
+
+pub struct Microphone {
+    requested: Arc<Mutex<Option<String>>>,
+    reconnect: Arc<AtomicBool>,
+    status: Arc<Mutex<MicrophoneStatus>>,
+    stop: Arc<AtomicBool>,
+}
+impl Microphone {
+    pub fn start(
+        assets: PathBuf,
+        name: Option<String>,
+        output: tokio::sync::mpsc::Sender<crate::Input>,
+        flags: MicFlags,
+    ) -> Self {
+        let microphone = Self {
+            requested: Arc::new(Mutex::new(name)),
+            reconnect: Arc::new(AtomicBool::new(true)),
+            status: Arc::new(Mutex::new(MicrophoneStatus::Connecting)),
+            stop: Arc::new(AtomicBool::new(false)),
+        };
+        let requested = microphone.requested.clone();
+        let reconnect = microphone.reconnect.clone();
+        let status = microphone.status.clone();
+        let stop = microphone.stop.clone();
+        let runtime = tokio::runtime::Handle::current();
+        std::thread::spawn(move || {
+            let _runtime = runtime.enter();
+            let mut capture: Option<Capture> = None;
+            let mut retry_at = Instant::now();
+            let mut delay = Duration::from_secs(2);
+            while !stop.load(Ordering::SeqCst) && !output.is_closed() {
+                if capture
+                    .as_ref()
+                    .is_some_and(|c| c.failed.load(Ordering::SeqCst))
+                {
+                    flags.epoch.fetch_add(1, Ordering::SeqCst);
+                    capture = None;
+                    *status.lock().unwrap_or_else(|e| e.into_inner()) =
+                        MicrophoneStatus::Unavailable(
+                            "Microphone disconnected; reconnecting automatically.".into(),
+                        );
+                    retry_at = Instant::now() + delay;
+                }
+                let manual = reconnect.swap(false, Ordering::SeqCst);
+                if manual || (capture.is_none() && Instant::now() >= retry_at) {
+                    if manual {
+                        delay = Duration::from_secs(2);
+                        *status.lock().unwrap_or_else(|e| e.into_inner()) =
+                            MicrophoneStatus::Connecting;
+                    }
+                    flags.epoch.fetch_add(1, Ordering::SeqCst);
+                    capture = None;
+                    let name = requested.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    match listen(&assets, name.as_deref(), output.clone(), flags.clone()) {
+                        Ok(live) => {
+                            capture = Some(live);
+                            delay = Duration::from_secs(2);
+                            *status.lock().unwrap_or_else(|e| e.into_inner()) =
+                                MicrophoneStatus::Listening;
+                        }
+                        Err(e) => {
+                            *status.lock().unwrap_or_else(|e| e.into_inner()) =
+                                MicrophoneStatus::Unavailable(format!("{e:#}"));
+                            retry_at = Instant::now() + delay;
+                            delay = (delay * 2).min(Duration::from_secs(30));
+                        }
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+        microphone
+    }
+    pub fn reconnect(&self, name: Option<String>) {
+        *self.requested.lock().unwrap_or_else(|e| e.into_inner()) = name;
+        self.reconnect.store(true, Ordering::SeqCst);
+    }
+    pub fn status(&self) -> MicrophoneStatus {
+        self.status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+}
+impl Drop for Microphone {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+}
+
 struct Chunk {
     samples: Vec<f32>,
     epoch: u64,
@@ -889,6 +1010,7 @@ pub fn listen(
     let dsp_diagnostics = diagnostics.clone();
     let stop = Arc::new(AtomicBool::new(false));
     let lost = Arc::new(AtomicBool::new(false));
+    let failed = Arc::new(AtomicBool::new(false));
     let stream = match supported.sample_format() {
         cpal::SampleFormat::F32 => build_stream::<f32>(
             &device,
@@ -896,7 +1018,7 @@ pub fn listen(
             raw_tx,
             epoch.clone(),
             muted.clone(),
-            lost.clone(),
+            (lost.clone(), failed.clone()),
             output.clone(),
         )?,
         cpal::SampleFormat::I16 => build_stream::<i16>(
@@ -905,7 +1027,7 @@ pub fn listen(
             raw_tx,
             epoch.clone(),
             muted.clone(),
-            lost.clone(),
+            (lost.clone(), failed.clone()),
             output.clone(),
         )?,
         cpal::SampleFormat::U16 => build_stream::<u16>(
@@ -914,12 +1036,13 @@ pub fn listen(
             raw_tx,
             epoch.clone(),
             muted.clone(),
-            lost.clone(),
+            (lost.clone(), failed.clone()),
             output.clone(),
         )?,
         format => bail!("Unsupported microphone sample format: {format:?}"),
     };
     let rate = config.sample_rate.0 as usize;
+    let dsp_failed = failed.clone();
     let dsp_stop = stop.clone();
     let dsp_epoch = epoch.clone();
     let dsp_output = output.clone();
@@ -930,7 +1053,8 @@ pub fn listen(
     let dsp_awake = awake.clone();
     let dsp_cloud = cloud_stt.clone();
     let reference = crate::echo::connect();
-    std::thread::spawn(move || {
+    stream.play()?;
+    let dsp_task = std::thread::spawn(move || {
         let result = (|| -> Result<()> {
             let mut canceller = crate::echo::Canceller::new();
             let mut resampler = FftFixedIn::<f32>::new(rate, 16_000, 1024, 2, 1)?;
@@ -978,7 +1102,7 @@ pub fn listen(
                     resampler.reset();
                     current_epoch = actual_epoch;
                     if discontinuity {
-                        let _ = dsp_output.try_send(crate::Input::Error(
+                        let _ = dsp_output.try_send(crate::Input::Warning(
                             "Audio buffer overflow; dropped a burst and kept listening".into(),
                         ));
                         continue;
@@ -1123,7 +1247,7 @@ pub fn listen(
                                 if slot.len() < 16 {
                                     slot.push_back(item);
                                 } else {
-                                    let _=dsp_output.try_send(crate::Input::Error("Speech queue filled; some audio could not be retained. Accessor kept listening; please pause while it catches up.".into()));
+                                    let _=dsp_output.try_send(crate::Input::Warning("Speech queue filled; some audio could not be retained. Accessor kept listening; please pause while it catches up.".into()));
                                 }
                             }
                         } else if let Some(live) = &mut cloud_live {
@@ -1134,8 +1258,10 @@ pub fn listen(
             }
             Ok(())
         })();
+        dsp_state.active.store(false, Ordering::SeqCst);
         if let Err(e) = result {
-            let _ = dsp_output.try_send(crate::Input::Error(e.to_string()));
+            dsp_failed.store(true, Ordering::SeqCst);
+            let _ = dsp_output.try_send(crate::Input::Warning(e.to_string()));
         }
     });
     let asr_stop = stop.clone();
@@ -1145,7 +1271,7 @@ pub fn listen(
     let asr_warm = warm;
     let asr_assets = assets.to_path_buf();
     let asr_engine = engine;
-    std::thread::spawn(move || {
+    let asr_task = std::thread::spawn(move || {
         let mut model = model;
         let mut loaded_engine = engine_id;
         let mut last_asr = Instant::now();
@@ -1237,21 +1363,29 @@ pub fn listen(
                 let text = decoded.unwrap_or_default();
                 if heard_transcript(&text) || u.streamed.is_some() {
                     speech_state.processing(true);
-                    let _ = output.blocking_send(crate::Input::Pcm {
-                        streamed: u.streamed,
-                        samples: u.samples,
-                        local_text: text,
-                        epoch: u.epoch,
-                        captured_at: u.started,
-                    });
+                    send_capture(
+                        &output,
+                        crate::Input::Pcm {
+                            streamed: u.streamed,
+                            samples: u.samples,
+                            local_text: text,
+                            epoch: u.epoch,
+                            captured_at: u.started,
+                        },
+                        &asr_stop,
+                    );
                 } else {
                     crate::usage::record_diagnostic("No words recognized");
-                    let _ = output.blocking_send(crate::Input::IgnoredVoice {
-                        text,
-                        reason: "local transcription produced no usable words".into(),
-                        epoch: u.epoch,
-                        confidence: None,
-                    });
+                    send_capture(
+                        &output,
+                        crate::Input::IgnoredVoice {
+                            text,
+                            reason: "local transcription produced no usable words".into(),
+                            epoch: u.epoch,
+                            confidence: None,
+                        },
+                        &asr_stop,
+                    );
                 }
                 continue;
             }
@@ -1274,39 +1408,48 @@ pub fn listen(
                         && !muted.load(Ordering::SeqCst) =>
                 {
                     speech_state.processing(true);
-                    let _ = output.blocking_send(crate::Input::Voice {
-                        text,
-                        epoch: u.epoch,
-                        captured_at: u.started,
-                        confidence,
-                    });
+                    send_capture(
+                        &output,
+                        crate::Input::Voice {
+                            text,
+                            epoch: u.epoch,
+                            captured_at: u.started,
+                            confidence,
+                        },
+                        &asr_stop,
+                    );
                 }
                 Ok((text, confidence)) => {
                     if asr_awake.load(Ordering::SeqCst) {
                         crate::usage::record_diagnostic("No words recognized");
-                        let _ = output.blocking_send(crate::Input::IgnoredVoice {
-                            text,
-                            reason: "local transcription produced no usable words".into(),
-                            epoch: u.epoch,
-                            confidence,
-                        });
+                        send_capture(
+                            &output,
+                            crate::Input::IgnoredVoice {
+                                text,
+                                reason: "local transcription produced no usable words".into(),
+                                epoch: u.epoch,
+                                confidence,
+                            },
+                            &asr_stop,
+                        );
                     }
                 }
                 Err(e) => {
                     // A single bad clip must not kill the recognizer thread;
                     // keep serving later utterances.
-                    let _ =
-                        output.try_send(crate::Input::Error(format!("Transcription failed: {e}")));
+                    let _ = output
+                        .try_send(crate::Input::Warning(format!("Transcription failed: {e}")));
                     continue;
                 }
             }
         }
     });
 
-    stream.play()?;
     Ok(Capture {
-        _stream: stream,
+        stream: Some(stream),
         stop,
+        failed,
+        tasks: vec![dsp_task, asr_task],
     })
 }
 
@@ -1316,13 +1459,14 @@ fn build_stream<T>(
     tx: mpsc::SyncSender<Chunk>,
     epoch: Arc<AtomicU64>,
     muted: Arc<AtomicBool>,
-    lost: Arc<AtomicBool>,
+    health: (Arc<AtomicBool>, Arc<AtomicBool>),
     output: tokio::sync::mpsc::Sender<crate::Input>,
 ) -> Result<cpal::Stream>
 where
     T: cpal::SizedSample,
     f32: cpal::FromSample<T>,
 {
+    let (lost, failed) = health;
     let channels = config.channels as usize;
     let clipping_warned = Arc::new(AtomicBool::new(false));
     let level_output = output.clone();
@@ -1350,8 +1494,9 @@ where
                 0
             };
             if clipping_chunks >= 8 && !clipping_warned.swap(true, Ordering::SeqCst) {
-                let _ = level_output.try_send(crate::Input::Error(
-                    "Microphone level is clipping; lower the input gain, then restart. On PipeWire: wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 0.40. Accessor kept listening".into(),
+                let _ = level_output.try_send(crate::Input::Warning(
+                    "Microphone level is clipping; lower the input gain. Accessor kept listening"
+                        .into(),
                 ));
             }
             if tx
@@ -1365,8 +1510,8 @@ where
                 lost.store(true, Ordering::SeqCst);
             }
         },
-        move |e| {
-            let _ = output.try_send(crate::Input::Error(format!("Microphone error: {e}")));
+        move |_e| {
+            failed.store(true, Ordering::SeqCst);
         },
         None,
     )?)
@@ -2066,6 +2211,68 @@ impl Playback {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn full_input_queue_does_not_prevent_capture_teardown() {
+        let (output, mut receiver) = tokio::sync::mpsc::channel(1);
+        output
+            .try_send(crate::Input::Text("first".into()))
+            .unwrap_or_else(|_| panic!("empty channel"));
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
+        let (started, waiting) = mpsc::channel();
+        let (done, finished) = mpsc::channel();
+        let task = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            send_capture(&output, crate::Input::Text("second".into()), &stopped);
+            done.send(()).unwrap();
+        });
+        waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(matches!(
+            finished.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        stop.store(true, Ordering::SeqCst);
+        finished.recv_timeout(Duration::from_secs(2)).unwrap();
+        task.join().unwrap();
+        assert!(matches!(receiver.try_recv(),Ok(crate::Input::Text(text)) if text=="first"));
+        assert!(receiver.try_recv().is_err());
+    }
+    #[tokio::test]
+    async fn missing_speech_assets_are_recoverable_and_reconnect_uses_new_engine() {
+        let assets = tempfile::tempdir().unwrap();
+        let (output, _receiver) = tokio::sync::mpsc::channel(16);
+        let engine = Arc::new(Mutex::new("canary".into()));
+        let flags = MicFlags {
+            endpoint_ms: Arc::new(AtomicU64::new(600)),
+            streaming: Arc::new(AtomicBool::new(false)),
+            speech_state: Arc::new(SpeechState::default()),
+            diagnostics: Arc::new(Diagnostics::default()),
+            interrupting: Arc::new(AtomicBool::new(false)),
+            epoch: Arc::new(AtomicU64::new(0)),
+            muted: Arc::new(AtomicBool::new(false)),
+            awake: Arc::new(AtomicBool::new(false)),
+            cloud_stt: Arc::new(AtomicBool::new(false)),
+            lazy: Arc::new(AtomicBool::new(false)),
+            engine: engine.clone(),
+            noise: Arc::new(crate::noise::Control::new(false, -60.0, false)),
+        };
+        let microphone = Microphone::start(assets.path().into(), None, output, flags);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !matches!(microphone.status(), MicrophoneStatus::Unavailable(_)) {
+            assert!(Instant::now() < deadline, "missing model did not surface");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        *engine.lock().unwrap() = "missing-engine".into();
+        microphone.reconnect(Some("new microphone".into()));
+        while !matches!(microphone.status(),MicrophoneStatus::Unavailable(text) if text.contains("Unknown local STT engine"))
+        {
+            assert!(
+                Instant::now() < deadline,
+                "reconnection did not use updated engine"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
     #[test]
     fn level_report_separates_floor_from_speech() {
         let mut levels: Vec<f32> = vec![-72.0; 90];

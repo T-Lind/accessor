@@ -41,7 +41,12 @@ for line in sys.stdin:
         if text.startswith("Conversation data to summarize:"):
             reply("compact-model=" + str(msg["params"].get("model")) + "; compact-effort=" + str(msg["params"].get("effort")))
             continue
-        control = control_reply(text.rsplit("Current request:\n", 1)[-1])
+        # Reconnected sessions receive context followed by the new request.
+        # Emulate an agent answering that request, rather than echoing context.
+        text = text.rsplit("Current request:\n", 1)[-1]
+        if text.startswith("Accessor local control result"):
+            time.sleep(float(os.environ.get("ACC_FIXTURE_FEEDBACK_DELAY", "0")))
+        control = control_reply(text)
         if control:
             reply(control)
             continue

@@ -66,6 +66,7 @@ pub struct Ui {
     settings: Option<String>,
     notice: String,
     chat: String,
+    history: InputHistory,
 }
 impl Ui {
     pub fn new(plain: bool) -> Result<Self> {
@@ -103,6 +104,7 @@ impl Ui {
             settings: None,
             notice: String::new(),
             chat: "activity".into(),
+            history: InputHistory::default(),
         })
     }
     pub fn set_chat(&mut self, chat: &str) {
@@ -114,6 +116,8 @@ impl Ui {
     }
     pub fn secret(&mut self, enabled: bool) {
         self.secret = enabled;
+        self.history.position = None;
+        self.history.draft.clear();
         self.input.clear();
         if self.interactive() {
             if enabled {
@@ -126,6 +130,7 @@ impl Ui {
     }
     pub fn clear_private(&mut self) {
         self.lines.clear();
+        self.history = InputHistory::default();
         self.input.clear();
         self.settings = None;
         self.notice.clear();
@@ -237,6 +242,7 @@ impl Ui {
             }
             match event::read()? {
                 Event::Paste(text) => {
+                    self.history.position = None;
                     apply_paste(&mut self.input, &text);
                     self.menu_index = 0;
                     self.dirty = true;
@@ -252,12 +258,14 @@ impl Ui {
                                 .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER) =>
                         {
                             if let Some(text) = clipboard_text() {
+                                self.history.position = None;
                                 apply_paste(&mut self.input, &text);
                                 self.menu_index = 0;
                             }
                         }
                         KeyCode::Insert if k.modifiers.contains(KeyModifiers::SHIFT) => {
                             if let Some(text) = clipboard_text() {
+                                self.history.position = None;
                                 apply_paste(&mut self.input, &text);
                                 self.menu_index = 0;
                             }
@@ -275,7 +283,11 @@ impl Ui {
                                 }
                             }
                             self.menu_index = 0;
-                            return Ok(Some(std::mem::take(&mut self.input)));
+                            let text = std::mem::take(&mut self.input);
+                            if !self.secret && self.settings.is_none() {
+                                self.history.remember(&text);
+                            }
+                            return Ok(Some(text));
                         }
                         KeyCode::Tab if !self.secret => {
                             if let Some((name, _)) =
@@ -300,21 +312,39 @@ impl Ui {
                         {
                             return Ok(Some("/settings-nav back".into()));
                         }
-                        KeyCode::Down if !self.secret && self.input.starts_with('/') => {
+                        KeyCode::Down
+                            if !self.secret
+                                && self.history.position.is_none()
+                                && !crate::dashboard::matching(&self.input).is_empty() =>
+                        {
                             let n = crate::dashboard::matching(&self.input).len();
                             if n > 0 {
                                 self.menu_index = (self.menu_index + 1) % n;
                             }
                         }
-                        KeyCode::Up if !self.secret && self.input.starts_with('/') => {
+                        KeyCode::Up
+                            if !self.secret
+                                && self.history.position.is_none()
+                                && !crate::dashboard::matching(&self.input).is_empty() =>
+                        {
                             self.menu_index = self.menu_index.saturating_sub(1);
                         }
+                        KeyCode::Up if !self.secret && self.settings.is_none() => {
+                            self.history.navigate(&mut self.input, true);
+                            self.menu_index = 0;
+                        }
+                        KeyCode::Down if !self.secret && self.settings.is_none() => {
+                            self.history.navigate(&mut self.input, false);
+                            self.menu_index = 0;
+                        }
                         KeyCode::Backspace => {
+                            self.history.position = None;
                             self.input.pop();
                             self.menu_index = 0;
                         }
                         KeyCode::Esc => {
                             self.input.clear();
+                            self.history.position = None;
                             if self.settings.is_some() && !self.secret {
                                 return Ok(Some("/settings-nav back".into()));
                             }
@@ -323,6 +353,7 @@ impl Ui {
                         KeyCode::PageUp => self.scroll_lines(8),
                         KeyCode::PageDown => self.scroll_lines(-8),
                         KeyCode::Char(c) if !c.is_control() && self.input.len() < 4096 => {
+                            self.history.position = None;
                             self.input.push(c);
                             self.menu_index = 0;
                         }
@@ -472,7 +503,7 @@ impl Ui {
                 layout[2],
             );
             f.render_widget(
-                Paragraph::new(if self.settings.is_some() {" ↑/↓ choose · Enter select · Esc back · changes save on confirmation "} else {" Continue while thinking · wake code during speech · Esc cancel · /sleep · /audio · /settings "})
+                Paragraph::new(if self.settings.is_some() {" ↑/↓ choose · Enter select · Esc back · changes save on confirmation "} else {" ↑/↓ history · / commands · Esc cancel · /repeat · /jobs · /settings "})
                     .style(Style::default().fg(color)),
                 layout[3],
             );
@@ -522,6 +553,90 @@ impl Ui {
         Ok(())
     }
 }
+#[derive(Default)]
+struct InputHistory {
+    entries: VecDeque<String>,
+    position: Option<usize>,
+    draft: String,
+}
+impl InputHistory {
+    fn remember(&mut self, text: &str) {
+        if !text.trim().is_empty() && self.entries.back().is_none_or(|last| last != text) {
+            self.entries.push_back(text.to_owned());
+            while self.entries.len() > 50 {
+                self.entries.pop_front();
+            }
+        }
+        self.position = None;
+        self.draft.clear();
+    }
+    fn navigate(&mut self, input: &mut String, older: bool) {
+        if self.entries.is_empty() {
+            return;
+        }
+        if older {
+            let next = match self.position {
+                Some(index) => index.saturating_sub(1),
+                None => {
+                    self.draft = input.clone();
+                    self.entries.len() - 1
+                }
+            };
+            self.position = Some(next);
+            *input = self.entries[next].clone();
+        } else if let Some(index) = self.position {
+            if index + 1 < self.entries.len() {
+                self.position = Some(index + 1);
+                *input = self.entries[index + 1].clone();
+            } else {
+                self.position = None;
+                *input = std::mem::take(&mut self.draft);
+            }
+        }
+    }
+}
+
+/// Clipboard text is passed on stdin, never interpolated into a shell command.
+pub async fn copy_text(text: String) -> Result<String> {
+    use tokio::io::AsyncWriteExt;
+    let candidates: &[&[&str]] = if cfg!(windows) {
+        &[&["powershell", "-NoProfile", "-NonInteractive", "-Command", "[Console]::InputEncoding = [Text.UTF8Encoding]::new(); Set-Clipboard -Value ([Console]::In.ReadToEnd())"]]
+    } else if cfg!(target_os = "macos") {
+        &[&["pbcopy"]]
+    } else {
+        &[
+            &["wl-copy"],
+            &["xclip", "-selection", "clipboard"],
+            &["xsel", "--clipboard", "--input"],
+        ]
+    };
+    for args in candidates {
+        let mut command = tokio::process::Command::new(args[0]);
+        command
+            .args(&args[1..])
+            .kill_on_drop(true)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let Ok(mut child) = command.spawn() else {
+            continue;
+        };
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin.write_all(text.as_bytes()).await?;
+            }
+            child.wait().await
+        })
+        .await;
+        if matches!(result, Ok(Ok(status)) if status.success()) {
+            return Ok("Copied the last answer to the clipboard.".into());
+        }
+    }
+    anyhow::bail!(
+        "Clipboard unavailable. Linux needs wl-copy, xclip, or xsel in a desktop session."
+    )
+}
+
 fn settings_scroll(
     scroll: usize,
     selected: Option<usize>,
@@ -683,6 +798,41 @@ fn status_color(status: &str) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn history_restores_draft_and_bounds_duplicates() {
+        let mut history = InputHistory::default();
+        history.remember("first");
+        history.remember("second");
+        history.remember("second");
+        let mut input = "unfinished draft".to_string();
+        history.navigate(&mut input, true);
+        assert_eq!(input, "second");
+        history.navigate(&mut input, true);
+        assert_eq!(input, "first");
+        history.navigate(&mut input, true);
+        assert_eq!(input, "first");
+        history.navigate(&mut input, false);
+        assert_eq!(input, "second");
+        history.navigate(&mut input, false);
+        assert_eq!(input, "unfinished draft");
+        for n in 0..100 {
+            history.remember(&format!("message {n}"));
+        }
+        assert_eq!(history.entries.len(), 50);
+        assert_eq!(history.entries.front().unwrap(), "message 50");
+    }
+    #[test]
+    fn locking_clears_input_history_and_secret_draft() {
+        let mut ui = Ui::new(true).unwrap();
+        ui.history.remember("private conversation");
+        ui.history.draft = "sensitive draft".into();
+        ui.input = "private input".into();
+        ui.secret(true);
+        assert!(ui.history.draft.is_empty());
+        assert!(ui.input.is_empty());
+        ui.clear_private();
+        assert!(ui.history.entries.is_empty());
+    }
     #[test]
     fn settings_selection_stays_visible_in_short_terminals() {
         assert_eq!(settings_scroll(0, Some(17), 8, 25), 12);

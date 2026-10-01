@@ -14,6 +14,28 @@ use std::{
 };
 use tokio::sync::mpsc;
 
+fn compaction_settings(
+    settings: &config::Settings,
+    executable: Option<&std::path::PathBuf>,
+) -> config::Settings {
+    let mut effective = settings.clone();
+    if let Some(path) = executable {
+        effective.codex_bin = Some(path.clone());
+    }
+    if effective.routing.main == "mock" {
+        effective.routing.compaction_harness = "local".into();
+    }
+    effective
+}
+
+// Feedback is coalesced before dispatch. A batch with a worker outcome must
+// remain visible even when its first item is a routine control receipt.
+fn routine_control_feedback(text: &str) -> bool {
+    text.starts_with("Accessor local control result")
+        && !text.contains("<worker_result>")
+        && !text.contains("Worker timed out after 15 minutes")
+}
+
 struct CompactionJob {
     source: Vec<(String, String)>,
     task: tokio::task::JoinHandle<Result<String>>,
@@ -24,16 +46,22 @@ impl CompactionJob {
         settings: &config::Settings,
         executable: Option<&std::path::PathBuf>,
     ) -> Self {
-        let mut settings = settings.clone();
-        if let Some(path) = executable {
-            settings.codex_bin = Some(path.clone());
-        }
+        let settings = compaction_settings(settings, executable);
         let text = crate::route::transcript_text(&source);
         Self {
             source,
             task: tokio::spawn(async move { crate::route::compact(&text, &settings).await }),
         }
     }
+}
+
+struct OrganizerPoll {
+    generation: u64,
+    task: tokio::task::JoinHandle<Result<Vec<crate::organizer::Due>>>,
+}
+struct NotificationPoll {
+    generation: u64,
+    task: tokio::task::JoinHandle<Result<(usize, Vec<crate::notifications::Notification>)>>,
 }
 
 struct LiveAgent {
@@ -624,6 +652,13 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut last_notify_poll = Instant::now();
     let mut notice_count = crate::notifications::unread_count().unwrap_or(0);
     let mut organizer_error_warned = false;
+    let mut notification_error_warned = false;
+    let mut last_log_warning = Instant::now();
+    let mut poll_generation = 0_u64;
+    let mut organizer_poll: Option<OrganizerPoll> = None;
+    let mut notification_poll: Option<NotificationPoll> = None;
+    let mut notification_ack: Option<tokio::task::JoinHandle<Result<()>>> = None;
+    let mut notification_cue: Option<tokio::task::JoinHandle<Result<()>>> = None;
     let wake_code = args
         .wake_code
         .take()
@@ -728,16 +763,13 @@ pub async fn run(mut args: Run) -> Result<()> {
             ui.message(format!("Antigravity MCP setup needs attention: {e:#}"));
         }
     }
-    ui.message("Accessor MCP is supplied when Codex/Claude start; detected Antigravity registration is checked automatically.");
-    let mut microphone_available = args.text;
-    let _capture = if args.text {
-        None
-    } else {
-        match audio::listen(
-            &assets,
-            args.microphone
-                .as_deref()
-                .or(settings.microphone.as_deref()),
+    crate::masterlog::debug("startup", "Harness MCP configuration checked.");
+    let mut microphone_name = args.microphone.clone().or(settings.microphone.clone());
+    let mut configured_microphone = settings.microphone.clone();
+    let microphone = (!args.text).then(|| {
+        audio::Microphone::start(
+            assets.clone(),
+            microphone_name.clone(),
             input_tx.clone(),
             audio::MicFlags {
                 endpoint_ms: endpoint_ms.clone(),
@@ -753,17 +785,10 @@ pub async fn run(mut args: Run) -> Result<()> {
                 engine: stt_engine.clone(),
                 noise: noise_control.clone(),
             },
-        ) {
-            Ok(capture) => {
-                microphone_available = true;
-                Some(capture)
-            }
-            Err(e) => {
-                ui.message(format!("Microphone unavailable: {e:#}\nYou can still type messages or use /setup, /devices and /tts."));
-                None
-            }
-        }
-    };
+        )
+    });
+    let mut microphone_status = audio::MicrophoneStatus::Connecting;
+    let mut microphone_started = false;
     if !ui.interactive() {
         let input_tx = input_tx.clone();
         std::thread::spawn(move || {
@@ -804,13 +829,15 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut seen_history: HashMap<String, usize> = HashMap::new();
     let mut last_route: Option<crate::route::Target> = None;
     let mut transcript: VecDeque<(String, String)> = VecDeque::new();
+    let mut last_reply: Option<String> = None;
     let mut busy = false;
     let mut approval = false;
-    let mut mic_unavailable = !microphone_available;
+    let mut mic_unavailable = !args.text;
     muted.store(false, Ordering::SeqCst);
     let mut eof = false;
     let mut silence_reply = false;
     let mut cancelled_turn = false;
+    let mut turn_feedback = false;
     // Output produced by the active turn that is not yet part of the handoff
     // history. If the turn is interrupted, it is preserved so the next request
     // still has the context of what the agent had said and done.
@@ -837,8 +864,8 @@ pub async fn run(mut args: Run) -> Result<()> {
             "microphone on; transcription stays local"
         }
     ));
-    ui.message("Type / for commands, /settings to configure, /tts to choose a voice, or a message to talk to the agent.");
-    ui.message("Approvals only accept typed commands. Ignored awake input appears in Activity with its reason; it is not added to agent history or saved in analytics. Sleeping ambient speech stays hidden.");
+    ui.message("Type a message to talk, / for commands, or /settings to configure.");
+    ui.message("Approvals require typed /approve N or /deny N.");
     if let Ok(count) = crate::notifications::unread_count() {
         if count > 0 {
             ui.message(format!(
@@ -876,13 +903,46 @@ pub async fn run(mut args: Run) -> Result<()> {
     // encrypted private journal, never sent to an agent or cloud.
     let mut dictation = false;
     let mut dictation_cloud = (false, false);
-    if cues && settings.sounds.ready > 0.001 {
-        let volume = settings.sounds.ready;
-        tokio::task::spawn_blocking(move || {
-            let _ = audio::ready_chime(volume);
-        });
-    }
     loop {
+        if configured_microphone != settings.microphone {
+            configured_microphone = settings.microphone.clone();
+            microphone_name = configured_microphone.clone();
+            if let Some(mic) = &microphone {
+                mic.reconnect(microphone_name.clone());
+            }
+        }
+        if let Some(mic) = &microphone {
+            let status = mic.status();
+            mic_unavailable = status != audio::MicrophoneStatus::Listening;
+            if status != microphone_status {
+                if !access.locked() {
+                    match &status {
+                        audio::MicrophoneStatus::Connecting => {
+                            ui.message("Connecting microphone...")
+                        }
+                        audio::MicrophoneStatus::Listening => {
+                            ui.message(if microphone_started {
+                                "Microphone reconnected. Say your wake code when ready."
+                            } else {
+                                "Microphone ready."
+                            });
+                            if !microphone_started && cues && settings.sounds.ready > 0.001 {
+                                let volume = settings.sounds.ready;
+                                tokio::task::spawn_blocking(move || {
+                                    let _ = audio::ready_chime(volume);
+                                });
+                            }
+                        }
+                        audio::MicrophoneStatus::Unavailable(error) => {
+                            session.close();
+                            ui.message(format!("Microphone unavailable: {}\nReconnecting automatically. You can type; /devices lists microphones, /mic reconnect retries now.", safe(error)));
+                        }
+                    }
+                }
+                microphone_started |= status == audio::MicrophoneStatus::Listening;
+                microphone_status = status;
+            }
+        }
         endpoint_ms.store(settings.stt.endpoint_ms, Ordering::Relaxed);
         if dictation && !session.active() {
             cloud_stt.store(dictation_cloud.0, Ordering::SeqCst);
@@ -894,6 +954,7 @@ pub async fn run(mut args: Run) -> Result<()> {
             let discard_pending = epoch.load(Ordering::SeqCst) != 0;
             lock_requested = false;
             access.lock();
+            poll_generation = poll_generation.wrapping_add(1);
             crate::config::clear_secret_cache();
             // Revoke access before cancelling anything that can still produce output.
             awake.store(false, Ordering::SeqCst);
@@ -925,6 +986,9 @@ pub async fn run(mut args: Run) -> Result<()> {
                 job.task.abort();
             }
             if let Some(job) = utility.take() {
+                job.abort();
+            }
+            if let Some(job) = memory_job.take() {
                 job.abort();
             }
             if let Some(job) = model_lookup.take() {
@@ -985,6 +1049,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                     }
                 }
             }
+            last_reply = None;
             ui.clear_private();
             ui.secret(false);
             if cues {
@@ -1329,19 +1394,11 @@ pub async fn run(mut args: Run) -> Result<()> {
                         let _ = e;
                         continue;
                     }
-                    Input::Error(e) => {
-                        let text = safe(&e);
-                        if text.contains("kept listening") {
-                            ui.message(format!("Audio: {text}"));
-                            continue;
-                        }
-                        if text.contains("Microphone error") {
-                            ui.message(format!("Microphone problem: {text}. Voice input is paused; restart acc if it persists."));
-                            mic_unavailable = true;
-                            continue;
-                        }
-                        bail!("Audio/input stopped: {text}");
+                    Input::Warning(e) => {
+                        ui.message(format!("Warning: {}", safe(&e)));
+                        continue;
                     }
+                    Input::Error(e) => bail!("Audio/input stopped: {}", safe(&e)),
                     Input::WakeProbe{text,error,epoch:captured_epoch,decode_ms}=>{
                         if muted.load(Ordering::SeqCst) || captured_epoch!=epoch.load(Ordering::SeqCst) || !interrupting.load(Ordering::SeqCst) {continue;}
                         wake_checks+=1;wake_decode_ms=decode_ms;
@@ -1394,7 +1451,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 };
                                 let text=match result {
                                     Ok(text)=>{crate::usage::record_stt("cartesia",samples.len() as f64/16_000.0);text},
-                                    Err(_)=>{crate::usage::record_diagnostic("Cloud STT fallback");let _=tx.send(Input::Error("Cartesia transcription unavailable; using local transcript and kept listening".into())).await;local_text},
+                                    Err(_)=>{crate::usage::record_diagnostic("Cloud STT fallback");let _=tx.send(Input::Warning("Cartesia transcription unavailable; using local transcript and kept listening".into())).await;local_text},
                                 };
                                 crate::usage::record_latency(if was_streamed {"Cloud result wait"} else {"Cloud transcription"},start.elapsed());
                                 let _=tx.send(Input::CloudVoice {text,epoch:captured_epoch,captured_at}).await;
@@ -1539,16 +1596,17 @@ pub async fn run(mut args: Run) -> Result<()> {
                             LocalCommand::Tts=>ui.message(crate::dashboard::tts_help(&settings)),
                             LocalCommand::Watch(rest)=>match watch_command(&rest,&settings){Ok(message)=>ui.message(message),Err(e)=>ui.message(format!("{e:#}"))},
                             LocalCommand::Prompt(rest)=>match prompt_command(&rest,&mut settings,&mut ui){Ok(message)=>ui.message(message),Err(e)=>ui.message(format!("{e:#}"))},
-                            LocalCommand::Logs=>match crate::masterlog::path(){
-                                Some(path)=>{
-                                    let tail=std::fs::read_to_string(&path).ok().map(|text|{
-                                        let lines:Vec<&str>=text.lines().rev().take(20).collect();
-                                        lines.into_iter().rev().collect::<Vec<_>>().join("\n")
-                                    }).unwrap_or_default();
-                                    ui.message(format!("Master log: {}\n{}",path.display(),if tail.trim().is_empty(){"(empty)".into()}else{tail}));
-                                }
-                                None=>ui.message("Master logging is off. Enable it in /settings (Display) or: /config set logging.enabled true"),
-                            },
+                            LocalCommand::Logs=>{
+                                if utility.is_some() {ui.message("A diagnostic is already running; try /logs when it finishes.");}
+                                else if let Some(path)=crate::masterlog::path() {
+                                    utility=Some(tokio::task::spawn_blocking(move||{
+                                        crate::masterlog::flush();
+                                        let text=std::fs::read_to_string(&path).unwrap_or_default();
+                                        let tail=text.lines().rev().take(20).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+                                        Ok(format!("Master log: {}\n{}",path.display(),if tail.is_empty(){"(empty)"}else{&tail}))
+                                    }));
+                                } else {ui.message("Master logging is off. Enable it in /settings (Display) or: /config set logging.enabled true");}
+                            }
                             LocalCommand::Setup=>{
                                 if busy || speaker.is_some() {ui.message("Cancel or finish the current task/playback before setup.");continue;}
                                 muted.store(true,Ordering::SeqCst);epoch.fetch_add(1,Ordering::SeqCst);
@@ -1605,6 +1663,10 @@ pub async fn run(mut args: Run) -> Result<()> {
                                         if key=="speak" && !speak {speech_queue.clear();speaker=None;echo_guard.finish();}
                                         muted.store(panel.is_some() || (speaker.is_some() && !settings.barge_in),Ordering::SeqCst);
                                         ui.message(format!("Saved {key}: {value}."));
+                                        if key=="microphone" {
+                                            microphone_name=settings.microphone.clone();configured_microphone=microphone_name.clone();
+                                            if let Some(mic)=&microphone {mic.reconnect(microphone_name.clone());ui.message("Switching microphone in the background...");}
+                                        }
                                         if key=="stt.conversation" {
                                             if settings.stt.conversation=="cartesia" {
                                                 ui.message(format!("After-wake STT is now external Cartesia Ink-2. Wake spotting stays on-device ({}); cloud STT never runs while WHITE.", settings.stt.engine));
@@ -1640,7 +1702,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                         }
                                         if spoken_setting && speak {speech_queue.push_back(format!("Selected {key}: {value}."));}
                                         if let Some(menu)=&panel {ui.settings(Some(menu.display(&settings,connected,&models)));}
-                                        if ["microphone","assets-dir","codex-bin","stt.threads","stt.spin"].contains(&key.as_str()) {ui.message("Restart Accessor to apply this device/runtime change.");}
+                                        if ["assets-dir","codex-bin","stt.threads","stt.spin"].contains(&key.as_str()) {ui.message("Restart Accessor to apply this device/runtime change.");}
                                     }
                                     Err(e)=>ui.message(format!("Setting not changed: {e:#}")),
                                 }
@@ -1755,13 +1817,41 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 ui.resume()?;muted.store(panel.is_some() || (speaker.is_some() && !settings.barge_in),Ordering::SeqCst);epoch.fetch_add(1,Ordering::SeqCst);
                                 if let Err(e)=result {ui.message(format!("{plugin_harness}: {e:#}"));}
                             }
+                            LocalCommand::Microphone(reconnect)=>{
+                                if let Some(mic)=&microphone {
+                                    if reconnect {mic.reconnect(microphone_name.clone());ui.message("Reconnecting microphone...");}
+                                    else {ui.message(format!("Microphone: {}\nDevice: {}\n/devices lists inputs; /config set microphone NAME switches devices.",match mic.status(){audio::MicrophoneStatus::Connecting=>"connecting".into(),audio::MicrophoneStatus::Listening=>"listening".into(),audio::MicrophoneStatus::Unavailable(error)=>format!("unavailable · {}",safe(&error))},microphone_name.as_deref().unwrap_or("system default")));}
+                                } else {ui.message("Microphone is off in text mode.");}
+                            }
+                            LocalCommand::Repeat=>{
+                                if busy || worker.is_some() || speaker.is_some() || !speech_queue.is_empty() {ui.message("Finish the current work/playback or /cancel, then /repeat.");}
+                                else if !speak || settings.tts.provider=="off" {ui.message("Speech is off. Enable spoken replies in /settings, then /repeat.");}
+                                else if let Some(text)=&last_reply {speech_queue.push_back(text.clone());ui.message("Replaying the last answer.");}
+                                else {ui.message("No answer to replay yet.");}
+                            }
+                            LocalCommand::Copy=>{
+                                if utility.is_some() {ui.message("A diagnostic is already running; try /copy when it finishes.");}
+                                else if let Some(text)=&last_reply {utility=Some(tokio::spawn(crate::ui::copy_text(text.clone())));}
+                                else {ui.message("No answer to copy yet.");}
+                            }
+                            LocalCommand::Jobs=>{
+                                let mut lines=vec![format!("Main: {} · {active_harness}",if approval {"approval needed"} else if busy {"working"} else {"idle"})];
+                                if let Some(w)=&worker {lines.push(format!("Worker: {} · {}s elapsed{}",w.harness,w.started.elapsed().as_secs(),if worker_approval {" · approval needed"}else{""}));}
+                                if compaction.is_some() {lines.push("Compaction: running · /cancel stops it".into());}
+                                if memory_job.as_ref().is_some_and(|job|!job.is_finished()) {lines.push("Memory inference: running · /cancel stops it".into());}
+                                if utility.is_some() {lines.push("Background helper: running · /cancel stops it".into());}
+                                lines.push(format!("Waiting: {} scheduled task(s) · {} spoken item(s){}",waiting_tasks.len(),speech_queue.len(),if waiting_event.is_some(){" · incoming event"}else{""}));
+                                for task in waiting_tasks.iter().take(5) {lines.push(format!("  {}",safe(&task.label)));}
+                                lines.push("/cancel stops active work; /organizer shows saved tasks and run receipts.".into());
+                                ui.message(lines.join("\n"));
+                            }
                             LocalCommand::Analytics=>ui.message(crate::usage::report()),
                             LocalCommand::Context=>ui.message(crate::route::context_report(transcript.make_contiguous(), &settings)),
                             LocalCommand::Compact=>{
                                 if transcript.is_empty() {ui.message("No conversation to compact.");continue;}
                                 if compaction.is_some() {ui.message("Compaction is already running.");continue;}
                                 compaction=Some(CompactionJob::start(transcript.iter().cloned().collect(),&settings,args.codex_bin.as_ref()));
-                                ui.message(format!("Compacting with {} · {} · {}. Voice controls remain available.",settings.routing.compaction_harness,settings.routing.compaction_model,settings.routing.compaction_reasoning));
+                                ui.message(if settings.routing.main=="mock" {"Compacting mock history locally.".into()} else {format!("Compacting with {} · {} · {}. Voice controls remain available.",settings.routing.compaction_harness,settings.routing.compaction_model,settings.routing.compaction_reasoning)});
                             }
                             LocalCommand::Update { check }=>{
                                 if utility.is_some() {ui.message("A diagnostic is already running; /cancel stops it.");continue;}
@@ -1837,28 +1927,18 @@ pub async fn run(mut args: Run) -> Result<()> {
                             match result {Ok(message)=>ui.message(message),Err(e)=>ui.message(format!("{e:#}"))}
                         },
                         ["/memory","infer"] => {
-                            let window: String = transcript
-                                .iter()
-                                .rev()
-                                .take(12)
-                                .collect::<Vec<_>>()
-                                .into_iter()
-                                .rev()
-                                .map(|(role, line)| format!("{role}: {line}"))
-                                .collect::<Vec<_>>()
-                                .join("\n");
-                            ui.message(format!("Extracting durable facts with the {} model...", settings.routing.compaction_model));
-                            match crate::route::extract_facts(&window, &settings).await {
-                                Ok(candidates) => {
-                                    let found = candidates.len();
-                                    match crate::memory::store_candidates(&workspace, candidates) {
-                                        Ok(saved) if saved.is_empty() => ui.message(format!("Extracted {found} candidate(s); nothing new to save.")),
-                                        Ok(saved) => ui.message(format!("Saved {} inferred fact(s): {}", saved.len(), saved.iter().map(|entry| entry.key.clone()).collect::<Vec<_>>().join(", "))),
-                                        Err(e) => ui.message(format!("Could not save inferred facts: {e:#}")),
-                                    }
-                                }
-                                Err(e) => ui.message(format!("Extraction failed: {e:#}")),
-                            }
+                            if active_harness=="mock" {ui.message("Mock mode uses local memory capture; model inference is off.");continue;}
+                            if utility.is_some() || memory_job.as_ref().is_some_and(|job|!job.is_finished()) {ui.message("A background job is already running; /cancel stops it.");continue;}
+                            let window=transcript.iter().rev().take(12).collect::<Vec<_>>().into_iter().rev().map(|(role,line)|format!("{role}: {line}")).collect::<Vec<_>>().join("\n");
+                            let effective=compaction_settings(&settings,args.codex_bin.as_ref());
+                            let workspace=workspace.clone();
+                            ui.message(format!("Extracting durable facts with the {} model... /cancel stops this job.",effective.routing.compaction_model));
+                            utility=Some(tokio::spawn(async move {
+                                let candidates=crate::route::extract_facts(&window,&effective).await?;
+                                let found=candidates.len();
+                                let saved=tokio::task::spawn_blocking(move||crate::memory::store_candidates(&workspace,candidates)).await??;
+                                Ok(if saved.is_empty(){format!("Extracted {found} candidate(s); nothing new to save.")}else{format!("Saved {} inferred fact(s): {}",saved.len(),saved.iter().map(|entry|entry.key.clone()).collect::<Vec<_>>().join(", "))})
+                            }));
                         },
                         ["/audio"] => ui.message(format!("Local wake checks: {wake_checks}; wake hits: {wake_hits}; speaker echoes rejected: {wake_echoes}; last decode: {wake_decode_ms} ms. Rolling checks active: {}. Local engine: {}. Say {}, pause, then your request. No recordings saved. Noise gate: {} at {:.1} dBFS; denoise: {}.\n{}; {}; capture paused: {}; decoder errors: {wake_errors}; last wake-window recognition (diagnostic only): {}",interrupting.load(Ordering::SeqCst),settings.stt.engine,settings.wake_code,if settings.stt.noise_gate {"on"} else {"off"},noise_control.floor_db(),settings.stt.denoise,audio_diagnostics.summary(),speech_state.summary(),muted.load(Ordering::SeqCst),last_wake_probe)),
                         ["/limits"] => ui.message(limits.report()),
@@ -1875,6 +1955,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                             think=None;
                             alarm=None;
                             if let Some(task)=utility.take() {task.abort();}
+                            if let Some(task)=memory_job.take() {task.abort();}
                             if text.trim()=="/stop" {
                                 session.close();
                                 ui.message("Stopped. Waiting for wake code.");
@@ -1957,7 +2038,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                 if !is_event && !typed && !was_active && matches!(&action, Action::Open | Action::Prompt(_)) && !args.no_chime && !args.text {
                     let volume=settings.sounds.wake;
                     let tx=input_tx.clone();
-                    tokio::task::spawn_blocking(move || {if let Err(e)=audio::chime(volume) {let _=tx.blocking_send(Input::Error(format!("Wake chime unavailable: {e}; kept listening")));}});
+                    tokio::task::spawn_blocking(move || {if let Err(e)=audio::chime(volume) {let _=tx.blocking_send(Input::Warning(format!("Wake chime unavailable: {e}; kept listening")));}});
                 }
                 if !typed && !is_automatic && !args.text && (matches!(&action,Action::Open) || spoken_addressed) {
                     wake_display(settings.wake_display,&mut last_display_wake);
@@ -2003,6 +2084,10 @@ pub async fn run(mut args: Run) -> Result<()> {
                         if let Some(live)=agents.get_mut(&active_harness) { live.first=None; }
                         pending_prompt=None;pending_setting=None;pending_stt=None; }
                     Action::Prompt(text) => {
+                        if !typed && !is_automatic && matches!(text.trim().trim_matches(|c:char|c.is_ascii_punctuation()).to_lowercase().as_str(), "repeat that" | "replay that" | "repeat the last answer") {
+                            if input_tx.try_send(Input::Text("/repeat".into())).is_err() {ui.message("Input is busy; please repeat the command.");}
+                            continue;
+                        }
                         if typed && !is_automatic {
                             epoch.fetch_add(1,Ordering::SeqCst);
                             if let Some(job)=gate_job.take() {job.abort();}
@@ -2115,6 +2200,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 }
                             });
                         }
+                        turn_feedback=is_internal && routine_control_feedback(&text);
                         silence_reply=is_event || mic_unavailable || (is_internal && !session.active());
                         cancelled_turn=false;cancel_started=None;
                         let mut target = if let Some(target) = route_override {
@@ -2232,6 +2318,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                         // Debounced background inference: ask the compaction model
                         // for durable facts the heuristics miss, off the hot path.
                         if !is_automatic
+                            && active_harness!="mock"
                             && settings.memory.capture
                             && memory_job.as_ref().is_none_or(|job| job.is_finished())
                             && last_memory_extract.elapsed() >= Duration::from_secs(900)
@@ -2247,7 +2334,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 .map(|(role, line)| format!("{role}: {line}"))
                                 .collect::<Vec<_>>()
                                 .join("\n");
-                            let settings_clone = settings.clone();
+                            let settings_clone = compaction_settings(&settings,args.codex_bin.as_ref());
                             let workspace_clone = workspace.clone();
                             memory_job = Some(tokio::spawn(async move {
                                 if let Ok(candidates) =
@@ -2469,7 +2556,8 @@ pub async fn run(mut args: Run) -> Result<()> {
                         if text.trim().is_empty() {
                             continue;
                         }
-                        ui.chat(Kind::Agent, &text);
+                        if !turn_feedback {last_reply = Some(text.chars().take(64_000).collect());}
+                        ui.chat(if turn_feedback {Kind::Progress} else {Kind::Agent}, &text);
                         transcript.push_back(("Agent".into(), text.clone()));
                         if transcript.len() > 30 {
                             while transcript.len() > 30 { transcript.pop_front(); }
@@ -2497,7 +2585,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                             // interruption so the next request keeps context,
                             // even when the harness session is torn down.
                             if let Some(summary) = interrupted_summary(interrupted_reply.take(), &turn_trace) {
-                                ui.chat(Kind::Agent, &summary);
+                                ui.chat(if turn_feedback {Kind::Progress} else {Kind::Agent}, &summary);
                                 transcript.push_back((INTERRUPTED_TURN.into(), summary));
                                 if transcript.len() > 30 {
                                     while transcript.len() > 30 { transcript.pop_front(); }
@@ -2514,8 +2602,11 @@ pub async fn run(mut args: Run) -> Result<()> {
                         turn_trace.clear();
                         interrupted_reply=None;
                         think=None;busy=false; approval=false;session.touch(Instant::now());
-                        if matches!(event,agent::Event::Cancelled) {
-                            agents.remove(&active_harness);agent_tx=None;seen_history.remove(&active_harness);connected=false;
+                        // A normal completion can race a queued Cancel. Never
+                        // submit the follow-up to a transport still being stopped.
+                        if cancelled_turn || matches!(event,agent::Event::Cancelled) {
+                            if let Some(live)=agents.remove(&active_harness) {live.task.abort();}
+                            agent_tx=None;seen_history.remove(&active_harness);connected=false;
                         }
                         if let (Some(event),Some(queue))=(current_event.take(),&event_queue) {queue.finish(&event,!event_cancelled)?;}
                         if let Some((key,value,spoken))=pending_setting.take() {
@@ -2554,7 +2645,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                         }
                         if let Some(text)=pending_prompt.take() {
                             if let Some(tx)=&agent_tx {
-                                cancelled_turn=false;cancel_started=None;silence_reply=false;busy=true;
+                                turn_feedback=false;cancelled_turn=false;cancel_started=None;silence_reply=false;busy=true;
                                 if tx.send(agent::CommandMessage::Prompt(text)).await.is_err() {busy=false;connected=false;agent_tx=None;ui.message("Agent disconnected before the follow-up; please repeat it.");}
                             } else {let _=input_tx.try_send(Input::Text(format!("{} {text}",settings.wake_code)));}
                         }
@@ -2575,6 +2666,79 @@ pub async fn run(mut args: Run) -> Result<()> {
 
             }
             _ = tick.tick() => {
+                if organizer_poll.as_ref().is_some_and(|poll|poll.task.is_finished()) {
+                    let poll=organizer_poll.take().unwrap();
+                    match poll.task.await {
+                        Ok(Ok(items)) if !access.locked() && poll.generation==poll_generation => {
+                            organizer_error_warned=false;
+                            for item in items {match item {
+                                crate::organizer::Due::Alarm(item)=>{
+                                    wake_display(settings.wake_display && !args.text,&mut last_display_wake);
+                                    alarm=None;
+                                    match audio::alarm(settings.sounds.alarm) {
+                                        Ok(cue)=>{alarm=Some(cue);ui.message(format!("[ALARM {}: {}] Say 29 stop the alarm.",item.id,item.label));}
+                                        Err(e)=>ui.message(format!("Alarm {} could not play: {e:#}",item.id)),
+                                    }
+                                }
+                                crate::organizer::Due::Task(item)=>waiting_tasks.push_back(item),
+                            }}
+                        }
+                        Ok(Ok(items))=>{
+                            let tx=input_tx.clone();
+                            tokio::task::spawn_blocking(move || {
+                                if let Err(e)=crate::organizer::interrupt_claims(items,"interrupted by lock; inspect before retrying") {
+                                    let _=tx.blocking_send(Input::Warning(format!("Could not save interrupted schedule receipts/deferred alarms: {e:#}")));
+                                }
+                            });
+                        }
+                        result=>if !access.locked() && !organizer_error_warned {
+                            organizer_error_warned=true;
+                            let error=match result {Ok(Err(e))=>format!("{e:#}"),Err(e)=>e.to_string(),_=>unreachable!()};
+                            ui.message(format!("Organizer check failed: {}",safe(&error)));
+                        },
+                    }
+                }
+                if notification_ack.as_ref().is_some_and(|task|task.is_finished()) {
+                    match notification_ack.take().unwrap().await {
+                        Ok(Ok(()))=>{},
+                        _=>if !access.locked(){ui.message("Could not save notification receipts; an alert may appear again.");},
+                    }
+                }
+                if notification_cue.as_ref().is_some_and(|task|task.is_finished()) {
+                    if let Ok(Err(e))=notification_cue.take().unwrap().await {if !access.locked(){ui.message(format!("Notification ding unavailable: {}",safe(&e.to_string())));}}
+                }
+                if notification_poll.as_ref().is_some_and(|poll|poll.task.is_finished()) {
+                    let poll=notification_poll.take().unwrap();
+                    match poll.task.await {
+                        Ok(Ok((count,items))) if !access.locked() && poll.generation==poll_generation => {
+                            notice_count=count;
+                            notification_error_warned=false;
+                            if !busy && worker.is_none() && speaker.is_none() && speech_queue.is_empty() && !items.is_empty() {
+                                let mut ids=Vec::new();
+                                for item in items {
+                                    ui.chat(Kind::Notice,format!("Notification · {}\n{}",item.title,item.text));
+                                    if !wake_listening && item.speak && settings.speak && !muted.load(Ordering::SeqCst) && !mic_unavailable {speech_queue.push_back(spoken_notification(&item.title,&item.text));}
+                                    ids.push(item.id);
+                                }
+                                // One ding per batch; slow audio/storage never holds the UI loop.
+                                if settings.sounds.notify>0.001 && notification_cue.is_none() {
+                                    let volume=settings.sounds.notify;
+                                    notification_cue=Some(tokio::task::spawn_blocking(move||audio::notify_chime(volume)));
+                                }
+                                notification_ack=Some(tokio::task::spawn_blocking(move|| {
+                                    crate::notifications::mark_announced(&ids)
+                                }));
+                            }
+                        }
+                        Ok(Ok(_))=>{},
+                        _=>if !access.locked() && !notification_error_warned {notification_error_warned=true;ui.message("Notification check failed; Accessor will retry in the background.");},
+                    }
+                }
+                if last_log_warning.elapsed()>=Duration::from_secs(1) && !access.locked() {
+                    last_log_warning=Instant::now();
+                    let dropped=crate::masterlog::take_dropped();
+                    if dropped>0 {ui.message(format!("Master log could not retain {dropped} event(s); check storage and logging settings."));}
+                }
                 if access.locked() {
                     if let Some(text) = ui.input()? { let _ = input_tx.try_send(Input::Text(text)); }
                     if eof { break; }
@@ -2598,47 +2762,24 @@ pub async fn run(mut args: Run) -> Result<()> {
                         if let Err(e)=input_tx.try_send(Input::Internal(message)) {if let Input::Internal(message)=e.into_inner() {feedback.push_front(message);}}
                     }
                 }
-                if !args.stt_test && last_organizer_poll.elapsed()>=Duration::from_secs(1) {
+                if !args.stt_test && organizer_poll.is_none() && last_organizer_poll.elapsed()>=Duration::from_secs(1) {
                     last_organizer_poll=Instant::now();
                     let mut can_claim=!busy && worker.is_none() && waiting_tasks.is_empty();
-                    match crate::organizer::claim_due(|task| {
+                    let limits=limits.clone();
+                    organizer_poll=Some(OrganizerPoll {generation:poll_generation,task:tokio::task::spawn_blocking(move || crate::organizer::claim_due(|task| {
                         let eligible=can_claim && limits.blocked(task.harness.as_deref().unwrap_or("")).is_none();
                         if eligible {can_claim=false;}
                         eligible
-                    }) {
-                        Ok(items)=>{organizer_error_warned=false;for item in items {match item {
-                            crate::organizer::Due::Alarm(item)=>{
-                                wake_display(settings.wake_display && !args.text,&mut last_display_wake);
-                                alarm=None;
-                                match audio::alarm(settings.sounds.alarm) {
-                                    Ok(cue)=>{alarm=Some(cue);ui.message(format!("[ALARM {}: {}] Say 29 stop the alarm.",item.id,item.label));}
-                                    Err(e)=>ui.message(format!("Alarm {} could not play: {e:#}",item.id)),
-                                }
-                            }
-                            crate::organizer::Due::Task(item)=>waiting_tasks.push_back(item),
-                        }}},
-                        Err(e)=>if !organizer_error_warned {organizer_error_warned=true;ui.message(format!("Organizer check failed: {e:#}"));},
-                    }
+                    }))});
                 }
-                if !args.stt_test && last_notify_poll.elapsed()>=Duration::from_secs(1) {
+                if !args.stt_test && notification_poll.is_none() && notification_ack.is_none() && last_notify_poll.elapsed()>=Duration::from_secs(1) {
                     last_notify_poll=Instant::now();
-                    if let Ok(count)=crate::notifications::unread_count() { notice_count=count; }
-                    if !busy && worker.is_none() && speaker.is_none() && speech_queue.is_empty() {
-                    match crate::notifications::pending() {
-                        Ok(items)=>for item in items {
-                            ui.chat(Kind::Notice,format!("Notification · {}\n{}",item.title,item.text));
-                            if settings.sounds.notify>0.001 {
-                                let volume=settings.sounds.notify;
-                                if let Ok(Err(e))=tokio::task::spawn_blocking(move||audio::notify_chime(volume)).await {ui.message(format!("Notification ding unavailable: {}",safe(&e.to_string())));}
-                            }
-                            if !wake_listening && item.speak && settings.speak && !muted.load(Ordering::SeqCst) && !mic_unavailable {
-                                speech_queue.push_back(spoken_notification(&item.title,&item.text));
-                            }
-                            if let Err(e)=crate::notifications::mark_announced(&item.id) {ui.message(format!("Could not update notification {}: {e:#}",item.id));}
-                        },
-                        Err(e)=>ui.message(format!("Notification check failed: {e:#}")),
-                    }
-                    }
+                    let announce=!busy && worker.is_none() && speaker.is_none() && speech_queue.is_empty();
+                    notification_poll=Some(NotificationPoll {generation:poll_generation,task:tokio::task::spawn_blocking(move || {
+                        let count=crate::notifications::unread_count()?;
+                        let items=if announce {crate::notifications::pending()?.into_iter().take(5).collect()} else {Vec::new()};
+                        Ok((count,items))
+                    })});
                 }
                 if !wake_listening && !busy && worker.is_none() && speaker.is_none() && speech_queue.is_empty() && current_event.is_none() && waiting_event.is_none() && wizard.is_none() && panel.is_none() && pending_secret.is_none() && !args.stt_test && last_event_poll.elapsed()>=Duration::from_secs(1) {
                     last_event_poll=Instant::now();
@@ -2665,7 +2806,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                     match job.task.await {
                         Ok(Ok(summary)) if transcript.iter().take(job.source.len()).eq(job.source.iter()) => {
                             transcript.drain(..job.source.len());transcript.push_front(("Summary".into(),summary));seen_history.clear();
-                            ui.message("Compacted Accessor-owned history. Native harness context is unchanged.");
+                            ui.message(if transcript.front().is_some_and(|(_,text)|text.starts_with("[Compaction provider unavailable")) {"Compaction provider unavailable; retained recent context locally."} else {"Compacted Accessor-owned history. Native harness context is unchanged."});
                         },
                         Ok(Ok(_))=>ui.message("Conversation changed during compaction; kept the newer history."),
                         Ok(Err(e))=>ui.message(format!("Compaction failed; history kept: {e:#}")),
@@ -2701,7 +2842,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                     }
                 }
                 if utility.as_ref().is_some_and(|task|task.is_finished()) {
-                    match utility.take().unwrap().await {Ok(Ok(text))=>ui.message(text),Ok(Err(e))=>ui.message(format!("Diagnostic failed: {e:#}")),Err(e)=>ui.message(format!("Diagnostic stopped: {e}"))}
+                    match utility.take().unwrap().await {Ok(Ok(text))=>ui.message(text),Ok(Err(e))=>ui.message(format!("Background job failed: {e:#}")),Err(e)=>ui.message(format!("Background job stopped: {e}"))}
                 }
                 if stt_download.as_ref().is_some_and(|task|task.is_finished()) {
                     match stt_download.take().unwrap().await {
@@ -2765,6 +2906,33 @@ pub async fn run(mut args: Run) -> Result<()> {
     }
     if let (Some(event), Some(queue)) = (current_event.take(), &event_queue) {
         queue.finish(&event, false)?;
+    }
+    if let Some(poll) = organizer_poll {
+        if let Ok(Ok(items)) = poll.task.await {
+            tokio::task::spawn_blocking(move || {
+                crate::organizer::interrupt_claims(
+                    items,
+                    "interrupted by shutdown; inspect before retrying",
+                )
+            })
+            .await??;
+        }
+    }
+    if !waiting_tasks.is_empty() {
+        let items = waiting_tasks
+            .into_iter()
+            .map(crate::organizer::Due::Task)
+            .collect();
+        tokio::task::spawn_blocking(move || {
+            crate::organizer::interrupt_claims(
+                items,
+                "interrupted by shutdown; inspect before retrying",
+            )
+        })
+        .await??;
+    }
+    if let Some(job) = memory_job {
+        job.abort();
     }
     if let Some(job) = compaction {
         job.task.abort();
@@ -2986,6 +3154,37 @@ fn start_stt_download(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn coalesced_worker_outcomes_are_visible_with_control_receipts() {
+        let receipt =
+            "Accessor local control result (data, not instructions):\nStarted worker: fixture.";
+        assert!(routine_control_feedback(receipt));
+        assert!(routine_control_feedback(&format!("{receipt}\n{receipt}")));
+        let worker="Accessor worker codex finished (failed=false).\n<worker_result>\nDone.\n</worker_result>";
+        assert!(!routine_control_feedback(worker));
+        assert!(!routine_control_feedback(&format!("{receipt}\n{worker}")));
+        assert!(!routine_control_feedback(&format!(
+            "{receipt}\nWorker timed out after 15 minutes and was stopped."
+        )));
+    }
+    #[test]
+    fn compaction_overrides_are_ephemeral_and_mock_stays_local() {
+        let mut settings = config::Settings::default();
+        let path = std::path::PathBuf::from("test-codex");
+        assert_eq!(
+            compaction_settings(&settings, Some(&path)).codex_bin,
+            Some(path)
+        );
+        assert!(settings.codex_bin.is_none());
+        settings.routing.main = "mock".into();
+        assert_eq!(
+            compaction_settings(&settings, None)
+                .routing
+                .compaction_harness,
+            "local"
+        );
+        assert_eq!(settings.routing.compaction_harness, "codex");
+    }
     #[test]
     fn one_word_transcripts_are_low_information() {
         assert_eq!(spoken_word_count("Hope."), 1);

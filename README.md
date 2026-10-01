@@ -135,6 +135,10 @@ Everything needed day to day is available inside the screen:
 | `/organizer` | Notes, alarms, and scheduled tasks (aliases `/notes`, `/alarms`, `/tasks`) |
 | `/logs` | Show the master log path and tail it (enable under Display) |
 | `/devices` | List microphones in the conversation area |
+| `/mic`, `/mic reconnect` | Inspect microphone health or reconnect immediately |
+| `/repeat` | Replay the last answer; “repeat that” also works while awake |
+| `/copy` | Copy the last answer to the clipboard |
+| `/jobs` | Show active work, waiting tasks, and queued speech |
 | `/connectors` | Check the agent's connected apps |
 | `/connectors setup` | Open the configured plugin harness for native plugin/MCP setup; exit it to return |
 | `/agent` | Open Codex's native UI directly; exit it to return |
@@ -142,7 +146,7 @@ Everything needed day to day is available inside the screen:
 | `/config locations` | Show the settings folder to copy to another machine |
 | `/events` | Inspect the local event queue |
 
-Wake, timeout, speech, and voice changes take effect immediately. Microphone, asset path, and Codex executable changes require restart. If speech/model initialization fails, the dashboard remains open for typed messages and setup. Page Up/Down scroll the conversation; Escape cancels a task. Use `--plain` for ordinary terminal output; pipes automatically use plain mode. Plain status lines print only when status changes. The dashboard is not saved as a transcript log.
+Wake, timeout, speech, and voice changes take effect immediately. Microphone changes reconnect in the background; device failures retry automatically with a bounded backoff. Asset path and Codex executable changes require restart. If speech/model initialization fails, the dashboard remains open for typed messages and setup. Page Up/Down scroll the conversation; Escape cancels a task. Outside the command menu and settings, Up/Down recall the last 50 typed inputs and restore your unfinished draft. History stays in memory, excludes masked entry, and clears on lock. Use `--plain` for ordinary terminal output; pipes automatically use plain mode. Plain status lines print only when status changes. The dashboard is not saved as a transcript log.
 
 ## Settings and spoken switching
 
@@ -305,7 +309,7 @@ acc organizer cancel ITEM_ID
 
 ## Notifications and watches
 
-Agents and recurring **watches** can raise reviewable notifications. They are stored privately in `notifications.json` (capped at 100, newest kept; read items are evicted before unread). While Accessor is idle the newest unread items appear in Activity as `Notice` lines, ding once with `sounds.notify`, and are spoken when the raise asked for it and `speak` is on; each is then marked announced so the ding and speech are not repeated across restarts. The status bar shows `· N notice(s)`, and the startup message points at `/notifications`. Announcements persist across runs, and an identical finding from the same source is suppressed for six hours; a re-worded repeat is suppressed for 72 hours by significant-word overlap. Watch prompts are seeded with the last three days of titles and told to skip stories already reported.
+Agents and recurring **watches** can raise reviewable notifications. They are stored privately in `notifications.json` (capped at 100, newest kept; read items are evicted before unread). While Accessor is idle the newest unread items appear in Activity as `Notice` lines, ding once per batch with `sounds.notify`, and are spoken when the raise asked for it and `speak` is on; each is then marked announced so the ding and speech are not repeated across restarts. The status bar shows `· N notice(s)`, and the startup message points at `/notifications`. Announcements persist across runs, and an identical finding from the same source is suppressed for six hours; a re-worded repeat is suppressed for 72 hours by significant-word overlap. Watch prompts are seeded with the last three days of titles and told to skip stories already reported.
 
 ```sh
 acc notifications list --unread

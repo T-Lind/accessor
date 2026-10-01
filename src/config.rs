@@ -158,8 +158,8 @@ impl Default for Routing {
             compaction_reasoning: "low".into(),
             plugin_use_main: true,
             input_gate: "jev".into(),
-            compaction_model: "gemini-3.8-flash-low".into(),
-            compaction_harness: "antigravity".into(),
+            compaction_model: default_compaction_model(),
+            compaction_harness: default_compaction_harness(),
             compact_tokens: 4000,
             fast_mode: false,
         }
@@ -1330,7 +1330,7 @@ mod tests {
     fn missing_prompt_and_compaction_use_defaults() {
         let s: Settings = serde_json::from_str(r#"{"wake_code":"29"}"#).unwrap();
         assert!(s.prompt.contains("hands-free"));
-        assert_eq!(s.routing.compaction_harness, "antigravity");
+        assert_eq!(s.routing.compaction_harness, "codex");
         assert_eq!(s.routing.compact_tokens, 4000);
         assert_eq!(s.sounds.think, 1.5);
         assert_eq!(
@@ -1372,8 +1372,8 @@ mod tests {
         assert_eq!(s.routing.router, "jev");
         assert!(s.routing.auto_model);
         assert_eq!(s.routing.reasoning, "default");
-        assert_eq!(s.routing.compaction_harness, "antigravity");
-        assert_eq!(s.routing.compaction_model, "gemini-3.8-flash-low");
+        assert_eq!(s.routing.compaction_harness, "codex");
+        assert_eq!(s.routing.compaction_model, "gpt-5.6-luna");
         assert!(s.microphone.is_none());
         assert!(s.assets_dir.is_none());
         s.validate().unwrap();

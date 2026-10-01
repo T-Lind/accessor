@@ -6,6 +6,41 @@ GitHub, and full notes are generated there. This file starts at 0.34.3 — see t
 [releases page](https://github.com/T-Lind/accessor/releases) and `git log` for
 earlier history.
 
+## [0.35.0] - 2026-10-01
+
+### Added
+
+- `/mic` health and `/mic reconnect`, automatic microphone recovery, and live
+  microphone switching with model/device initialization off the UI loop.
+- `/repeat` (also spoken “repeat that”), `/copy`, and a compact `/jobs` view.
+- A quieter startup and session-only input history with draft restoration, a
+  50-input bound, and clearing on lock; masked credential/passphrase entry is
+  excluded.
+
+### Fixed
+
+- Recoverable transcription, cue, and buffer failures no longer exit the app.
+- Quick follow-ups during local-control feedback cannot be sent to a transport
+  with cancellation still queued; receipt commentary no longer duplicates the
+  local result in Activity. Interrupted user output is still preserved.
+- Capture teardown cancels pending deliveries and joins capture workers before
+  reconnecting, preventing overlapping pipelines and stuck speech state.
+- Periodic organizer claims skip a busy file lock; schedule and notification
+  polls and notification receipts run off the UI loop. Claims invalidated by a
+  lock are interrupted rather than replayed after unlock.
+- The master log uses a bounded background writer, reports dropped writes, and
+  flushes before tailing or shutdown; rotation replaces the prior archive on
+  Windows too.
+
+### Changed
+
+- Background compaction/memory jobs honor `--codex-bin`; mock mode retains
+  context locally without a memory/compaction model. `/memory infer`
+  runs as a cancellable background job.
+- New profiles use Codex for compaction. Existing provider choices are retained;
+  provider failures visibly fall back to a bounded local excerpt.
+- Notifications announce up to five per batch with one ding per batch.
+
 ## [0.34.5] - 2026-09-29
 
 ### Changed

@@ -55,6 +55,12 @@ fn path() -> Result<PathBuf> {
 }
 
 fn lock() -> Result<File> {
+    let file = lock_file()?;
+    file.lock_exclusive()?;
+    Ok(file)
+}
+
+fn lock_file() -> Result<File> {
     let home = config::home()?;
     fs::create_dir_all(&home)?;
     #[cfg(unix)]
@@ -68,7 +74,6 @@ fn lock() -> Result<File> {
         .read(true)
         .write(true)
         .open(home.join("notifications.lock"))?;
-    file.lock_exclusive()?;
     Ok(file)
 }
 
@@ -260,12 +265,13 @@ pub fn pending() -> Result<Vec<Notification>> {
     Ok(items)
 }
 
-pub fn mark_announced(id: &str) -> Result<()> {
-    let _lock = lock()?;
+pub fn mark_announced(ids: &[String]) -> Result<()> {
+    let _lock = lock_file()?;
+    _lock.try_lock_exclusive()?;
     let mut book = load()?;
     let mut changed = false;
     for item in &mut book.items {
-        if item.id == id && !item.announced {
+        if ids.contains(&item.id) && !item.announced {
             item.announced = true;
             changed = true;
         }

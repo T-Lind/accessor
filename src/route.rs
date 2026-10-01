@@ -593,10 +593,20 @@ async fn cli_compact(history: &str, settings: &Settings) -> Result<String> {
 
 pub async fn compact(history: &str, settings: &Settings) -> Result<String> {
     let tokens = crate::usage::approx_tokens(history);
-    let text = match settings.routing.compaction_harness.as_str() {
-        "local" | "mock" => local_compact(history),
-        "gateway" => gateway_compact(history, settings).await?,
-        _ => cli_compact(history, settings).await?,
+    let result = match settings.routing.compaction_harness.as_str() {
+        "local" | "mock" => Ok(local_compact(history)),
+        "gateway" => gateway_compact(history, settings).await,
+        _ => cli_compact(history, settings).await,
+    };
+    let text = match result {
+        Ok(text) => text,
+        Err(_) => {
+            crate::usage::record_diagnostic("Compaction local fallback");
+            return Ok(format!(
+                "[Compaction provider unavailable; retained recent context locally.]\n{}",
+                local_compact(history)
+            ));
+        }
     };
     crate::usage::record_compact(
         if matches!(
@@ -823,6 +833,23 @@ fn parse_switch_line(line: &str) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn unavailable_compactor_retains_recent_context_locally() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            codex_bin: Some(dir.path().join("missing-codex")),
+            ..Settings::default()
+        };
+        let history = (0..40)
+            .map(|n| format!("User: turn {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let summary = compact(&history, &settings).await.unwrap();
+        assert!(summary.starts_with("[Compaction provider unavailable"));
+        assert!(summary.contains("turn 39"));
+        assert!(!summary.contains("turn 0\n"));
+        assert!(summary.len() < 2200);
+    }
     #[test]
     fn parse_facts_keeps_valid_items_and_drops_junk() {
         let text = "Sure:\n[{\"scope\":\"global\",\"key\":\"editor\",\"text\":\"Prefers Neovim.\",\"source\":\"user said so\"},{\"scope\":\"project\",\"key\":\"build-tool\",\"text\":\"Uses cargo.\",\"source\":\"\"},{\"key\":\"BAD KEY\",\"text\":\"x\"},{\"key\":\"ok\",\"text\":\"\"}]";
