@@ -9,7 +9,7 @@ struct Block {
     reason: String,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Limits {
     blocks: HashMap<String, Block>,
 }

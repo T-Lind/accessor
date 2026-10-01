@@ -596,6 +596,12 @@ fn note_summaries(dir: &Path) -> Result<Vec<String>> {
 }
 
 fn lock() -> Result<File> {
+    let file = lock_file()?;
+    file.lock_exclusive()?;
+    Ok(file)
+}
+
+fn lock_file() -> Result<File> {
     let home = config::home()?;
     fs::create_dir_all(&home)?;
     #[cfg(unix)]
@@ -609,7 +615,6 @@ fn lock() -> Result<File> {
         .read(true)
         .write(true)
         .open(home.join("organizer.lock"))?;
-    file.lock_exclusive()?;
     Ok(file)
 }
 
@@ -1027,7 +1032,13 @@ pub fn update(id: &str, patch: TaskPatch) -> Result<Task> {
 }
 
 pub fn claim_due(eligible: impl FnMut(&Task) -> bool) -> Result<Vec<Due>> {
-    let _lock = lock()?;
+    let _lock = lock_file()?;
+    if let Err(error) = _lock.try_lock_exclusive() {
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            return Ok(Vec::new());
+        }
+        return Err(error.into());
+    }
     let mut book = load()?;
     let now = now_unix();
     let (due, changed) = take_due(&mut book, now, eligible)?;
@@ -1118,6 +1129,35 @@ fn take_due(
         book.runs.drain(..book.runs.len() - 100);
     }
     Ok((due, changed))
+}
+
+/// A poll may complete after access was locked or the UI exited. Restore its
+/// alarms and mark unstarted tasks interrupted; never replay a claimed task.
+pub fn interrupt_claims(items: Vec<Due>, state: &str) -> Result<()> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    let _lock = lock()?;
+    let mut book = load()?;
+    for item in items {
+        match item {
+            Due::Alarm(alarm) => {
+                if !book.alarms.iter().any(|a| a.id == alarm.id) {
+                    ensure!(
+                        book.alarms.len() + book.tasks.len() < MAX_SCHEDULE_ITEMS,
+                        "Cannot restore deferred alarm: organizer is full"
+                    );
+                    book.alarms.push(alarm);
+                }
+            }
+            Due::Task(task) => {
+                if let Some(run) = book.runs.iter_mut().rev().find(|r| r.id == task.id) {
+                    run.state = state.into();
+                }
+            }
+        }
+    }
+    save(&book)
 }
 
 pub fn finish_run(id: &str, state: &str) -> Result<()> {

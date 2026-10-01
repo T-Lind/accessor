@@ -67,6 +67,18 @@ class SecurityTests(unittest.TestCase):
         again.expect("Already unlocked")
         self.assertNotIn(PHRASE, "".join(app.seen + again.seen).lower())
 
+    def test_lock_clears_answer_and_blocks_copy_replay_and_jobs(self):
+        app = self.app()
+        app.send("29 synthetic private answer")
+        app.expect("Mock agent received: synthetic private answer")
+        self.enroll(app)
+        for command in ("/copy", "/repeat", "/jobs", "/mic reconnect"):
+            app.send(command)
+            app.expect("Locked. Use /unlock")
+        self.unlock(app)
+        app.send("/copy")
+        app.expect("No answer to copy yet")
+
     def test_failed_attempt_backoff_survives_restart(self):
         app = self.app()
         self.enroll(app)

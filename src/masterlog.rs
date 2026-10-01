@@ -9,7 +9,10 @@ use crate::config::Settings;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    mpsc, Mutex, OnceLock,
+};
 
 struct Logger {
     enabled: bool,
@@ -19,6 +22,70 @@ struct Logger {
 }
 
 static LOGGER: OnceLock<Mutex<Logger>> = OnceLock::new();
+static WRITER: OnceLock<mpsc::SyncSender<WriteCommand>> = OnceLock::new();
+static DROPPED: AtomicU64 = AtomicU64::new(0);
+
+struct LogLine {
+    path: PathBuf,
+    max_bytes: u64,
+    line: String,
+}
+enum WriteCommand {
+    Line(LogLine),
+    Flush(mpsc::SyncSender<()>),
+}
+fn writer() -> &'static mpsc::SyncSender<WriteCommand> {
+    WRITER.get_or_init(|| {
+        let (tx, rx) = mpsc::sync_channel(256);
+        std::thread::spawn(move || {
+            while let Ok(command) = rx.recv() {
+                match command {
+                    WriteCommand::Line(record) => {
+                        if write_line(record).is_err() {
+                            DROPPED.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    WriteCommand::Flush(done) => {
+                        let _ = done.send(());
+                    }
+                }
+            }
+        });
+        tx
+    })
+}
+/// Shutdown barrier; callers on the UI loop should use a background task.
+pub fn flush() {
+    if let Some(tx) = WRITER.get() {
+        let (done, wait) = mpsc::sync_channel(1);
+        if tx.send(WriteCommand::Flush(done)).is_ok() {
+            let _ = wait.recv();
+        }
+    }
+}
+pub fn take_dropped() -> u64 {
+    DROPPED.swap(0, Ordering::Relaxed)
+}
+fn write_line(record: LogLine) -> std::io::Result<()> {
+    if std::fs::metadata(&record.path).is_ok_and(|metadata| metadata.len() >= record.max_bytes) {
+        // Windows cannot rename over an existing destination.
+        let rotated = record.path.with_extension("1");
+        match fs::remove_file(&rotated) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        fs::rename(&record.path, rotated)?;
+    }
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(record.path)?.write_all(record.line.as_bytes())
+}
 
 fn logger() -> &'static Mutex<Logger> {
     LOGGER.get_or_init(|| {
@@ -136,19 +203,48 @@ fn write(level: &str, category: &str, message: &str) {
         "{} {level:<5} [{category}] {message}\n",
         chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ")
     );
-    if let Ok(metadata) = fs::metadata(&path) {
-        if metadata.len() >= logger.max_bytes {
-            let _ = fs::rename(&path, path.with_extension("1"));
+    let record = LogLine {
+        path,
+        max_bytes: logger.max_bytes,
+        line,
+    };
+    drop(logger);
+    if writer().try_send(WriteCommand::Line(record)).is_err() {
+        DROPPED.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn log_rotation_replaces_previous_archive_and_keeps_private_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("accessor.log");
+        let record = |line: &str| LogLine {
+            path: path.clone(),
+            max_bytes: 4,
+            line: line.into(),
+        };
+        write_line(record("first\n")).unwrap();
+        write_line(record("second\n")).unwrap();
+        assert_eq!(
+            fs::read_to_string(path.with_extension("1")).unwrap(),
+            "first\n"
+        );
+        write_line(record("third\n")).unwrap();
+        assert_eq!(
+            fs::read_to_string(path.with_extension("1")).unwrap(),
+            "second\n"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "third\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
         }
-    }
-    let mut options = OpenOptions::new();
-    options.create(true).append(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    if let Ok(mut file) = options.open(&path) {
-        let _ = file.write_all(line.as_bytes());
     }
 }

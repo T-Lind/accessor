@@ -38,8 +38,9 @@ Tests, Security, Computer). Arrow keys move, Enter opens or toggles, Esc goes up
 level. Changes persist and apply immediately. Typed `/settings KEY VALUE` still
 works for scripts. The status bar always shows the live **harness · model**.
 
-Wake, timeout, speech, and voice changes take effect immediately. Microphone,
-asset path, and Codex executable changes require a restart.
+Wake, timeout, speech, and voice changes take effect immediately. Microphone
+changes reconnect in the background; `/mic reconnect` retries immediately. Asset
+path and Codex executable changes require a restart.
 
 ## Key settings
 

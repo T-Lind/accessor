@@ -93,6 +93,8 @@ pub enum Input {
     Activity {
         epoch: u64,
     },
+    /// Recoverable audio or background failure; never ends the session.
+    Warning(String),
     Error(String),
     Eof,
 }
@@ -100,5 +102,6 @@ pub enum Input {
 async fn main() -> anyhow::Result<()> {
     let result = cli::entry().await;
     usage::flush();
+    masterlog::flush();
     result
 }

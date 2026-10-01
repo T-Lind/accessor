@@ -47,6 +47,24 @@ requires barge-ins to be enabled (the default).
 The numeric word reduces accidental activations; it is not authentication. See the
 [local access lock](SECURITY.md) for the real boundary.
 
+## Everyday controls
+
+- `/repeat` replays the last completed answer without another model call. While
+  awake, “repeat that” does the same. `/copy` copies the retained answer.
+  Retention is bounded to 64,000 characters and clears on lock.
+- `/jobs` shows the main turn, isolated worker, and waiting tasks/speech.
+- `/memory infer` runs in the background; `/cancel` or locking stops inference.
+  Mock mode uses local capture and compaction without a model process.
+- Up/Down recall typed inputs outside menus; Down restores the unfinished draft.
+  History is bounded to 50 inputs, stays in memory, and clears on lock. Masked
+  credentials and passphrases are excluded.
+- `/mic` shows microphone health; `/mic reconnect` retries immediately. Device
+  failures retry automatically (two to thirty seconds between failed attempts),
+  and changing the selected microphone reconnects without restarting.
+- Schedule and notification polls run in background tasks. Notifications announce
+  at most five per batch, with one ding per batch. Logging uses a bounded writer;
+  storage failures or dropped log entries are reported visibly.
+
 ## Harnesses and routing
 
 Accessor drives Codex App Server, Claude Code, Antigravity (`agy`), opencode, and
