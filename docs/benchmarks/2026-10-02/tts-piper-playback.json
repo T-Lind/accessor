@@ -1,0 +1,20 @@
+{
+  "note": "Plays synthetic test text. Software playback flag timing, not an acoustic measurement; includes device/connection startup. Audio cache cleared each run.",
+  "provider": "piper",
+  "runs": [
+    {
+      "complete_ms": 3771.496431,
+      "playback_started_ms": 792.6170890000001
+    },
+    {
+      "complete_ms": 3411.740463,
+      "playback_started_ms": 395.70564
+    },
+    {
+      "complete_ms": 3872.822953,
+      "playback_started_ms": 857.5604519999999
+    }
+  ],
+  "streaming": true,
+  "volume": 0.2
+}

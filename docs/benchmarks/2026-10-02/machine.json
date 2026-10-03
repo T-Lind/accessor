@@ -1,0 +1,192 @@
+{
+  "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.39",
+  "logical_cpus": 4,
+  "cpu": {
+    "lscpu": [
+      {
+        "field": "Architecture:",
+        "data": "x86_64"
+      },
+      {
+        "field": "CPU op-mode(s):",
+        "data": "32-bit, 64-bit"
+      },
+      {
+        "field": "Address sizes:",
+        "data": "36 bits physical, 48 bits virtual"
+      },
+      {
+        "field": "Byte Order:",
+        "data": "Little Endian"
+      },
+      {
+        "field": "CPU(s):",
+        "data": "4"
+      },
+      {
+        "field": "On-line CPU(s) list:",
+        "data": "0-3"
+      },
+      {
+        "field": "Vendor ID:",
+        "data": "GenuineIntel"
+      },
+      {
+        "field": "Model name:",
+        "data": "Intel(R) Core(TM) i7-3520M CPU @ 2.90GHz"
+      },
+      {
+        "field": "CPU family:",
+        "data": "6"
+      },
+      {
+        "field": "Model:",
+        "data": "58"
+      },
+      {
+        "field": "Thread(s) per core:",
+        "data": "2"
+      },
+      {
+        "field": "Core(s) per socket:",
+        "data": "2"
+      },
+      {
+        "field": "Socket(s):",
+        "data": "1"
+      },
+      {
+        "field": "Stepping:",
+        "data": "9"
+      },
+      {
+        "field": "CPU(s) scaling MHz:",
+        "data": "100%"
+      },
+      {
+        "field": "CPU max MHz:",
+        "data": "2900.0000"
+      },
+      {
+        "field": "CPU min MHz:",
+        "data": "1200.0000"
+      },
+      {
+        "field": "BogoMIPS:",
+        "data": "5780.82"
+      },
+      {
+        "field": "Flags:",
+        "data": "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx rdtscp lm constant_tsc arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf pni pclmulqdq dtes64 monitor ds_cpl vmx smx est tm2 ssse3 cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm cpuid_fault epb pti ssbd ibrs ibpb stibp tpr_shadow flexpriority ept vpid fsgsbase smep erms xsaveopt dtherm arat pln pts vnmi md_clear flush_l1d"
+      },
+      {
+        "field": "Virtualization:",
+        "data": "VT-x"
+      },
+      {
+        "field": "L1d cache:",
+        "data": "64 KiB (2 instances)"
+      },
+      {
+        "field": "L1i cache:",
+        "data": "64 KiB (2 instances)"
+      },
+      {
+        "field": "L2 cache:",
+        "data": "512 KiB (2 instances)"
+      },
+      {
+        "field": "L3 cache:",
+        "data": "4 MiB (1 instance)"
+      },
+      {
+        "field": "NUMA node(s):",
+        "data": "1"
+      },
+      {
+        "field": "NUMA node0 CPU(s):",
+        "data": "0-3"
+      },
+      {
+        "field": "Vulnerability Gather data sampling:",
+        "data": "Not affected"
+      },
+      {
+        "field": "Vulnerability Ghostwrite:",
+        "data": "Not affected"
+      },
+      {
+        "field": "Vulnerability Indirect target selection:",
+        "data": "Not affected"
+      },
+      {
+        "field": "Vulnerability Itlb multihit:",
+        "data": "KVM: Mitigation: Split huge pages"
+      },
+      {
+        "field": "Vulnerability L1tf:",
+        "data": "Mitigation; PTE Inversion; VMX conditional cache flushes, SMT vulnerable"
+      },
+      {
+        "field": "Vulnerability Mds:",
+        "data": "Mitigation; Clear CPU buffers; SMT vulnerable"
+      },
+      {
+        "field": "Vulnerability Meltdown:",
+        "data": "Mitigation; PTI"
+      },
+      {
+        "field": "Vulnerability Mmio stale data:",
+        "data": "Not affected"
+      },
+      {
+        "field": "Vulnerability Old microcode:",
+        "data": "Not affected"
+      },
+      {
+        "field": "Vulnerability Reg file data sampling:",
+        "data": "Not affected"
+      },
+      {
+        "field": "Vulnerability Retbleed:",
+        "data": "Not affected"
+      },
+      {
+        "field": "Vulnerability Spec rstack overflow:",
+        "data": "Not affected"
+      },
+      {
+        "field": "Vulnerability Spec store bypass:",
+        "data": "Mitigation; Speculative Store Bypass disabled via prctl"
+      },
+      {
+        "field": "Vulnerability Spectre v1:",
+        "data": "Mitigation; usercopy/swapgs barriers and __user pointer sanitization"
+      },
+      {
+        "field": "Vulnerability Spectre v2:",
+        "data": "Mitigation; Retpolines; IBPB conditional; IBRS_FW; STIBP conditional; RSB filling; PBRSB-eIBRS Not affected; BHI Not affected"
+      },
+      {
+        "field": "Vulnerability Srbds:",
+        "data": "Vulnerable: No microcode"
+      },
+      {
+        "field": "Vulnerability Tsa:",
+        "data": "Not affected"
+      },
+      {
+        "field": "Vulnerability Tsx async abort:",
+        "data": "Not affected"
+      },
+      {
+        "field": "Vulnerability Vmscape:",
+        "data": "Mitigation; IBPB before exit to userspace"
+      }
+    ]
+  },
+  "commit": "e24607caf9045bdb052ce9888e45bf85ea08b06e",
+  "binary_sha256": "217f2ab933a11adfcf6bd3b866514df6ea7293aed3e246be684c28bd022200c0",
+  "default_endpoint_ms": 600,
+  "note": "User desktop and existing Accessor process remained running; no mic, cloud, or agent benchmarking."
+}

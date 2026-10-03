@@ -59,6 +59,7 @@ pub struct Candidate {
 pub struct Store {
     path: PathBuf,
     project: String,
+    wait_for_lock: bool,
 }
 impl Store {
     pub fn open(workspace: &Path) -> Result<Self> {
@@ -71,7 +72,13 @@ impl Store {
         Ok(Self {
             path,
             project: format!("project:{}", canonical.display()),
+            wait_for_lock: true,
         })
+    }
+    /// Interactive commands report contention instead of waiting behind a worker.
+    pub fn nonblocking(mut self) -> Self {
+        self.wait_for_lock = false;
+        self
     }
     fn scope(&self, name: &str) -> Result<String> {
         match name {
@@ -88,7 +95,12 @@ impl Store {
             .read(true)
             .write(true)
             .open(self.path.with_extension("lock"))?;
-        lock.lock_exclusive()?;
+        if self.wait_for_lock {
+            lock.lock_exclusive()?;
+        } else {
+            lock.try_lock_exclusive()
+                .context("Memory is busy; try again when the other operation finishes")?;
+        }
         let mut entries = if self.path.exists() {
             serde_json::from_slice(&fs::read(&self.path)?)
                 .context("Invalid memory store; refusing to overwrite it")?

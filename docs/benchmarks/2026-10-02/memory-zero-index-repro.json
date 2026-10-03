@@ -1,0 +1,21 @@
+{
+  "command": "/memory forget 0",
+  "receipt": "Forgot demo (project).",
+  "store": [
+    {
+      "scope": "project:/home/supine/source/repos/accessor",
+      "key": "demo",
+      "text": "",
+      "source": "",
+      "updated_unix": 1790992643,
+      "revision": 2,
+      "deleted": true,
+      "kind": "fact",
+      "importance": 0.6,
+      "access_count": 0,
+      "last_accessed_unix": 0,
+      "archived": false
+    }
+  ],
+  "expected": "Reject index 0 because review displays indices starting at 1"
+}

@@ -1,0 +1,485 @@
+{
+  "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.39",
+  "processor": "x86_64",
+  "logical_cpus": 4,
+  "source": "tests/fixtures/voice-benchmark.wav",
+  "note": "Synthetic file tests. Thread limits do not emulate a 2012 CPU; not a far-field accuracy test.",
+  "configurations": [
+    {
+      "endpoint_ms": 600,
+      "engine": "canary",
+      "files": [
+        {
+          "audio_seconds": 3.1115,
+          "confidence": {
+            "mean": 0.9837823510169983,
+            "min": 0.7892327904701233
+          },
+          "file": "docs/benchmarks/2026-10-02/voice-canary-clips/clean.wav",
+          "first_decode_ms": 2167.0999979999997,
+          "first_text": "twenty nine. What is on my calendar tomorrow morning?",
+          "median_ms": 2168.1619180000002,
+          "p95_ms": 2180.247547,
+          "real_time_factor": 0.6968220851679255,
+          "texts": [
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?"
+          ],
+          "warm_ms": [
+            2168.1619180000002,
+            2168.32071,
+            2180.247547,
+            2164.367503,
+            2155.304342
+          ]
+        },
+        {
+          "audio_seconds": 3.1115,
+          "confidence": {
+            "mean": 0.9828579425811768,
+            "min": 0.7842325568199158
+          },
+          "file": "docs/benchmarks/2026-10-02/voice-canary-clips/quiet.wav",
+          "first_decode_ms": 2149.049888,
+          "first_text": "twenty nine. What is on my calendar tomorrow morning?",
+          "median_ms": 2179.407972,
+          "p95_ms": 2211.299885,
+          "real_time_factor": 0.7004364364454443,
+          "texts": [
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?"
+          ],
+          "warm_ms": [
+            2188.116206,
+            2169.680696,
+            2179.407972,
+            2211.299885,
+            2170.235936
+          ]
+        },
+        {
+          "audio_seconds": 3.1115,
+          "confidence": {
+            "mean": 0.9587187170982361,
+            "min": 0.5485297441482544
+          },
+          "file": "docs/benchmarks/2026-10-02/voice-canary-clips/noise_10db.wav",
+          "first_decode_ms": 2259.6119959999996,
+          "first_text": "twenty nine. What is on my calendar to morrow morning?",
+          "median_ms": 2242.162043,
+          "p95_ms": 2260.586175,
+          "real_time_factor": 0.720604866784509,
+          "texts": [
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?"
+          ],
+          "warm_ms": [
+            2242.162043,
+            2253.411959,
+            2236.256805,
+            2235.348891,
+            2260.586175
+          ]
+        },
+        {
+          "audio_seconds": 3.1115,
+          "confidence": {
+            "mean": 0.9757810235023499,
+            "min": 0.7213655114173889
+          },
+          "file": "docs/benchmarks/2026-10-02/voice-canary-clips/echo_120ms.wav",
+          "first_decode_ms": 2136.9120669999998,
+          "first_text": "twenty nine. What is on my calendar tomorrow morning?",
+          "median_ms": 2166.327575,
+          "p95_ms": 2192.996188,
+          "real_time_factor": 0.6962325486099951,
+          "texts": [
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?"
+          ],
+          "warm_ms": [
+            2153.704031,
+            2166.327575,
+            2170.8120219999996,
+            2192.996188,
+            2150.2435480000004
+          ]
+        }
+      ],
+      "load_ms": 737.236931,
+      "note": "Inference only, not microphone, endpoint, network, agent or audible response latency. Whisper CLI reloads its model for each decode.",
+      "runs": 5,
+      "spin": false,
+      "threads": 1
+    },
+    {
+      "endpoint_ms": 600,
+      "engine": "canary",
+      "files": [
+        {
+          "audio_seconds": 3.1115,
+          "confidence": {
+            "mean": 0.9837823510169983,
+            "min": 0.7892327904701233
+          },
+          "file": "docs/benchmarks/2026-10-02/voice-canary-clips/clean.wav",
+          "first_decode_ms": 1267.606322,
+          "first_text": "twenty nine. What is on my calendar tomorrow morning?",
+          "median_ms": 1256.908914,
+          "p95_ms": 1352.89909,
+          "real_time_factor": 0.4039559421500884,
+          "texts": [
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?"
+          ],
+          "warm_ms": [
+            1256.908914,
+            1352.89909,
+            1283.967907,
+            1240.332325,
+            1250.441812
+          ]
+        },
+        {
+          "audio_seconds": 3.1115,
+          "confidence": {
+            "mean": 0.9828579425811768,
+            "min": 0.7842325568199158
+          },
+          "file": "docs/benchmarks/2026-10-02/voice-canary-clips/quiet.wav",
+          "first_decode_ms": 1278.8072710000001,
+          "first_text": "twenty nine. What is on my calendar tomorrow morning?",
+          "median_ms": 1281.052112,
+          "p95_ms": 1358.425084,
+          "real_time_factor": 0.41171528587497996,
+          "texts": [
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?"
+          ],
+          "warm_ms": [
+            1358.425084,
+            1256.620109,
+            1275.490947,
+            1281.052112,
+            1333.599097
+          ]
+        },
+        {
+          "audio_seconds": 3.1115,
+          "confidence": {
+            "mean": 0.9587187170982361,
+            "min": 0.5485297441482544
+          },
+          "file": "docs/benchmarks/2026-10-02/voice-canary-clips/noise_10db.wav",
+          "first_decode_ms": 1305.792485,
+          "first_text": "twenty nine. What is on my calendar to morrow morning?",
+          "median_ms": 1309.186258,
+          "p95_ms": 1417.522937,
+          "real_time_factor": 0.4207572739836092,
+          "texts": [
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?"
+          ],
+          "warm_ms": [
+            1309.186258,
+            1306.222522,
+            1417.522937,
+            1301.614793,
+            1309.781168
+          ]
+        },
+        {
+          "audio_seconds": 3.1115,
+          "confidence": {
+            "mean": 0.9757810235023499,
+            "min": 0.7213655114173889
+          },
+          "file": "docs/benchmarks/2026-10-02/voice-canary-clips/echo_120ms.wav",
+          "first_decode_ms": 1271.354533,
+          "first_text": "twenty nine. What is on my calendar tomorrow morning?",
+          "median_ms": 1270.17711,
+          "p95_ms": 1319.872925,
+          "real_time_factor": 0.4082201864052708,
+          "texts": [
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?"
+          ],
+          "warm_ms": [
+            1290.835349,
+            1266.565094,
+            1270.17711,
+            1254.733348,
+            1319.872925
+          ]
+        }
+      ],
+      "load_ms": 732.945229,
+      "note": "Inference only, not microphone, endpoint, network, agent or audible response latency. Whisper CLI reloads its model for each decode.",
+      "runs": 5,
+      "spin": false,
+      "threads": 2
+    },
+    {
+      "endpoint_ms": 600,
+      "engine": "canary",
+      "files": [
+        {
+          "audio_seconds": 3.1115,
+          "confidence": {
+            "mean": 0.9837823510169983,
+            "min": 0.7892327904701233
+          },
+          "file": "docs/benchmarks/2026-10-02/voice-canary-clips/clean.wav",
+          "first_decode_ms": 1228.703165,
+          "first_text": "twenty nine. What is on my calendar tomorrow morning?",
+          "median_ms": 1225.8445689999999,
+          "p95_ms": 1240.29207,
+          "real_time_factor": 0.39397222207938287,
+          "texts": [
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?"
+          ],
+          "warm_ms": [
+            1225.8445689999999,
+            1229.568906,
+            1240.29207,
+            1214.200511,
+            1217.738679
+          ]
+        },
+        {
+          "audio_seconds": 3.1115,
+          "confidence": {
+            "mean": 0.9828579425811768,
+            "min": 0.7842325568199158
+          },
+          "file": "docs/benchmarks/2026-10-02/voice-canary-clips/quiet.wav",
+          "first_decode_ms": 1222.052699,
+          "first_text": "twenty nine. What is on my calendar tomorrow morning?",
+          "median_ms": 1254.6158149999999,
+          "p95_ms": 1290.4765149999998,
+          "real_time_factor": 0.40321896673630075,
+          "texts": [
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?"
+          ],
+          "warm_ms": [
+            1256.950135,
+            1244.396726,
+            1235.539903,
+            1290.4765149999998,
+            1254.6158149999999
+          ]
+        },
+        {
+          "audio_seconds": 3.1115,
+          "confidence": {
+            "mean": 0.9587187170982361,
+            "min": 0.5485297441482544
+          },
+          "file": "docs/benchmarks/2026-10-02/voice-canary-clips/noise_10db.wav",
+          "first_decode_ms": 1255.2263070000001,
+          "first_text": "twenty nine. What is on my calendar to morrow morning?",
+          "median_ms": 1277.2993900000001,
+          "p95_ms": 1428.84135,
+          "real_time_factor": 0.4105092045637153,
+          "texts": [
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?"
+          ],
+          "warm_ms": [
+            1277.2993900000001,
+            1253.426653,
+            1263.9935600000001,
+            1425.7651700000001,
+            1428.84135
+          ]
+        },
+        {
+          "audio_seconds": 3.1115,
+          "confidence": {
+            "mean": 0.9757810235023499,
+            "min": 0.7213655114173889
+          },
+          "file": "docs/benchmarks/2026-10-02/voice-canary-clips/echo_120ms.wav",
+          "first_decode_ms": 1232.160715,
+          "first_text": "twenty nine. What is on my calendar tomorrow morning?",
+          "median_ms": 1280.741573,
+          "p95_ms": 1709.264705,
+          "real_time_factor": 0.41161548224329103,
+          "texts": [
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?"
+          ],
+          "warm_ms": [
+            1225.352252,
+            1291.886627,
+            1709.264705,
+            1237.286587,
+            1280.741573
+          ]
+        }
+      ],
+      "load_ms": 739.758418,
+      "note": "Inference only, not microphone, endpoint, network, agent or audible response latency. Whisper CLI reloads its model for each decode.",
+      "runs": 5,
+      "spin": true,
+      "threads": 2
+    },
+    {
+      "endpoint_ms": 600,
+      "engine": "canary",
+      "files": [
+        {
+          "audio_seconds": 3.1115,
+          "confidence": {
+            "mean": 0.9837823510169983,
+            "min": 0.7892327904701233
+          },
+          "file": "docs/benchmarks/2026-10-02/voice-canary-clips/clean.wav",
+          "first_decode_ms": 1208.465041,
+          "first_text": "twenty nine. What is on my calendar tomorrow morning?",
+          "median_ms": 1213.824641,
+          "p95_ms": 1235.988044,
+          "real_time_factor": 0.3901091566768439,
+          "texts": [
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?"
+          ],
+          "warm_ms": [
+            1235.988044,
+            1213.824641,
+            1214.609657,
+            1207.350268,
+            1204.5767290000001
+          ]
+        },
+        {
+          "audio_seconds": 3.1115,
+          "confidence": {
+            "mean": 0.9828579425811768,
+            "min": 0.7842325568199158
+          },
+          "file": "docs/benchmarks/2026-10-02/voice-canary-clips/quiet.wav",
+          "first_decode_ms": 1221.6058300000002,
+          "first_text": "twenty nine. What is on my calendar tomorrow morning?",
+          "median_ms": 1222.2959819999999,
+          "p95_ms": 1590.5203970000002,
+          "real_time_factor": 0.39283174738871923,
+          "texts": [
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?"
+          ],
+          "warm_ms": [
+            1205.082001,
+            1222.2959819999999,
+            1590.5203970000002,
+            1209.996758,
+            1240.310045
+          ]
+        },
+        {
+          "audio_seconds": 3.1115,
+          "confidence": {
+            "mean": 0.9587187170982361,
+            "min": 0.5485297441482544
+          },
+          "file": "docs/benchmarks/2026-10-02/voice-canary-clips/noise_10db.wav",
+          "first_decode_ms": 1238.499772,
+          "first_text": "twenty nine. What is on my calendar to morrow morning?",
+          "median_ms": 1251.222841,
+          "p95_ms": 1271.2242489999999,
+          "real_time_factor": 0.4021285042583963,
+          "texts": [
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?",
+            "twenty nine. What is on my calendar to morrow morning?"
+          ],
+          "warm_ms": [
+            1259.5617909999999,
+            1250.0776799999999,
+            1251.222841,
+            1271.2242489999999,
+            1242.057293
+          ]
+        },
+        {
+          "audio_seconds": 3.1115,
+          "confidence": {
+            "mean": 0.9757810235023499,
+            "min": 0.7213655114173889
+          },
+          "file": "docs/benchmarks/2026-10-02/voice-canary-clips/echo_120ms.wav",
+          "first_decode_ms": 1207.805636,
+          "first_text": "twenty nine. What is on my calendar tomorrow morning?",
+          "median_ms": 1207.0113920000001,
+          "p95_ms": 1285.2187740000002,
+          "real_time_factor": 0.3879194574963844,
+          "texts": [
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?",
+            "twenty nine. What is on my calendar tomorrow morning?"
+          ],
+          "warm_ms": [
+            1207.0113920000001,
+            1206.63043,
+            1233.057885,
+            1198.434939,
+            1285.2187740000002
+          ]
+        }
+      ],
+      "load_ms": 787.138497,
+      "note": "Inference only, not microphone, endpoint, network, agent or audible response latency. Whisper CLI reloads its model for each decode.",
+      "runs": 5,
+      "spin": false,
+      "threads": 4
+    }
+  ]
+}

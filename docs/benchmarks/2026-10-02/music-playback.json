@@ -1,0 +1,791 @@
+{
+  "note": "Actual MPV output at 1% volume, synthetic MP3 and brown-noise WAV. Piper playback at zero volume verifies ducking and restoration without changing user pause. No microphone or live Spotify account. Existing Accessor process untouched.",
+  "mpv_version": "0.37.0",
+  "soloist_version": "1.3.8.105",
+  "commands": [
+    {
+      "args": [
+        "play",
+        "/home/supine/source/repos/accessor/docs/benchmarks/2026-10-02/generated-clips/negative.mp3",
+        "--repeat",
+        "--volume",
+        "1"
+      ],
+      "elapsed_ms": 455.0732269999571,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "repeat": true,
+        "source": "/home/supine/source/repos/accessor/docs/benchmarks/2026-10-02/generated-clips/negative.mp3",
+        "state": "playing",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 23.395895994326565,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": false,
+        "idle": false,
+        "paused": false,
+        "source": "/home/supine/source/repos/accessor/docs/benchmarks/2026-10-02/generated-clips/negative.mp3",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "pause"
+      ],
+      "elapsed_ms": 24.47702700010268,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "paused": true
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 29.175763003877364,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": false,
+        "idle": false,
+        "paused": true,
+        "source": "/home/supine/source/repos/accessor/docs/benchmarks/2026-10-02/generated-clips/negative.mp3",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "resume"
+      ],
+      "elapsed_ms": 25.977498000429478,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "paused": false
+      }
+    },
+    {
+      "args": [
+        "volume",
+        "1"
+      ],
+      "elapsed_ms": 26.616274000843987,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "stop"
+      ],
+      "elapsed_ms": 31.513984999037348,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "state": "stopped"
+      }
+    },
+    {
+      "args": [
+        "ambience",
+        "brown",
+        "--volume",
+        "1"
+      ],
+      "elapsed_ms": 470.24134499952197,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "repeat": true,
+        "source": "brown",
+        "state": "playing",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 26.722751994384453,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": false,
+        "idle": false,
+        "paused": false,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 27.33661200181814,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": false,
+        "idle": false,
+        "paused": false,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 26.627058003214188,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": false,
+        "idle": false,
+        "paused": false,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 70.32366999919759,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": false,
+        "idle": false,
+        "paused": false,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 23.801239003660157,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": false,
+        "idle": false,
+        "paused": false,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 18.820477998815477,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": false,
+        "idle": false,
+        "paused": false,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 24.500127001374494,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": false,
+        "idle": false,
+        "paused": false,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 29.359787004068494,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": false,
+        "idle": false,
+        "paused": false,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 27.4971809994895,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": false,
+        "idle": false,
+        "paused": false,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 29.899913002736866,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": false,
+        "idle": false,
+        "paused": false,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 29.874032996303868,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": false,
+        "idle": false,
+        "paused": false,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 28.732175000186544,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": false,
+        "idle": false,
+        "paused": false,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 32.462158997077495,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": false,
+        "idle": false,
+        "paused": false,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 27.544438999029808,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": false,
+        "idle": false,
+        "paused": false,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 24.594319002062548,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": false,
+        "idle": false,
+        "paused": false,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 30.09965399542125,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": false,
+        "idle": false,
+        "paused": false,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 35.948109994933475,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": false,
+        "idle": false,
+        "paused": false,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 26.30441400106065,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": false,
+        "idle": false,
+        "paused": false,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 53.61267599801067,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": false,
+        "idle": false,
+        "paused": false,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 40.25855100189801,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": false,
+        "idle": false,
+        "paused": false,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 32.03325300273718,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": false,
+        "idle": false,
+        "paused": false,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 39.09187100362033,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": false,
+        "idle": false,
+        "paused": false,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 23.78173499892,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": true,
+        "idle": false,
+        "paused": false,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "pause"
+      ],
+      "elapsed_ms": 25.15115699497983,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "paused": true
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 25.94941399729578,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": true,
+        "idle": false,
+        "paused": true,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 27.75687400571769,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": true,
+        "idle": false,
+        "paused": true,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 26.47772599448217,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": true,
+        "idle": false,
+        "paused": true,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 30.368430001544766,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": true,
+        "idle": false,
+        "paused": true,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 26.89908399770502,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": true,
+        "idle": false,
+        "paused": true,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 27.056644001277164,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": true,
+        "idle": false,
+        "paused": true,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 25.453099005972035,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": true,
+        "idle": false,
+        "paused": true,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 28.987787998630665,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": true,
+        "idle": false,
+        "paused": true,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 25.11954899819102,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": true,
+        "idle": false,
+        "paused": true,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 23.481183998228516,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": true,
+        "idle": false,
+        "paused": true,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 27.02558100281749,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": true,
+        "idle": false,
+        "paused": true,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 21.953329000098165,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": true,
+        "idle": false,
+        "paused": true,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 27.760854994994588,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": true,
+        "idle": false,
+        "paused": true,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 30.689093000546563,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": true,
+        "idle": false,
+        "paused": true,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 29.012626997428015,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": true,
+        "idle": false,
+        "paused": true,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 32.04913999798009,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": true,
+        "idle": false,
+        "paused": true,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 29.58734199637547,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": true,
+        "idle": false,
+        "paused": true,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 28.16621200327063,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": true,
+        "idle": false,
+        "paused": true,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "elapsed_ms": 28.4117530027288,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "ducked": false,
+        "idle": false,
+        "paused": true,
+        "source": "brown",
+        "volume": 1
+      }
+    },
+    {
+      "args": [
+        "resume"
+      ],
+      "elapsed_ms": 26.840988000913057,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "paused": false
+      }
+    },
+    {
+      "args": [
+        "stop"
+      ],
+      "elapsed_ms": 23.83599799941294,
+      "exit_code": 0,
+      "result": {
+        "backend": "local",
+        "state": "stopped"
+      }
+    },
+    {
+      "args": [
+        "spotify",
+        "status"
+      ],
+      "elapsed_ms": 72.33348100271542,
+      "exit_code": 1,
+      "result": "Error: \"Soloist exited exit status: 2: soloist: not running (no pid file at /home/supine/.local/share/soloist/soloist.pid)\\n\""
+    }
+  ],
+  "ducking_verified": true,
+  "restoration_preserves_manual_pause": true
+}

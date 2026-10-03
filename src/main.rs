@@ -18,6 +18,7 @@ mod markdown;
 mod masterlog;
 mod mcp;
 mod memory;
+mod music;
 mod noise;
 mod notifications;
 mod organizer;

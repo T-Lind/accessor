@@ -21,6 +21,7 @@ pub enum Action {
     StopAlarm,
     Status,
     SettingsRead,
+    Music(crate::music::Request),
     SettingsUpdate {
         changes: Value,
     },

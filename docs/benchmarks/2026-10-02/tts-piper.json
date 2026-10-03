@@ -1,0 +1,60 @@
+{
+  "note": "No disk/memory audio cache, no playback. First run includes connection/worker startup. First byte is network arrival, not audible playback.",
+  "provider": "piper",
+  "runs": [
+    {
+      "audio_seconds": 2.9425850340136055,
+      "first_byte_ms": null,
+      "real_time_factor": 0.26567917493064547,
+      "total_ms": 781.7835640000001
+    },
+    {
+      "audio_seconds": 2.9658049886621316,
+      "first_byte_ms": null,
+      "real_time_factor": 0.1312361438084898,
+      "total_ms": 389.22081
+    },
+    {
+      "audio_seconds": 2.9193650793650794,
+      "first_byte_ms": null,
+      "real_time_factor": 0.12896576233688561,
+      "total_ms": 376.498143
+    },
+    {
+      "audio_seconds": 2.9193650793650794,
+      "first_byte_ms": null,
+      "real_time_factor": 0.12869432249347543,
+      "total_ms": 375.705711
+    },
+    {
+      "audio_seconds": 2.907755102040816,
+      "first_byte_ms": null,
+      "real_time_factor": 0.12771520983295903,
+      "total_ms": 371.364553
+    },
+    {
+      "audio_seconds": 2.9541950113378683,
+      "first_byte_ms": null,
+      "real_time_factor": 0.12914876862757138,
+      "total_ms": 381.530648
+    },
+    {
+      "audio_seconds": 2.872925170068027,
+      "first_byte_ms": null,
+      "real_time_factor": 0.13122070283197576,
+      "total_ms": 376.98726
+    },
+    {
+      "audio_seconds": 2.9658049886621316,
+      "first_byte_ms": null,
+      "real_time_factor": 0.14775692119854425,
+      "total_ms": 438.218214
+    },
+    {
+      "audio_seconds": 2.9425850340136055,
+      "first_byte_ms": null,
+      "real_time_factor": 0.13304891837432956,
+      "total_ms": 391.507756
+    }
+  ]
+}

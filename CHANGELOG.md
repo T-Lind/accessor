@@ -6,6 +6,30 @@ GitHub, and full notes are generated there. This file starts at 0.34.3 — see t
 [releases page](https://github.com/T-Lind/accessor/releases) and `git log` for
 earlier history.
 
+## [0.36.0] - 2026-10-02
+
+### Added
+
+- `/music` and MCP `music_control`: local audio through MPV, generated brown,
+  rain, and white ambience, pause/resume/volume/status, and optional controls
+  for a separately paired Spotify Soloist player. Local music ducks during
+  replies and stops on cancellation, lock, or exit. `acc music render` exports
+  an ambience WAV without playback or a service account.
+
+### Fixed
+
+- Piper waits for its completed-file receipt instead of accepting partially
+  written WAVs. Cancelling synthesis kills the in-flight worker; multi-line
+  input stays one request so replies cannot consume stale audio.
+- Memory list, review, and forget run off the UI loop and report busy stores
+  instead of waiting on a worker's lock. `/memory forget 0` is rejected.
+- Rendered reply audio pauses during detected near-end speech while a wake
+  interruption is checked, then resumes without skipping audio if unconfirmed.
+  While paused, bounded wake windows preserve microphone syllables that echo
+  cancellation could erase. Recent self-speech rejection remains in effect.
+- Asleep wake and unlock recognition bypass the room-noise gate, preserving
+  quiet attention words; awake utterances retain the configured gate.
+
 ## [0.35.0] - 2026-10-01
 
 ### Added

@@ -128,6 +128,7 @@ Everything needed day to day is available inside the screen:
 | `/tts key` | Masked Cartesia key entry; saved in the OS credential store |
 | `/stt test`, `/stt off` | Start/stop live transcription testing |
 | `/noise` | Room-noise gate: `/noise calibrate`, `reset`, `on`, `off` |
+| `/music` | Local files, looping ambience, and optional Spotify controls; see below |
 | `/prompt` | Show the metaprompt; `preset butler\|warm\|terse\|plain`, `extra TEXT`, `edit`, `reset` |
 | `/memory` | Inspect shared facts; `/memory review`, `/memory infer`, `/memory forget N` |
 | `/watch every 30m …` | Create a recurring, Jev-gated survey; `/watch list`, `edit ID`, `stop ID` |
@@ -189,7 +190,7 @@ While the agent is thinking, you can continue speaking normally. Accessor keeps 
 
 During audible speech or an alarm, **say “29”, pause, then say your request**. During audible output, the recognizer decodes only short wake windows, bypassing completed long speaker clips. Rolling local wake checks inspect up to 2.4 seconds of audio at roughly 600 ms intervals, without waiting for the room to become silent. Actual recognition latency depends on the local model and computer; `/audio` reports it, alongside capture/VAD/window counts, decoder errors, capture-paused state and the latest transient wake-window text. That diagnostic text is not added to agent history or saved to disk. A rolling detection only interrupts and opens listening: mixed speaker/user text is never submitted as a request. The listening window stays silent and gives at least eight seconds to begin speaking. Raw voice activity alone does not interrupt. Escape remains immediate typed cancellation. Interrupting preserves what the agent had already produced — commentary, tool activity, and any partial reply — in the conversation history, so your next request keeps that context even when the harness reconnects with a fresh session.
 
-WebRTC AEC3 receives actual TTS playback, thinking warble, alarm and chime samples to estimate and remove acoustic echo. Residual transcript checks reject recognizable self-speech in wake probes, including wake words in recent output. Clean follow-ups are not rejected merely for repeating a word from the reply. These checks reduce loops but are not speaker identification; when the agent itself is saying the wake code, interruption may be suppressed. Headphones provide the clearest separation. Physical room/device validation is still needed. Settings and credential entry suppress capture. Disabling barge-ins suppresses the mic during speech. The thinking warble pauses for speech and approvals, resumes during unfinished work, and stops on cancellation.
+WebRTC AEC3 receives actual rendered TTS playback, thinking warble, alarm and chime samples to estimate and remove acoustic echo. Rendered replies briefly pause on near-end speech while a bounded wake window checks interruption; unconfirmed interruptions resume without skipping reply audio. While paused, recognition can use the microphone window to preserve wake syllables that echo cancellation erased. Residual transcript checks reject recognizable self-speech in wake probes, including wake words in recent output. Clean follow-ups are not rejected merely for repeating a word from the reply. These checks reduce loops but are not speaker identification; when the agent itself is saying the wake code, interruption may be suppressed. Linux speech-dispatcher speaks outside the rendered-audio path and cannot supply these echo references or pauses. Headphones provide the clearest separation. Physical room/device validation is still needed. Settings and credential entry suppress capture. Disabling barge-ins suppresses the mic during speech. The thinking warble pauses for speech and approvals, resumes during unfinished work, and stops on cancellation.
 
 The activity pane shows user lines, formatted agent replies (bold, links), and live tool calls. Commentary/progress text is spoken when enabled but hidden from the pane unless `/settings chat transcript`. `/settings chat off` keeps only tools and system notices.
 
@@ -197,9 +198,50 @@ Each harness keeps its own native conversation alive. When routing moves to anot
 
 Local models decode completed speech segments after a configurable pause (`stt.endpoint-ms`, default 600 ms); long speech is delivered in overlapping 30-second chunks. Local recognition defaults to two CPU threads with spinning disabled; `stt.threads` and `stt.spin` tune the runtime after restart. Whisper uses the selected thread count with a low-beam decoder. Completed clips queue in order; explicit cancellation or sleep invalidates old capture. Cartesia streaming, enabled on new profiles, overlaps upload with capture and local recognition.
 
+## Music and ambience
+
+Local playback uses [MPV](https://mpv.io/installation/) on Linux or macOS. Install it on `PATH`, set `ACC_MPV_BIN`, or place an executable at `assets/music/bin/mpv`. MPV decodes files in its own process; Accessor's speech and UI threads keep running. Paths may contain spaces; use an absolute path without shell quoting in the in-screen command.
+
+```text
+/music play /home/me/Music/a song.mp3
+/music ambience brown
+/music ambience rain
+/music ambience white
+/music pause
+/music resume
+/music volume 20
+/music status
+/music stop
+```
+
+The default music volume is 25%. Ambience is generated locally and loops; `rain` is a synthetic noise texture. Local volume drops to one fifth during spoken replies and returns afterward. `/cancel`, `/stop`, locking, and exit stop the owned local player. Background music can continue while listening is asleep. External music output is not in the speech echo reference, so speaker playback can affect wake accuracy; headphones provide the clearest spoken control. Automatic ducking currently applies to local music only.
+
+Agents receive the session-bound MCP `music_control` tool and can choose local files or ambience, pause/resume, set volume, inspect status, and request repeat for a local file. Playback receipts are returned after MPV initializes audio. No track downloader is included. Use your own audio or a source that permits downloading it.
+
+The equivalent CLI controls accept `acc music --session SESSION_FILE play FILE --repeat --volume 20`; agents launched by Accessor inherit their session automatically and can omit `--session`. To export a noise WAV without a running session or MPV:
+
+```sh
+acc music render brown --seconds 60 --output brown.wav
+```
+
+For Spotify, use the official [Spotify Soloist](https://developer.spotify.com/documentation/soloist/tutorials/getting-started) Linux player. Premium and a personal Soloist API key are required. Install `soloist` on `PATH`, set `ACC_SOLOIST_BIN`, or put it in `assets/music/bin/soloist`. Follow Spotify's setup to generate the key and pair the device in the Spotify app; start the player with `--ws 127.0.0.1:0` so local controls are available. Keep account keys in the OS credential store or your secret manager; do not put them in Accessor's `config.json`. Accessor does not connect, enroll, or expose your account credentials.
+
+```text
+/music spotify status
+/music spotify play spotify:playlist:PLAYLIST_ID
+/music spotify pause
+/music spotify resume
+/music spotify next
+/music spotify previous
+/music spotify volume 20
+/music spotify stop
+```
+
+Replace `PLAYLIST_ID` with the playlist's 22-character ID. Play also accepts track, album, and episode URIs. A successful remote receipt means Soloist accepted the command; use status to check its device/account state. Soloist is a separately owned player: Accessor cancellation, lock, or exit stops local MPV playback, while Spotify keeps its own lifecycle. Stop Spotify explicitly with its stop command. Spotify's ChatGPT app can help find tracks and playlists, but its availability in ChatGPT does not establish a connection in Accessor's selected agent harness.
+
 ## Room noise calibration and suppression
 
-A room-noise gate removes steady ambient noise from a finished utterance just before it is recognized, which reduces noise-driven hallucinations without changing wake detection, barge-in timing, or segmentation. It is on by default and conservative: speech above the learned floor is untouched, steady noise near the floor is attenuated by at most 10 dB, and the gain always starts open so the first word is not clipped. It runs on the transcription path, not the capture hot path.
+A room-noise gate removes steady ambient noise from a finished awake utterance just before it is recognized. Asleep activation, unlock clips, and rolling playback wake checks bypass it to preserve quiet attention words. It is on by default and conservative: speech above the learned floor is untouched and steady noise near the floor is attenuated by at most 10 dB. It runs on the transcription path, not the capture hot path.
 
 The ambient floor is learned automatically from frames the VAD calls non-speech. For a faster, deliberate result, say `/noise calibrate` (or use Settings → Speech → **Calibrate room noise**) and stay quiet for three seconds; the measured floor is saved as `stt.noise-floor-db` and used from then on. `/noise` shows the current floor and gate state, `/noise reset` returns to the default and lets it re-learn, and `/noise on|off` toggles the gate (also `stt.noise-gate`). The floor is shown in `/audio` diagnostics. The gate applies to local and non-streaming cloud transcription; Cartesia streaming uploads audio as you speak, before an utterance exists, so it is not gated.
 

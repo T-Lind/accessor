@@ -1,0 +1,8 @@
+{
+  "case": "Production AEC + VAD + rolling wake-window recognition with synthetic user voice over thinking cue and assistant speech",
+  "elapsed_ms": 11311.781823002093,
+  "exit_code": 101,
+  "stdout": "\nrunning 1 test\ntest audio::tests::real_wake_recognition_with_thinking_audio_reference ... FAILED\n\nfailures:\n\nfailures:\n    audio::tests::real_wake_recognition_with_thinking_audio_reference\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 191 filtered out; finished in 10.81s\n\n",
+  "stderr": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.43s\n     Running unittests src/main.rs (target/debug/deps/acc-0c3906134352d9c2)\n\nthread 'audio::tests::real_wake_recognition_with_thinking_audio_reference' (9171) panicked at src/audio.rs:2363:13:\nWake phrase was lost in the active-output pipeline\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\nerror: test failed, to rerun pass `--bin acc`\n",
+  "note": "Debug test build, offline simulation, not live mic latency"
+}

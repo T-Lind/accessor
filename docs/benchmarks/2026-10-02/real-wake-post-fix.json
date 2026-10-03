@@ -1,0 +1,21 @@
+{
+  "note": "Real Canary model; simulated 60ms speaker echo plus actual paused-playback cursor. Each fixture checks thinking sound, spoken output, and a speaker-only negative. Not a room/microphone test.",
+  "reports": [
+    {
+      "wake_file": "docs/benchmarks/2026-10-02/generated-clips/wake-only.wav",
+      "speaker_file": "docs/benchmarks/2026-10-02/generated-clips/negative.wav",
+      "elapsed_ms": 16410.324739998032,
+      "exit_code": 0,
+      "stdout": "\nrunning 1 test\ntest audio::tests::real_wake_recognition_with_thinking_audio_reference ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 194 filtered out; finished in 15.90s\n\n",
+      "stderr": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.44s\n     Running unittests src/main.rs (target/debug/deps/acc-e60ecb86958cde42)\n"
+    },
+    {
+      "wake_file": "tests/fixtures/voice-benchmark.wav",
+      "speaker_file": "docs/benchmarks/2026-10-02/generated-clips/negative.wav",
+      "elapsed_ms": 21419.330206001177,
+      "exit_code": 0,
+      "stdout": "\nrunning 1 test\ntest audio::tests::real_wake_recognition_with_thinking_audio_reference ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 194 filtered out; finished in 20.94s\n\n",
+      "stderr": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.41s\n     Running unittests src/main.rs (target/debug/deps/acc-e60ecb86958cde42)\n"
+    }
+  ]
+}

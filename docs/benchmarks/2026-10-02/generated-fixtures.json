@@ -1,0 +1,41 @@
+{
+  "source": "Local Piper en_GB-alan-medium; synthetic, one voice; not a room test",
+  "clips": [
+    {
+      "file": "docs/benchmarks/2026-10-02/generated-clips/wake-only.wav",
+      "transcript": "Twenty nine.",
+      "seconds": 1.2216875,
+      "sha256": "e3d096d0613795665e3c6c8d5147a94646846f78dd80008aeb54abdeec00c265"
+    },
+    {
+      "file": "docs/benchmarks/2026-10-02/generated-clips/wake-music.wav",
+      "transcript": "Twenty nine. Play some music.",
+      "seconds": 3.0586875,
+      "sha256": "0bb2089b1927fe77bc61539fc563322f3f4ee0b9e4e5b45d977e7638f62e605e"
+    },
+    {
+      "file": "docs/benchmarks/2026-10-02/generated-clips/wake-timer.wav",
+      "transcript": "Hey twenty nine. Set a timer for five minutes.",
+      "seconds": 3.85975,
+      "sha256": "481d7c98f6fde23cac5d82421823f431c075aa1a4fca4f5ac2b3b28df918a33d"
+    },
+    {
+      "file": "docs/benchmarks/2026-10-02/generated-clips/near-28.wav",
+      "transcript": "Twenty eight.",
+      "seconds": 1.2565,
+      "sha256": "e9878005ba080581010104db37cf9dae16323a637e77d250fceaec5052e69f6d"
+    },
+    {
+      "file": "docs/benchmarks/2026-10-02/generated-clips/near-39.wav",
+      "transcript": "Thirty nine.",
+      "seconds": 1.1984375,
+      "sha256": "cbeca69ce8b2484abf966cfa9793a75a44170a38d764fb106bf796158fa50612"
+    },
+    {
+      "file": "docs/benchmarks/2026-10-02/generated-clips/negative.wav",
+      "transcript": "The weather is nice today. Please pass the salt.",
+      "seconds": 3.7088125,
+      "sha256": "3c9a845380c31d49f36a8cc30271e23c088943ebf405c668a1c8e14644c00fd2"
+    }
+  ]
+}

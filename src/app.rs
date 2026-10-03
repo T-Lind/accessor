@@ -28,6 +28,85 @@ fn compaction_settings(
     effective
 }
 
+fn memory_command(workspace: &std::path::Path, command: &str) -> Result<String> {
+    let parts: Vec<_> = command.split_whitespace().collect();
+    let index = if let ["/memory", "forget", number] = parts.as_slice() {
+        let index: usize = number.parse().context("Use /memory forget N")?;
+        anyhow::ensure!(index > 0, "Memory numbers start at 1");
+        Some(index - 1)
+    } else {
+        None
+    };
+    let store = crate::memory::Store::open(workspace)?.nonblocking();
+    let entries = store.search("", 100)?;
+    if let Some(index) = index {
+        let entry = entries
+            .iter()
+            .filter(|e| !e.deleted)
+            .nth(index)
+            .context("No memory at that number")?;
+        let scope = if entry.scope == "global" {
+            "global"
+        } else {
+            "project"
+        };
+        store.forget(scope, &entry.key, entry.revision)?;
+        return Ok(format!("Forgot {} ({scope}).", entry.key));
+    }
+    if parts.len() == 1 {
+        return Ok(if entries.is_empty() {
+            "No shared memories yet. Agents may save stable facts and preferences automatically."
+                .into()
+        } else {
+            entries
+                .iter()
+                .map(|entry| {
+                    format!(
+                        "{} · {} · revision {}\n{}",
+                        if entry.scope == "global" {
+                            "Global"
+                        } else {
+                            "Project"
+                        },
+                        entry.key,
+                        entry.revision,
+                        if entry.deleted {
+                            "Forgotten".into()
+                        } else {
+                            safe(&entry.text)
+                        }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
+    }
+    let live: Vec<_> = entries.iter().filter(|e| !e.deleted).collect();
+    if live.is_empty() {
+        return Ok("Nothing remembered yet. Say \"remember ...\" or state a preference and Accessor will capture it.".into());
+    }
+    let mut lines: Vec<_> = live
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            format!(
+                "{}. [{}] {} · {}\n{}",
+                index + 1,
+                if entry.scope == "global" {
+                    "global"
+                } else {
+                    "project"
+                },
+                entry.key,
+                entry.kind,
+                safe(&entry.text)
+            )
+        })
+        .collect();
+    lines.push("Forget one with /memory forget N.".into());
+    Ok(lines.join("\n"))
+}
+
 // Feedback is coalesced before dispatch. A batch with a worker outcome must
 // remain visible even when its first item is a routine control receipt.
 fn routine_control_feedback(text: &str) -> bool {
@@ -894,6 +973,7 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut wizard: Option<crate::dashboard::Wizard> = None;
     let mut pending_secret: Option<&'static str> = None;
     let mut utility: Option<tokio::task::JoinHandle<Result<String>>> = None;
+    let mut music = crate::music::Service::start(input_tx.clone(), speech_state.clone());
     let mut speech_queue = VecDeque::<String>::new();
     let mut wake_listening = false;
     let mut last_display_wake = None;
@@ -977,6 +1057,7 @@ pub async fn run(mut args: Run) -> Result<()> {
             speech_queue.clear();
             think = None;
             alarm = None;
+            music = crate::music::Service::start(input_tx.clone(), speech_state.clone());
             speech::clear_memory_cache();
             echo_guard.finish();
             silence_reply = true;
@@ -1296,7 +1377,12 @@ pub async fn run(mut args: Run) -> Result<()> {
                 let (mut text, typed, spoken_addressed, captured_during_output, route_override) = match input {
                     Input::Control(request)=>{
                         if request.reply.is_closed() {continue;}
+                        if let crate::control::Action::Music(action) = &request.action {
+                            if let Err(e) = music.request(action.clone(), Some(request.reply)) {ui.message(format!("Music: {e:#}"));}
+                            continue;
+                        }
                         let result=match request.action {
+                            crate::control::Action::Music(_) => unreachable!(),
                             crate::control::Action::Sleep=>{
                                 session.close();wake_listening=false;alarm=None;think=None;silence_reply=true;
                                 speech_queue.clear();speaker=None;echo_guard.finish();epoch.fetch_add(1,Ordering::SeqCst);
@@ -1892,39 +1978,16 @@ pub async fn run(mut args: Run) -> Result<()> {
                             if cues { muted.store(true,Ordering::SeqCst); if let Err(e)=audio::sleep_chime(settings.sounds.sleep) { ui.message(format!("Sleep chime unavailable: {}",safe(&e.to_string()))); } muted.store(false,Ordering::SeqCst); }
                         }
                         ["/mute"] | ["/unmute"] => ui.message("Separate mute mode was removed. Use /sleep; say your wake code to listen again. Use the hardware/OS microphone switch for privacy."),
-                        ["/memory"] => {
-                            match crate::memory::Store::open(&workspace).and_then(|store|store.search("",100)) {
-                                Ok(entries) if entries.is_empty()=>ui.message("No shared memories yet. Agents may save stable facts and preferences automatically."),
-                                Ok(entries)=>{for entry in entries {ui.message(format!("{} · {} · revision {}\n{}",if entry.scope=="global" {"Global"} else {"Project"},entry.key,entry.revision,if entry.deleted {"Forgotten".into()} else {safe(&entry.text)}));}},
-                                Err(e)=>ui.message(format!("Could not read memory: {e:#}")),
+                        ["/music", ..] => {
+                            match crate::music::parse(&text).and_then(|request| music.request(request, None)) {
+                                Ok(())=>{}, Err(e)=>ui.message(format!("Music: {e:#}")),
                             }
                         },
-                        ["/memory","review"] => {
-                            match crate::memory::Store::open(&workspace).and_then(|store|store.search("",100)) {
-                                Ok(entries)=>{
-                                    let live:Vec<_>=entries.iter().filter(|e|!e.deleted).collect();
-                                    if live.is_empty() {ui.message("Nothing remembered yet. Say \"remember ...\" or state a preference and Accessor will capture it.");}
-                                    else {
-                                        for (index,entry) in live.iter().enumerate() {
-                                            ui.message(format!("{}. [{}] {} · {}\n{}",index+1,if entry.scope=="global" {"global"} else {"project"},entry.key,entry.kind,safe(&entry.text)));
-                                        }
-                                        ui.message("Forget one with /memory forget N.");
-                                    }
-                                }
-                                Err(e)=>ui.message(format!("Could not read memory: {e:#}")),
-                            }
-                        },
-                        ["/memory","forget",number] => {
-                            let result=(||->anyhow::Result<String>{
-                                let index:usize=number.parse().map_err(|_|anyhow::anyhow!("Use /memory forget N"))?;
-                                let store=crate::memory::Store::open(&workspace)?;
-                                let live:Vec<_>=store.search("",100)?.into_iter().filter(|e|!e.deleted).collect();
-                                let entry=live.get(index.saturating_sub(1)).ok_or_else(||anyhow::anyhow!("No memory at that number"))?;
-                                let scope=if entry.scope=="global" {"global"} else {"project"};
-                                store.forget(scope,&entry.key,entry.revision)?;
-                                Ok(format!("Forgot {} ({scope}).",entry.key))
-                            })();
-                            match result {Ok(message)=>ui.message(message),Err(e)=>ui.message(format!("{e:#}"))}
+                        ["/memory"] | ["/memory","review"] | ["/memory","forget",_] => {
+                            if utility.is_some() {ui.message("A background job is already running; try again when it finishes.");continue;}
+                            let workspace=workspace.clone();
+                            let command=text.clone();
+                            utility=Some(tokio::task::spawn_blocking(move||memory_command(&workspace,&command)));
                         },
                         ["/memory","infer"] => {
                             if active_harness=="mock" {ui.message("Mock mode uses local memory capture; model inference is off.");continue;}
@@ -1948,6 +2011,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                             } else {ui.message("No matching worker approval.");}
                         },
                         ["/cancel"] | ["/stop"] => {
+                            music = crate::music::Service::start(input_tx.clone(), speech_state.clone());
                             wake_listening=false;
                             if let Some(job)=compaction.take() {job.task.abort();}
                             if worker.take().is_some() { ui.message("Worker cancelled. Its actions may be incomplete; inspect before retrying."); }

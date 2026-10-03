@@ -14,6 +14,7 @@ fn tool(name: &str, description: &str, input: Value, read: bool) -> Value {
 }
 fn tools(computer: bool) -> Value {
     let mut list = vec![
+        tool("music_control","Play a local audio file or generated ambience, or control a separately paired Spotify Soloist player. Requires this live Accessor session. Local playback supports MP3/WAV/FLAC/OGG/M4A/AAC/Opus through installed mpv; source is a local path, never a download URL. Ambience source is brown, rain, or white. Spotify play accepts a spotify:track/album/playlist/episode URI, or no source to resume; setup requires Premium and a user-generated Soloist key. Wait for the receipt before claiming playback. Local volume ducks during spoken replies and local playback stops on /cancel, lock, and exit. Music output is external to the speech echo canceller; headphones are recommended for spoken control.",schema(json!({"backend":{"enum":["local","spotify"],"default":"local"},"action":{"enum":["status","play","ambience","pause","resume","stop","volume","next","previous"]},"source":{"type":"string","maxLength":4096},"volume":{"type":"integer","minimum":0,"maximum":100},"repeat":{"type":"boolean","default":false}}),&["action"]),false),
         tool("usage_status","Read subscription quota buckets for Codex, Claude and Antigravity, including observed time, staleness, percentages and reset times. refresh=true queries supported providers without a model turn. Claude uses its experimental structured usage command, with status-line readings as fallback; missing data is unknown, never zero. Separate from estimated costs and local retry delays.",schema(json!({"refresh":{"type":"boolean","default":false}}),&[]),true),
         tool("settings_read","Read Accessor's agent-editable preferences and available harnesses. Use before changing settings. No secrets or security settings are exposed.",schema(json!({}),&[]),true),
         tool("settings_update","Change only user-requested Accessor preferences. Read settings_read first. For requests to speak louder or quieter, update tts.volume (0 silent, 1 normal, 1.5 maximum); it applies to the next playback. Applies a validated atomic patch, then returns a receipt. Other live voice settings also take effect on next playback; harness/model/reasoning on next turn. Without a live session, saves for next launch. Does not authorize accounts or install connectors.",schema(json!({"changes":{"type":"object","minProperties":1,"propertyNames":{"enum":crate::settings_api::KEYS},"additionalProperties":{"type":["string","number","boolean"]}}}),&["changes"]),false),
@@ -49,6 +50,21 @@ fn revision(args: &Value) -> Result<u64> {
 pub async fn call(name: &str, args: &Value, workspace: &Path) -> Result<Value> {
     crate::masterlog::event("mcp", &format!("tool {name}"));
     match name {
+        "music_control" => {
+            let request: crate::music::Request = serde_json::from_value(args.clone())?;
+            request.validate()?;
+            let result = crate::control::call(
+                &crate::control::from_environment()?,
+                crate::control::Action::Music(request),
+            )
+            .await?;
+            ensure!(
+                result.get("error").is_none(),
+                "{}",
+                result["error"].as_str().unwrap_or("Music control failed")
+            );
+            Ok(result)
+        }
         "memory_search" => {
             let store = crate::memory::Store::open(workspace)?;
             let query = string(args, "query")?;

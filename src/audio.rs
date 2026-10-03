@@ -146,6 +146,7 @@ pub struct SpeechState {
     pending: AtomicUsize,
     processing: AtomicBool,
     playback: AtomicBool,
+    paused: Arc<AtomicBool>,
 }
 impl SpeechState {
     pub fn phase(&self) -> Option<&'static str> {
@@ -170,6 +171,18 @@ impl SpeechState {
     }
     pub fn playback(&self, value: bool) {
         self.playback.store(value, Ordering::SeqCst);
+        if !value {
+            self.paused.store(false, Ordering::SeqCst);
+        }
+    }
+    pub fn playback_pause(&self) -> Arc<AtomicBool> {
+        self.paused.clone()
+    }
+    pub fn output_paused(&self) -> bool {
+        self.paused.load(Ordering::SeqCst)
+    }
+    pub fn is_playing(&self) -> bool {
+        self.playback.load(Ordering::SeqCst)
     }
     pub fn holding(&self) -> bool {
         self.active.load(Ordering::SeqCst)
@@ -923,6 +936,33 @@ struct WakeWindow {
     since_check: usize,
     since_voice: usize,
 }
+
+/// Briefly stop consuming reply audio while near-end VAD checks a possible
+/// interruption. Wake probes remain the only way to cancel output or open input.
+#[derive(Default)]
+struct OutputPause {
+    voiced: usize,
+    remaining: usize,
+}
+impl OutputPause {
+    fn push(&mut self, speech: bool, playing: bool, endpoint_ms: u64) -> bool {
+        if !playing {
+            *self = Self::default();
+            return false;
+        }
+        self.voiced = if speech {
+            self.voiced.saturating_add(256)
+        } else {
+            0
+        };
+        if self.voiced >= 512 {
+            self.remaining = (endpoint_ms as usize + 100) * 16;
+        } else {
+            self.remaining = self.remaining.saturating_sub(256);
+        }
+        self.remaining > 0
+    }
+}
 impl Default for WakeWindow {
     fn default() -> Self {
         Self {
@@ -1060,11 +1100,14 @@ pub fn listen(
             let mut resampler = FftFixedIn::<f32>::new(rate, 16_000, 1024, 2, 1)?;
             let mut raw = VecDeque::new();
             let mut frames = VecDeque::new();
+            let mut raw_frames = VecDeque::new();
             let mut resample_in: Vec<f32> = Vec::new();
             let mut detector = earshot::Detector::default();
             let mut segments = Segmenter::new();
             let mut cloud_live: Option<crate::stt_stream::Live> = None;
             let mut wake_window = WakeWindow::default();
+            let mut raw_wake_window = WakeWindow::default();
+            let mut output_pause = OutputPause::default();
             let mut last_activity = Instant::now();
             let mut speech_run = 0_usize;
             let mut last_voice: Option<Instant> = None;
@@ -1089,9 +1132,13 @@ pub fn listen(
                     raw.clear();
                     canceller.clear_capture();
                     frames.clear();
+                    raw_frames.clear();
                     segments = Segmenter::new();
                     cloud_live = None;
                     wake_window = WakeWindow::default();
+                    raw_wake_window = WakeWindow::default();
+                    output_pause = OutputPause::default();
+                    dsp_state.paused.store(false, Ordering::SeqCst);
                     speech_run = 0;
                     last_voice = None;
                     calibrating = None;
@@ -1127,12 +1174,24 @@ pub fn listen(
                         canceller.render(chunk);
                     }
                     canceller.capture(&converted[0], &mut frames)?;
+                    raw_frames.extend(converted[0].iter().copied());
                     while frames.len() >= 256 {
                         let mut frame = [0.0_f32; 256];
                         for (slot, value) in frame.iter_mut().zip(frames.drain(..256)) {
                             *slot = value;
                         }
+                        let mut raw_frame = [0.0_f32; 256];
+                        for (slot, value) in raw_frame.iter_mut().zip(raw_frames.drain(..256)) {
+                            *slot = value;
+                        }
                         let speech = detector.predict_f32(&frame) >= 0.5;
+                        let paused = output_pause.push(
+                            speech,
+                            dsp_interrupting.load(Ordering::SeqCst)
+                                && dsp_state.playback.load(Ordering::SeqCst),
+                            endpoint_ms.load(Ordering::Relaxed),
+                        );
+                        dsp_state.paused.store(paused, Ordering::SeqCst);
                         let output_active = dsp_interrupting.load(Ordering::SeqCst)
                             || dsp_state.playback.load(Ordering::SeqCst);
                         if output_active != was_output {
@@ -1181,7 +1240,17 @@ pub fn listen(
                             dsp_noise.set_floor_db(noise_floor.floor_db());
                         }
                         if dsp_interrupting.load(Ordering::SeqCst) {
+                            let raw_probe = raw_wake_window.push(&raw_frame, speech);
                             if let Some(samples) = wake_window.push(&frame, speech) {
+                                // Once reply playback pauses, the microphone
+                                // preserves wake syllables AEC may have erased.
+                                // Decode only one bounded window; the UI's recent
+                                // self-speech checks still apply to its transcript.
+                                let samples = if paused {
+                                    raw_probe.unwrap_or(samples)
+                                } else {
+                                    samples
+                                };
                                 dsp_diagnostics.probes.fetch_add(1, Ordering::Relaxed);
                                 if let Ok(mut slot) = dsp_probe.lock() {
                                     *slot = Some(Utterance {
@@ -1197,6 +1266,7 @@ pub fn listen(
                             }
                         } else {
                             wake_window = WakeWindow::default();
+                            raw_wake_window = WakeWindow::default();
                         }
 
                         speech_run = if speech {
@@ -1259,6 +1329,7 @@ pub fn listen(
             Ok(())
         })();
         dsp_state.active.store(false, Ordering::SeqCst);
+        dsp_state.paused.store(false, Ordering::SeqCst);
         if let Err(e) = result {
             dsp_failed.store(true, Ordering::SeqCst);
             let _ = dsp_output.try_send(crate::Input::Warning(e.to_string()));
@@ -1393,10 +1464,16 @@ pub fn listen(
                 continue;
             };
             let began = Instant::now();
+            // A noise gate can erase a soft attention word. Keep asleep wake
+            // and unlock recognition ungated, like rolling playback probes.
+            let gate = asr_awake
+                .load(Ordering::SeqCst)
+                .then(|| asr_noise.gate())
+                .flatten();
             let decoded = transcribe_utterance_confidence(
                 loaded,
                 &u.samples,
-                asr_noise.gate().as_ref(),
+                gate.as_ref(),
                 asr_noise.highpass(),
             );
             crate::usage::record_stt(&loaded_engine, u.samples.len() as f64 / 16_000.0);
@@ -2307,19 +2384,32 @@ mod tests {
             std::env::var("ACC_OUTPUT_TEST_WAV").expect("Provide synthetic speaker WAV");
         let output =
             transcribe_rs::audio::read_wav_samples(std::path::Path::new(&output_path)).unwrap();
-        for speaker in [None, Some(output)] {
+        for (speaker, near_end) in [
+            (None, true),
+            (Some(output.clone()), true),
+            (Some(output), false),
+        ] {
             let mut aec = crate::echo::Canceller::new();
             let mut delay = VecDeque::from(vec![0.0; 960]);
             let mut detector = earshot::Detector::default();
             let mut window = WakeWindow::default();
+            let mut raw_window = WakeWindow::default();
             let mut phase = 0.0;
             let mut captured = VecDeque::new();
+            let mut raw_captured = VecDeque::new();
             let mut hits = 0;
+            let mut output_pause = OutputPause::default();
+            let mut paused = false;
+            let mut player = speaker.clone().map(|samples| Playback {
+                samples,
+                position: 0.0,
+                step: 1.0,
+            });
             for frame in 0..400 {
                 let render: Vec<f32> = (0..256)
                     .map(|j| {
-                        if let Some(output) = &speaker {
-                            return output.get(frame * 256 + j).copied().unwrap_or(0.0);
+                        if let Some(player) = &mut player {
+                            return player.next(paused).unwrap_or(0.0);
                         }
                         think_sample(
                             &mut phase,
@@ -2336,7 +2426,7 @@ mod tests {
                     .map(|(j, echo)| {
                         let at = frame * 256 + j;
                         echo * 0.6
-                            + if at >= 32_000 {
+                            + if near_end && at >= 32_000 {
                                 voice.get(at - 32_000).copied().unwrap_or(0.0) * 0.6
                             } else {
                                 0.0
@@ -2349,10 +2439,19 @@ mod tests {
                     at: Instant::now(),
                 });
                 aec.capture(&mic, &mut captured).unwrap();
+                raw_captured.extend(mic.iter().copied());
                 while captured.len() >= 256 {
                     let samples: Vec<f32> = captured.drain(..256).collect();
+                    let raw_samples: Vec<f32> = raw_captured.drain(..256).collect();
                     let speech = detector.predict_f32(&samples) >= 0.5;
+                    paused = output_pause.push(speech, speaker.is_some(), settings.stt.endpoint_ms);
+                    let raw_probe = raw_window.push(&raw_samples, speech);
                     if let Some(probe) = window.push(&samples, speech) {
+                        let probe = if paused {
+                            raw_probe.unwrap_or(probe)
+                        } else {
+                            probe
+                        };
                         let text = transcribe_asr(&mut model, &probe).unwrap();
                         if wake.in_probe(&text) {
                             hits += 1;
@@ -2360,10 +2459,14 @@ mod tests {
                     }
                 }
             }
-            assert!(
-                hits > 0,
-                "Wake phrase was lost in the active-output pipeline"
-            );
+            if near_end {
+                assert!(
+                    hits > 0,
+                    "Wake phrase was lost in the active-output pipeline"
+                );
+            } else {
+                assert_eq!(hits, 0, "Speaker-only playback falsely woke Accessor");
+            }
         }
     }
     #[test]
@@ -2380,6 +2483,26 @@ mod tests {
             }
         }
         assert!(checks > 40);
+    }
+    #[test]
+    fn output_pause_rejects_isolated_vad_and_resumes_after_silence() {
+        let mut pause = OutputPause::default();
+        assert!(!pause.push(true, true, 600));
+        assert!(!pause.push(false, true, 600));
+        assert!(!pause.push(true, true, 600));
+        assert!(pause.push(true, true, 600));
+        for _ in 0..43 {
+            assert!(pause.push(false, true, 600));
+        }
+        assert!(!pause.push(false, true, 600));
+        assert!(!pause.push(true, false, 600));
+        assert!(!pause.push(true, true, 600));
+        assert!(pause.push(true, true, 600));
+        let state = SpeechState::default();
+        state.playback_pause().store(true, Ordering::SeqCst);
+        assert!(state.output_paused());
+        state.playback(false);
+        assert!(!state.output_paused());
     }
     #[test]
     fn silence_never_starts_wake_decoding() {

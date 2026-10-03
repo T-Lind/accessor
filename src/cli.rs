@@ -77,6 +77,14 @@ enum Commands {
     },
     /// Check local dependencies without opening the microphone.
     Doctor,
+    /// Control music in a running Accessor session, or export generated ambience.
+    Music {
+        /// Session endpoint file; otherwise use the launching agent's session.
+        #[arg(long)]
+        session: Option<PathBuf>,
+        #[command(subcommand)]
+        action: MusicCommand,
+    },
     /// Check harness CLI versions and apply updates where supported.
     Update {
         /// Print versions only; do not install.
@@ -158,6 +166,45 @@ enum MemoryCommand {
         scope: String,
         #[arg(long)]
         revision: u64,
+    },
+}
+#[derive(Subcommand)]
+enum MusicCommand {
+    Status,
+    Play {
+        file: PathBuf,
+        #[arg(long)]
+        repeat: bool,
+        #[arg(long, value_parser=clap::value_parser!(u8).range(0..=100))]
+        volume: Option<u8>,
+    },
+    Ambience {
+        #[arg(value_parser=["brown","rain","white"],default_value="brown")]
+        kind: String,
+        #[arg(long, value_parser=clap::value_parser!(u8).range(0..=100))]
+        volume: Option<u8>,
+    },
+    Pause,
+    Resume,
+    Stop,
+    Volume {
+        #[arg(value_parser=clap::value_parser!(u8).range(0..=100))]
+        percent: u8,
+    },
+    /// Control an installed, paired Spotify Soloist daemon.
+    Spotify {
+        #[arg(value_parser=["status","play","pause","resume","stop","volume","next","previous"])]
+        action: String,
+        source: Option<String>,
+    },
+    /// Write a synthetic noise WAV without playing or opening a session.
+    Render {
+        #[arg(value_parser=["brown","rain","white"])]
+        kind: String,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long,default_value_t=30,value_parser=clap::value_parser!(u32).range(1..=300))]
+        seconds: u32,
     },
 }
 #[derive(Clone, Copy, ValueEnum, PartialEq)]
@@ -511,6 +558,73 @@ fn normalized(mut args: Vec<OsString>) -> Vec<OsString> {
 pub async fn entry() -> Result<()> {
     let cli = Cli::parse_from(normalized(std::env::args_os().collect()));
     match cli.command {
+        Commands::Music { session, action } => {
+            use crate::music::{Action, Backend, Request};
+            let mut request = Request {
+                backend: Backend::Local,
+                action: Action::Status,
+                source: None,
+                volume: None,
+                repeat: false,
+            };
+            match action {
+                MusicCommand::Render {
+                    kind,
+                    output,
+                    seconds,
+                } => {
+                    crate::music::render_ambience(&kind, &output, seconds)?;
+                    println!("Saved {}", output.display());
+                    return Ok(());
+                }
+                MusicCommand::Status => {}
+                MusicCommand::Play {
+                    file,
+                    repeat,
+                    volume,
+                } => {
+                    request.action = Action::Play;
+                    request.source = Some(
+                        std::fs::canonicalize(file)?
+                            .to_str()
+                            .context("Music path must be UTF-8")?
+                            .into(),
+                    );
+                    request.repeat = repeat;
+                    request.volume = volume;
+                }
+                MusicCommand::Ambience { kind, volume } => {
+                    request.action = Action::Ambience;
+                    request.source = Some(kind);
+                    request.volume = volume;
+                }
+                MusicCommand::Pause => request.action = Action::Pause,
+                MusicCommand::Resume => request.action = Action::Resume,
+                MusicCommand::Stop => request.action = Action::Stop,
+                MusicCommand::Volume { percent } => {
+                    request.action = Action::Volume;
+                    request.volume = Some(percent);
+                }
+                MusicCommand::Spotify { action, source } => {
+                    request = crate::music::parse(&format!(
+                        "/music spotify {action} {}",
+                        source.unwrap_or_default()
+                    ))?;
+                }
+            }
+            request.validate()?;
+            let endpoint = if let Some(path) = session {
+                serde_json::from_slice(&std::fs::read(path)?)?
+            } else {
+                crate::control::from_environment()
+                    .context("Use /music in Accessor, or pass --session with its endpoint file")?
+            };
+            let result =
+                crate::control::call(&endpoint, crate::control::Action::Music(request)).await?;
+            ensure!(result.get("error").is_none(), "{}", result["error"]);
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            Ok(())
+        }
         Commands::Password { action } => crate::auth::cli(&action),
         Commands::Usage {
             json,

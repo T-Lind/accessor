@@ -1,0 +1,35 @@
+{
+  "endpoint_ms": 600,
+  "engine": "whisper-tiny",
+  "files": [
+    {
+      "audio_seconds": 3.1115,
+      "confidence": null,
+      "file": "/home/supine/source/repos/accessor/tests/fixtures/voice-benchmark.wav",
+      "first_decode_ms": 2193.057808,
+      "first_text": "29. What is on my calendar tomorrow morning?",
+      "median_ms": 2100.410606,
+      "p95_ms": 2182.307446,
+      "real_time_factor": 0.6750475995500562,
+      "texts": [
+        "29. What is on my calendar tomorrow morning?",
+        "29. What is on my calendar tomorrow morning?",
+        "29. What is on my calendar tomorrow morning?",
+        "29. What is on my calendar tomorrow morning?",
+        "29. What is on my calendar tomorrow morning?"
+      ],
+      "warm_ms": [
+        2071.612654,
+        2092.053597,
+        2100.410606,
+        2182.307446,
+        2174.6096119999997
+      ]
+    }
+  ],
+  "load_ms": 0.053107,
+  "note": "Inference only, not microphone, endpoint, network, agent or audible response latency. Whisper CLI reloads its model for each decode.",
+  "runs": 5,
+  "spin": false,
+  "threads": 2
+}

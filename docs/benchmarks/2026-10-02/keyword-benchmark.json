@@ -1,0 +1,790 @@
+{
+  "model": "/home/supine/.config/accessor/assets/models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20",
+  "configurations": [
+    {
+      "chunk": 8,
+      "threads": 1,
+      "load_ms": 1320.4664189979667,
+      "files": [
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/wake-only.wav",
+          "median_ms": 96.29447399493074,
+          "runs_ms": [
+            105.0708080001641,
+            96.34129400365055,
+            96.29447399493074,
+            95.86184799991315,
+            96.08819300046889
+          ],
+          "rtf": 0.055930285835803964,
+          "detections": [
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ]
+          ]
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/wake-music.wav",
+          "median_ms": 228.656138999213,
+          "runs_ms": [
+            223.7167849962134,
+            227.9745410050964,
+            228.656138999213,
+            231.2953029977507,
+            232.69290699681733
+          ],
+          "rtf": 0.06425294128782395,
+          "detections": [
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ]
+          ]
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/wake-timer.wav",
+          "median_ms": 284.0241479934775,
+          "runs_ms": [
+            284.0241479934775,
+            286.34204500121996,
+            282.378981995862,
+            282.6501230010763,
+            288.566189003177
+          ],
+          "rtf": 0.06514688869625036,
+          "detections": [
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ]
+          ]
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/near-28.wav",
+          "median_ms": 108.29035300412215,
+          "runs_ms": [
+            106.44232099730289,
+            107.28469599416712,
+            108.29035300412215,
+            108.79908499919111,
+            109.46231699927012
+          ],
+          "rtf": 0.06165121150248913,
+          "detections": [
+            [],
+            [],
+            [],
+            [],
+            []
+          ]
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/near-39.wav",
+          "median_ms": 97.15710599994054,
+          "runs_ms": [
+            96.82689999317518,
+            97.75422199891182,
+            97.15710599994054,
+            97.09847300109686,
+            98.09923799912212
+          ],
+          "rtf": 0.05720381586013058,
+          "detections": [
+            [],
+            [],
+            [],
+            [],
+            []
+          ]
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/negative.wav",
+          "median_ms": 269.3857240010402,
+          "runs_ms": [
+            269.3857240010402,
+            271.73292099905666,
+            272.6889619952999,
+            269.3785400042543,
+            269.259004999185
+          ],
+          "rtf": 0.06400516155115968,
+          "detections": [
+            [],
+            [],
+            [],
+            [],
+            []
+          ]
+        }
+      ]
+    },
+    {
+      "chunk": 8,
+      "threads": 2,
+      "load_ms": 1245.9103040018817,
+      "files": [
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/wake-only.wav",
+          "median_ms": 135.30455499858363,
+          "runs_ms": [
+            137.82271099626087,
+            132.65666700317524,
+            135.30455499858363,
+            136.4508240003488,
+            134.6559290032019
+          ],
+          "rtf": 0.07858833557110895,
+          "detections": [
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ]
+          ]
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/wake-music.wav",
+          "median_ms": 305.26749799901154,
+          "runs_ms": [
+            304.58036399795674,
+            305.26749799901154,
+            306.22641000081785,
+            306.55559599836124,
+            304.42024399962975
+          ],
+          "rtf": 0.08578092288210513,
+          "detections": [
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.28
+              }
+            ]
+          ]
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/wake-timer.wav",
+          "median_ms": 393.071073005558,
+          "runs_ms": [
+            421.96859500108985,
+            391.75901799899293,
+            397.8561819967581,
+            393.071073005558,
+            383.30910399963614
+          ],
+          "rtf": 0.09015908549929652,
+          "detections": [
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ]
+          ]
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/near-28.wav",
+          "median_ms": 156.22225200058892,
+          "runs_ms": [
+            156.22225200058892,
+            153.49301399692195,
+            164.0064370003529,
+            152.91653900203528,
+            156.457003999094
+          ],
+          "rtf": 0.0889395115289433,
+          "detections": [
+            [],
+            [],
+            [],
+            [],
+            []
+          ]
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/near-39.wav",
+          "median_ms": 141.27931400435045,
+          "runs_ms": [
+            140.20382099988637,
+            148.60075600154232,
+            141.27931400435045,
+            142.41934000165202,
+            139.9860199962859
+          ],
+          "rtf": 0.08318193280844921,
+          "detections": [
+            [],
+            [],
+            [],
+            [],
+            []
+          ]
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/negative.wav",
+          "median_ms": 374.6188120057923,
+          "runs_ms": [
+            373.1301559964777,
+            379.49576800019713,
+            371.25318399921525,
+            374.6188120057923,
+            381.9761079939781
+          ],
+          "rtf": 0.08900819696904823,
+          "detections": [
+            [],
+            [],
+            [],
+            [],
+            []
+          ]
+        }
+      ]
+    },
+    {
+      "chunk": 16,
+      "threads": 1,
+      "load_ms": 1292.8132380038733,
+      "files": [
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/wake-only.wav",
+          "median_ms": 63.69663600344211,
+          "runs_ms": [
+            66.70046300132526,
+            63.4798140017665,
+            64.064417994814,
+            63.596153995604254,
+            63.69663600344211
+          ],
+          "rtf": 0.03699663034287123,
+          "detections": [
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ]
+          ]
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/wake-music.wav",
+          "median_ms": 154.74595200066688,
+          "runs_ms": [
+            154.551157997048,
+            154.62415399815654,
+            155.06999700301094,
+            155.16133699566126,
+            154.74595200066688
+          ],
+          "rtf": 0.04348399571489963,
+          "detections": [
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ]
+          ]
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/wake-timer.wav",
+          "median_ms": 201.54395899589872,
+          "runs_ms": [
+            201.54395899589872,
+            201.05804500053637,
+            200.58783399872482,
+            201.5498300024774,
+            203.6368080007378
+          ],
+          "rtf": 0.046228329375743726,
+          "detections": [
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ]
+          ]
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/near-28.wav",
+          "median_ms": 80.46757099509705,
+          "runs_ms": [
+            81.57956400100375,
+            80.46757099509705,
+            80.03351200022735,
+            80.99892300378997,
+            80.17501600261312
+          ],
+          "rtf": 0.04581131283523886,
+          "detections": [
+            [],
+            [],
+            [],
+            [],
+            []
+          ]
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/near-39.wav",
+          "median_ms": 63.31398399925092,
+          "runs_ms": [
+            63.31398399925092,
+            63.172526002745144,
+            64.02912500197999,
+            62.49771999864606,
+            64.04772800306091
+          ],
+          "rtf": 0.03727778266745224,
+          "detections": [
+            [],
+            [],
+            [],
+            [],
+            []
+          ]
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/negative.wav",
+          "median_ms": 189.52460699802032,
+          "runs_ms": [
+            189.67789700400317,
+            189.55836499662837,
+            189.52460699802032,
+            189.19277299573878,
+            189.41158300003735
+          ],
+          "rtf": 0.04503042295137175,
+          "detections": [
+            [],
+            [],
+            [],
+            [],
+            []
+          ]
+        }
+      ]
+    },
+    {
+      "chunk": 16,
+      "threads": 2,
+      "load_ms": 1277.6103729993338,
+      "files": [
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/wake-only.wav",
+          "median_ms": 83.77930899587227,
+          "runs_ms": [
+            84.60491900041234,
+            83.77930899587227,
+            83.68790900567546,
+            81.43697999912547,
+            117.34360999980709
+          ],
+          "rtf": 0.04866115888967787,
+          "detections": [
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.12
+              }
+            ]
+          ]
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/wake-music.wav",
+          "median_ms": 211.132872995222,
+          "runs_ms": [
+            226.273633998062,
+            211.132872995222,
+            206.94285300123738,
+            211.32343200588366,
+            209.25459899444832
+          ],
+          "rtf": 0.05932886014723743,
+          "detections": [
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ]
+          ]
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/wake-timer.wav",
+          "median_ms": 267.9364549985621,
+          "runs_ms": [
+            270.4207740025595,
+            265.4950940050185,
+            269.08029799960786,
+            265.6771170004504,
+            267.9364549985621
+          ],
+          "rtf": 0.06145683926797686,
+          "detections": [
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ],
+            [
+              {
+                "keyword": "twenty_nine",
+                "audio_received_seconds": 1.44
+              }
+            ]
+          ]
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/near-28.wav",
+          "median_ms": 106.93970399734098,
+          "runs_ms": [
+            105.11447600583779,
+            105.0230670007295,
+            106.93970399734098,
+            109.47104600199964,
+            107.6653609998175
+          ],
+          "rtf": 0.06088226814536919,
+          "detections": [
+            [],
+            [],
+            [],
+            [],
+            []
+          ]
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/near-39.wav",
+          "median_ms": 86.11464300338412,
+          "runs_ms": [
+            84.3760249990737,
+            86.81384899682598,
+            85.47537300182739,
+            86.11464300338412,
+            86.37623299728148
+          ],
+          "rtf": 0.05070227370944419,
+          "detections": [
+            [],
+            [],
+            [],
+            [],
+            []
+          ]
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/negative.wav",
+          "median_ms": 246.8722500052536,
+          "runs_ms": [
+            250.3881700031343,
+            246.8722500052536,
+            245.77446399780456,
+            247.06069700187072,
+            243.56920999707654
+          ],
+          "rtf": 0.058656034215174374,
+          "detections": [
+            [],
+            [],
+            [],
+            [],
+            []
+          ]
+        }
+      ]
+    }
+  ],
+  "note": "Offline CPU compute time, not live detection latency. Audio arrival position includes 80ms feeder quantization. Synthetic clips cannot establish room false-accept or miss rates."
+}

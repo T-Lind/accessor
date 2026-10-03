@@ -18,6 +18,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "Local STT test, /stt provider cartesia|local, or /stt engine parakeet",
     ),
     ("/noise", "Room-noise gate: /noise calibrate|on|off|reset"),
+    (
+        "/music",
+        "Files, ambience brown|rain|white, pause|resume|stop, or spotify ACTION",
+    ),
     ("/jev", "Save a TypeSafe API key for Jev: /jev key"),
     ("/computer", "Desktop control: /computer test|on|off"),
     ("/dictate", "Local-only private dictation: /dictate on|off"),

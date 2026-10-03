@@ -49,11 +49,232 @@ class RuntimeTests(unittest.TestCase):
     def config(self, key, value):
         self.cli("config", "set", key, value)
 
+    @unittest.skipIf(os.name == "nt", "Unix advisory-lock regression")
+    def test_memory_review_remains_responsive_when_store_is_busy(self):
+        import fcntl
+        app = self.app("mock")
+        lockpath = self.home / "settings" / "memory.lock"
+        with lockpath.open("a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            app.send("/memory review")
+            app.send("/status")
+            app.expect("WHITE: waiting for wake code", timeout=1)
+            if "Memory is busy" not in "".join(app.seen):
+                app.expect("Memory is busy", timeout=1)
+            app.send("/quit")
+            app.process.wait(timeout=2)
+        app.close()
+
+    def test_memory_forget_zero_rejects_without_mutating_first_entry(self):
+        self.cli("memory", "save", "fixture", "synthetic fact", "--source", "test")
+        app = self.app("mock")
+        app.send("/memory forget 0")
+        app.expect("Memory numbers start at 1")
+        entries = json.loads((self.home / "settings" / "memory.json").read_text())
+        self.assertEqual(entries[0]["text"], "synthetic fact")
+        self.assertFalse(entries[0]["deleted"])
+        app.send("/memory review")
+        app.expect("1. [project] fixture")
+        app.expect("Forget one with /memory forget N.")
+        app.send("/memory forget 1")
+        app.expect("Forgot fixture")
+
+    @unittest.skipIf(os.name == "nt", "Unix executable fixture")
+    def test_piper_waits_for_completed_file_receipt_and_reuses_worker(self):
+        assets = self.home / "assets"
+        voices = assets / "piper" / "voices"
+        voices.mkdir(parents=True)
+        (voices / "en_GB-alan-medium.onnx").touch()
+        (voices / "en_GB-alan-medium.onnx.json").write_text("{}")
+        binary = assets / "piper" / "bin" / "piper"
+        binary.parent.mkdir()
+        binary.write_text(f"#!{sys.executable}\n" + '''import pathlib, struct, sys, time
+folder = pathlib.Path(sys.argv[sys.argv.index('-d') + 1])
+for index, line in enumerate(sys.stdin):
+    data = bytes(22050 * 2)
+    header = struct.pack('<4sI4s4sIHHIIHH4sI', b'RIFF', 36 + len(data), b'WAVE', b'fmt ', 16, 1, 1, 22050, 44100, 2, 16, b'data', len(data))
+    path = folder / f'{index}.wav'
+    with path.open('wb') as output:
+        output.write(header + data[:4096])
+        output.flush()
+        time.sleep(0.2)
+        output.write(data[4096:])
+    print(path, flush=True)
+''')
+        binary.chmod(0o700)
+        self.env["ACC_ASSETS"] = str(assets)
+        report = json.loads(self.cli("tts", "benchmark", "--provider", "piper", "--runs", "3", "First line.\nSecond line.").stdout)
+        self.assertEqual(len(report["runs"]), 3)
+        for row in report["runs"]:
+            self.assertAlmostEqual(row["audio_seconds"], 1.0)
+            self.assertGreaterEqual(row["total_ms"], 190)
+
     def app(self, harness="codex"):
         self.config("routing.main", harness)
         app = App("--codex-bin", str(self.codex), env=self.env)
         self.addCleanup(app.close)
         return app
+
+    def music_fixture(self):
+        log = self.home / "music.jsonl"
+        self.env["ACC_MUSIC_TEST_LOG"] = str(log)
+        for name, mode in [("mpv", "mpv"), ("soloist", "soloist")]:
+            shim = self.home / name
+            shim.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(ROOT / "tests/fake_music.py"))} {mode} "$@"\n')
+            shim.chmod(0o700)
+            self.env["ACC_MPV_BIN" if mode == "mpv" else "ACC_SOLOIST_BIN"] = str(shim)
+        return log
+
+    @unittest.skipIf(os.name == "nt", "Unix local music IPC")
+    def test_music_live_controls_keep_paths_as_data_and_cancel_player(self):
+        log = self.music_fixture()
+        app = self.app("mock")
+        endpoint = next((self.home / "settings" / "sessions").glob("*.json"))
+        source = self.home / "song $ ; ' with spaces.mp3"
+        source.write_bytes(b"synthetic fixture")
+        def music(*args, ok=True):
+            return self.cli("music", "--session", str(endpoint), *args, ok=ok)
+        result = json.loads(music("play", str(source), "--volume", "17", "--repeat").stdout)
+        self.assertEqual(result["state"], "playing")
+        self.assertEqual(result["volume"], 17)
+        self.assertTrue(result["repeat"])
+        rows = [json.loads(line) for line in log.read_text().splitlines()]
+        self.assertIn(["loadfile", str(source), "replace"], [row.get("command") for row in rows])
+        pid = rows[0]["pid"]
+        music("pause")
+        self.assertTrue(json.loads(music("status").stdout)["paused"])
+        music("resume")
+        self.assertFalse(json.loads(music("status").stdout)["paused"])
+        music("volume", "9")
+        self.assertEqual(json.loads(music("status").stdout)["volume"], 9)
+        self.assertIn("No such file", music("play", str(self.home / "missing.mp3"), ok=False).stderr)
+        app.send("/cancel")
+        app.send("/status")
+        app.expect("WHITE:")
+        self.assertEqual(json.loads(music("status").stdout)["state"], "stopped")
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.01)
+        else:
+            self.fail("Cancelled music player remained alive")
+        app.send("/music ambience brown")
+        app.expect('"state":"playing"')
+        app.send("/music stop")
+        app.expect('"state":"stopped"')
+
+    @unittest.skipIf(os.name == "nt", "Unix fixture executable")
+    def test_music_failed_load_and_unpaired_spotify_are_visible(self):
+        self.music_fixture()
+        self.env["ACC_MUSIC_TEST_FAIL"] = "1"
+        app = self.app("mock")
+        app.send("/music ambience rain")
+        app.expect("loading failed")
+        app.send("/music status")
+        app.expect('"state":"stopped"')
+        app.send("/music spotify play spotify:track:2fFlmlePz9hrVMv4LvdQxN")
+        app.expect("not logged in")
+        endpoint = next((self.home / "settings" / "sessions").glob("*.json"))
+        attached = dict(self.env, ACC_CONTROL_ENDPOINT=endpoint.read_text())
+        frame = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "music_control", "arguments": {"backend": "spotify", "action": "play", "source": "spotify:track:2fFlmlePz9hrVMv4LvdQxN"}}}
+        initialize = {"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-11-25"}}
+        initialized = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+        result = subprocess.run([str(BINARY), "mcp"], input="".join(json.dumps(item)+"\n" for item in [initialize, initialized, frame]), env=attached, cwd=ROOT, capture_output=True, text=True, timeout=10)
+        reply = json.loads(result.stdout.splitlines()[-1])["result"]
+        self.assertTrue(reply["isError"])
+        self.assertIn("not logged in", reply["content"][0]["text"])
+        app.send("/status")
+        app.expect("WHITE:")
+
+    @unittest.skipIf(os.name == "nt", "Unix fixture executable")
+    def test_music_spotify_passes_only_validated_commands(self):
+        log = self.music_fixture()
+        app = self.app("mock")
+        app.send("/music spotify play spotify:playlist:2fFlmlePz9hrVMv4LvdQxN")
+        app.expect("Soloist accepted the command")
+        app.send("/music spotify volume 22")
+        app.expect("Soloist accepted the command")
+        app.send("/music spotify play --api-key")
+        app.expect("Use a Spotify track")
+        rows = [json.loads(line) for line in log.read_text().splitlines()]
+        self.assertEqual([row["args"] for row in rows], [["ctl", "play", "spotify:playlist:2fFlmlePz9hrVMv4LvdQxN"], ["ctl", "volume", "22"]])
+
+    @unittest.skipIf(os.name == "nt", "Unix local music IPC")
+    def test_lock_stops_owned_music_and_blocks_new_playback(self):
+        log = self.music_fixture()
+        app = self.app("mock")
+        app.send("/music ambience white")
+        app.expect('"state":"playing"')
+        pid = json.loads(log.read_text().splitlines()[0])["pid"]
+        app.send("/password")
+        app.expect("Enter at least three words")
+        app.send("marble otter meadow lantern")
+        app.expect("Repeat the passphrase")
+        app.send("marble otter meadow lantern")
+        app.expect("Locked. Work and playback stopped")
+        app.send("/music ambience brown")
+        app.expect("Locked. Use /unlock")
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.01)
+        else:
+            self.fail("Locked session left music playing")
+
+    @unittest.skipIf(os.name == "nt", "Unix executable fixture")
+    def test_cancel_kills_piper_synthesis_before_next_request(self):
+        assets = self.home / "assets"
+        voices = assets / "piper" / "voices"
+        voices.mkdir(parents=True)
+        (voices / "en_GB-alan-medium.onnx").touch()
+        (voices / "en_GB-alan-medium.onnx.json").write_text("{}")
+        binary = assets / "piper" / "bin" / "piper"
+        binary.parent.mkdir()
+        log = self.home / "piper-requests.jsonl"
+        binary.write_text(f"#!{sys.executable}\n" + f'''import json, os, pathlib, sys, time
+for line in sys.stdin:
+    with pathlib.Path({str(log)!r}).open('a') as output:
+        output.write(json.dumps([os.getpid(), line.strip()]) + '\\n')
+    time.sleep(10)
+''')
+        binary.chmod(0o700)
+        self.env["ACC_ASSETS"] = str(assets)
+        self.config("tts.provider", "piper")
+        app = App("--agent", "mock", "--speak", env=self.env)
+        self.addCleanup(app.close)
+        pids = []
+        for index, text in enumerate(["First request", "Second request"]):
+            app.send("/tts test " + text)
+            app.expect("Testing piper voice")
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                rows = log.read_text().splitlines() if log.exists() else []
+                if len(rows) > index:
+                    break
+                time.sleep(0.01)
+            self.assertEqual(len(rows), index + 1)
+            pid, received = json.loads(rows[-1])
+            self.assertEqual(received, text)
+            pids.append(pid)
+            app.send("/cancel")
+            app.send("/status")
+            app.expect("WHITE:")
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail("Cancelled Piper worker remained alive")
+        self.assertNotEqual(*pids)
 
     @unittest.skipIf(os.name == "nt", "Unix clipboard shim")
     def test_copy_preserves_answer_as_data_and_jobs_stays_local(self):
@@ -216,6 +437,7 @@ class RuntimeTests(unittest.TestCase):
             return json.loads(reply["content"][0]["text"])
 
         self.assertTrue(control("status")["awake"])
+        self.assertEqual(control(None,"music_control",{"action":"status"})["state"],"stopped")
         changed=control(None,"settings_update",{"changes":{"tts.speed":1.2,"tts.volume":0.65,"routing.reasoning":"high","sounds.think":0}})
         self.assertIn("next turn",changed["receipt"])
         live_settings=control(None,"settings_read",{})["values"]

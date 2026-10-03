@@ -24,3 +24,8 @@ Local neural speech:
 - The separate Kokoro environment includes phonemizer/espeak-ng dependencies, whose GPL and other upstream license requirements apply when redistributing them. Keep their package license notices; Accessor does not relicense these components.
 
 Terminal UI uses Ratatui and Crossterm. Credential storage uses keyring with native OS backends. These Rust dependencies and their licenses are recorded in package metadata and Cargo.lock.
+
+Optional music players run as separate processes and are not committed or redistributed with Accessor:
+
+- [MPV](https://mpv.io/): local audio decoding and playback over its local IPC interface. Keep the notices and licenses supplied by your MPV distribution, including those for its dependencies.
+- [Spotify Soloist](https://developer.spotify.com/documentation/soloist/): Spotify's official Linux Connect player. Each user downloads it directly from Spotify and supplies their own account/key. Spotify's terms and the archive's third-party notices apply; do not redistribute its binary in an Accessor release.

@@ -1,0 +1,20 @@
+{
+  "reports": [
+    {
+      "wake_file": "docs/benchmarks/2026-10-02/generated-clips/wake-only.wav",
+      "speaker_file": "docs/benchmarks/2026-10-02/generated-clips/negative.wav",
+      "elapsed_ms": 11632.205551002698,
+      "exit_code": 101,
+      "stdout": "\nrunning 1 test\ntest audio::tests::real_wake_recognition_with_thinking_audio_reference ... FAILED\n\nfailures:\n\nfailures:\n    audio::tests::real_wake_recognition_with_thinking_audio_reference\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 191 filtered out; finished in 11.16s\n\n",
+      "stderr": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.41s\n     Running unittests src/main.rs (target/debug/deps/acc-0c3906134352d9c2)\n\nthread 'audio::tests::real_wake_recognition_with_thinking_audio_reference' (9221) panicked at src/audio.rs:2363:13:\nWake phrase was lost in the active-output pipeline\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\nerror: test failed, to rerun pass `--bin acc`\n"
+    },
+    {
+      "wake_file": "tests/fixtures/voice-benchmark.wav",
+      "speaker_file": "docs/benchmarks/2026-10-02/generated-clips/negative.wav",
+      "elapsed_ms": 16514.59312500083,
+      "exit_code": 101,
+      "stdout": "\nrunning 1 test\ntest audio::tests::real_wake_recognition_with_thinking_audio_reference ... FAILED\n\nfailures:\n\nfailures:\n    audio::tests::real_wake_recognition_with_thinking_audio_reference\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 191 filtered out; finished in 16.02s\n\n",
+      "stderr": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.43s\n     Running unittests src/main.rs (target/debug/deps/acc-0c3906134352d9c2)\n\nthread 'audio::tests::real_wake_recognition_with_thinking_audio_reference' (9244) panicked at src/audio.rs:2363:13:\nWake phrase was lost in the active-output pipeline\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\nerror: test failed, to rerun pass `--bin acc`\n"
+    }
+  ]
+}

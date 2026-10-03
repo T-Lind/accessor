@@ -1,7 +1,7 @@
 //! Room-noise calibration and a conservative noise gate for the STT path.
 //!
 //! Wake detection and segmentation are deliberately untouched: the gate is
-//! applied only to completed utterances just before they are recognized, so a
+//! applied only to completed awake utterances just before they are recognized, so a
 //! noisy room does not distort barge-in timing or hide soft wake words.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
