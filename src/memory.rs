@@ -116,14 +116,16 @@ impl Store {
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Entry>> {
         ensure!(query.len() <= 4000, "Memory query too long");
         self.locked(|entries| {
-            let words = words(query);
+            let exact = retrieval_words(query);
+            let expanded = expand(&exact);
             let mut found: Vec<_> = entries
                 .iter()
                 .filter(|e| e.scope == "global" || e.scope == self.project)
                 .filter_map(|e| {
-                    let haystack = words_for(e);
-                    let score = words.intersection(&haystack).count();
-                    (words.is_empty() || score > 0).then_some((score, e.clone()))
+                    let haystack = retrieval_words(&format!("{} {}", e.key, e.text));
+                    let score = exact.intersection(&haystack).count() * 4
+                        + expanded.intersection(&expand(&haystack)).count();
+                    (query.trim().is_empty() || score > 0).then_some((score, e.clone()))
                 })
                 .collect();
             found.sort_by(|a, b| {
@@ -341,8 +343,39 @@ fn words(text: &str) -> HashSet<String> {
         .map(str::to_owned)
         .collect()
 }
-fn words_for(entry: &Entry) -> HashSet<String> {
-    words(&format!("{} {}", entry.key, entry.text))
+fn retrieval_words(text: &str) -> HashSet<String> {
+    words(text)
+        .into_iter()
+        .filter(|w| {
+            ![
+                "a", "an", "the", "i", "me", "my", "is", "are", "do", "does", "what", "which",
+                "please", "of", "to", "for", "and", "in", "it", "with",
+            ]
+            .contains(&w.as_str())
+        })
+        .collect()
+}
+fn expand(terms: &HashSet<String>) -> HashSet<String> {
+    let mut out = terms.clone();
+    for group in [
+        &["concise", "brief", "brevity", "short", "succinct"][..],
+        &[
+            "prefer",
+            "preference",
+            "preferences",
+            "favourite",
+            "favorite",
+        ],
+        &["music", "song", "songs"],
+        &["code", "coding", "programming"],
+        &["deadline", "due", "finish"],
+        &["timezone", "zone"],
+    ] {
+        if group.iter().any(|w| terms.contains(*w)) {
+            out.extend(group.iter().map(|w| (*w).to_owned()));
+        }
+    }
+    out
 }
 
 /// True when two facts say essentially the same thing, so a re-worded
@@ -636,6 +669,65 @@ fn store_candidates_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn paraphrase_corpus_preserves_scopes_revisions_and_tombstones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a_dir = tmp.path().join("a");
+        let b_dir = tmp.path().join("b");
+        std::fs::create_dir(&a_dir).unwrap();
+        std::fs::create_dir(&b_dir).unwrap();
+        let a = Store::at(tmp.path().join("memory.json"), &a_dir).unwrap();
+        let b = Store::at(tmp.path().join("memory.json"), &b_dir).unwrap();
+        a.save(
+            "global",
+            "brevity",
+            "Keep replies concise.",
+            "user stated",
+            0,
+        )
+        .unwrap();
+        a.save(
+            "project",
+            "development",
+            "Rust programming.",
+            "user stated",
+            0,
+        )
+        .unwrap();
+        a.save(
+            "project",
+            "soundtrack",
+            "Instrumental music.",
+            "user stated",
+            0,
+        )
+        .unwrap();
+        for (query, key) in [
+            ("short answers", "brevity"),
+            ("coding", "development"),
+            ("songs", "soundtrack"),
+        ] {
+            assert_eq!(a.search(query, 5).unwrap()[0].key, key);
+        }
+        assert!(a.search("astronomy", 5).unwrap().is_empty());
+        assert!(a.search("what is my", 5).unwrap().is_empty());
+        assert!(b.search("coding", 5).unwrap().is_empty());
+        a.save(
+            "global",
+            "brevity",
+            "Long detailed explanations.",
+            "user corrected",
+            1,
+        )
+        .unwrap();
+        assert!(a
+            .search("short answers", 5)
+            .unwrap()
+            .iter()
+            .all(|e| e.text != "Keep replies concise."));
+        a.forget("project", "soundtrack", 1).unwrap();
+        assert!(a.search("songs", 5).unwrap().is_empty());
+    }
     #[test]
     fn scopes_corrections_and_deletion_do_not_leak_or_resurrect() {
         let tmp = tempfile::tempdir().unwrap();

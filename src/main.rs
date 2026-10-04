@@ -7,11 +7,14 @@ mod computer;
 mod config;
 mod connectors;
 mod control;
+mod conversation;
 mod dashboard;
 mod desktop;
 mod echo;
 mod http;
+mod human;
 mod identity;
+mod jobs;
 mod journal;
 mod limits;
 mod markdown;
@@ -40,6 +43,11 @@ mod wake;
 mod worker;
 #[allow(clippy::large_enum_variant)]
 pub enum Input {
+    Human(human::Request),
+    StartJob {
+        job: Box<jobs::Job>,
+        prompt: String,
+    },
     Control(control::Request),
     Configure {
         key: String,
@@ -102,6 +110,7 @@ pub enum Input {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let result = cli::entry().await;
+    jobs::flush().await;
     usage::flush();
     masterlog::flush();
     result

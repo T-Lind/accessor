@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/T-Lind/accessor/main/scripts/instal
 
 The installer detects the platform, downloads the matching archive, verifies its
 SHA-256 against the release `SHA256SUMS`, and installs to `$ACC_BIN_DIR`
-(default `~/.local/bin`). Pin a version with `ACC_VERSION=0.34.3`.
+(default `~/.local/bin`). Pin a version with `ACC_VERSION=0.37.0`.
 
 **Windows x64 (PowerShell)**
 
@@ -32,7 +32,7 @@ irm https://raw.githubusercontent.com/T-Lind/accessor/main/scripts/install.ps1 |
 ```
 
 Installs into `%LOCALAPPDATA%\Programs\accessor` and adds it to your user `PATH`.
-Pass `-Version 0.34.3` to pin a release when running a saved copy of the script.
+Pass `-Version 0.37.0` to pin a release when running a saved copy of the script.
 
 ### Build from source
 
@@ -45,6 +45,26 @@ acc doctor
 
 On Windows from a checkout you can also run `.\install-accessor.ps1`, and the
 older launcher still works: `.\start-accessor.ps1 -WakeCode 29 -Speak`.
+
+### Keep the local command on your development build
+
+On Linux or macOS, run this from the checkout to make `acc` follow each new
+release build automatically:
+
+```sh
+cargo build --release --locked --bin acc
+mkdir -p "${CARGO_HOME:-$HOME/.cargo}/bin"
+ln -sf "$PWD/target/release/acc" "${CARGO_HOME:-$HOME/.cargo}/bin/acc"
+command -v acc
+acc --version
+target/release/acc --version
+```
+
+Ensure that Cargo's `bin` directory comes first among directories containing
+`acc` on your `PATH`. The two version commands should agree with `Cargo.toml`.
+The link follows later successful builds without reinstalling; restart any
+already-running Accessor session to use them. Keep this checkout in place while
+using the link. On Windows, rerun `.\install-accessor.ps1` after building.
 
 > **Unsigned binaries.** The macOS build is unnotarized, so Gatekeeper
 > quarantines it on first launch — right-click → **Open**, or run
@@ -127,6 +147,10 @@ Everything day to day is available in the screen:
 | `/devices` | List microphones in the conversation area |
 | `/connectors` | Check the agent's connected apps |
 | `/agent` | Open Codex's native UI directly |
+| `/jobs`, `/task new PROMPT` | Inspect saved work or start a background worker |
+| `/task show ID`, `/task resume ID [TEXT]` | Inspect a task receipt or explicitly continue it |
+| `/steer TEXT`, `/task cancel ID` | Guide an active Codex task or cancel a named worker |
+| `/approvals`, `/capabilities` | Open human question/permission controls or inspect harness support |
 | `/update` | Check Codex / Claude Code / Antigravity and apply CLI updates |
 | `/status`, `/help` | Inspect state or controls |
 | `/quit`, Ctrl+C | Stop Accessor and its agent connection |
@@ -153,6 +177,9 @@ acc notifications list --unread
 acc memory list
 acc journal show
 acc update                      # update agent CLIs
+acc jobs list                   # inspect saved worker receipts
+acc jobs show TASK_ID
+acc approvals                   # open human controls for a running session
 acc mcp                         # serve MCP over stdio
 ```
 
@@ -182,6 +209,7 @@ See [Features](features.md#speech) and
 
 ## Next steps
 
+- [Spoken test transcript](tasks.md#word-for-word-voice-test) — exact phrases and expected results
 - [Features](features.md) — the full capability tour
 - [Architecture](architecture.md) — how the pipeline fits together
 - [Configuration](configuration.md) — every setting that matters

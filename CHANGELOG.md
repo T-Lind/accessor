@@ -6,6 +6,37 @@ GitHub, and full notes are generated there. This file starts at 0.34.3 — see t
 [releases page](https://github.com/T-Lind/accessor/releases) and `git log` for
 earlier history.
 
+## [0.37.0] - 2026-10-04
+
+### Added
+
+- Wake and speech interruption preserve active work. Spoken task status,
+  catch-up, live Codex steering, explicit cancellation and speech continuation
+  support hands-free coding, research and other long-running tasks.
+- Local request drafting with “let me explain”, “wait”, “scratch that”,
+  “discard the draft” and “send that”; pauses do not submit unfinished drafts.
+- Durable worker receipts, explicit resume, optional detached Git worktrees,
+  project permission profiles and a configurable one-hour worker deadline.
+  Codex workers resume native threads; other harnesses receive a bounded handoff.
+- An authenticated loopback browser panel for questions and permissions, plus
+  typed structured answers and a harness-capabilities view. Speech cannot grant
+  permissions or answer consent forms.
+- Optional attention-prefixed wake phrases and offline wake, Smart Turn v3 and
+  successor-Piper evaluation scripts. The default speech engines are unchanged.
+- A spoken test transcript and a local launcher workflow that follows each new
+  release build automatically.
+
+### Fixed
+
+- Worker progress speech is brief and rate-limited; Codex text previews are
+  bounded and cannot execute Accessor directives.
+- Sleep cues no longer block the speech/UI loop, and local music ducks during
+  user capture and recognition as well as spoken replies.
+- Memory search recognizes a small curated set of synonyms while preserving
+  exact-match priority, project scope, revisions and deletion tombstones.
+- Windows builds account for the local player's retained temporary directory,
+  fixing a platform-specific dead-code error in the strict Clippy gate.
+
 ## [0.36.0] - 2026-10-02
 
 ### Added

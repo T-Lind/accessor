@@ -4,6 +4,7 @@ use anyhow::{ensure, Result};
 #[derive(Debug)]
 pub struct WakeCode {
     aliases: Vec<Vec<String>>,
+    attention: bool,
 }
 
 fn tokens(text: &str) -> Vec<(usize, usize, String)> {
@@ -28,6 +29,12 @@ impl WakeCode {
     pub fn in_probe(&self, text: &str) -> bool {
         let words = tokens(text);
         (0..words.len()).any(|skip| {
+            if self.attention {
+                return words
+                    .get(skip)
+                    .is_some_and(|w| ["hey", "hi", "ok", "okay"].contains(&w.2.as_str()))
+                    && self.strip_at(text, &words, skip + 1).is_some();
+            }
             let previous_number = skip > 0
                 && (words[skip - 1].2.bytes().all(|b| b.is_ascii_digit())
                     || [
@@ -96,13 +103,20 @@ impl WakeCode {
             "wake aliases cannot be empty"
         );
         aliases.sort_by_key(|v| std::cmp::Reverse(v.len()));
-        Ok(Self { aliases })
+        Ok(Self {
+            aliases,
+            attention: false,
+        })
+    }
+    pub fn with_attention(mut self, required: bool) -> Self {
+        self.attention = required;
+        self
     }
     /// Returns only the text after an exact prefix. Never searches mid-sentence.
     /// Optional leading attention words ("hey", "hi", "ok", "okay") are allowed.
     pub fn strip<'a>(&self, text: &'a str) -> Option<&'a str> {
         let words = tokens(text);
-        let mut offsets = vec![0];
+        let mut offsets = if self.attention { Vec::new() } else { vec![0] };
         if words
             .first()
             .is_some_and(|w| ["hey", "hi", "ok", "okay"].contains(&w.2.as_str()))
@@ -151,6 +165,14 @@ impl WakeCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn strict_attention_also_applies_to_playback_probes() {
+        let w = WakeCode::new("29", &[]).unwrap().with_attention(true);
+        assert_eq!(w.strip("29 hello"), None);
+        assert!(!w.in_probe("I am 29 years old"));
+        assert_eq!(w.strip("hey twenty nine hello"), Some("hello"));
+        assert!(w.in_probe("speech hey twenty nine hello"));
+    }
     #[test]
     fn deliberate_prefixes() {
         let w = WakeCode::new("29", &[]).unwrap();

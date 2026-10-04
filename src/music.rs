@@ -171,7 +171,7 @@ impl Service {
                         else { let _ = input.try_send(crate::Input::Warning(format!("Music: {value}"))); }
                     }
                     _ = tick.tick() => {
-                        if let Err(e) = player.duck(capture.is_playing()).await {
+                        if let Err(e) = player.duck(capture.is_playing() || capture.holding()).await {
                             player.local = None;
                             let _ = input.try_send(crate::Input::Warning(format!("Music stopped: {e:#}")));
                         }
@@ -416,7 +416,7 @@ impl Player {
         }
         #[cfg(not(unix))]
         {
-            let _ = (local, command);
+            let _ = (&local.dir, command);
             bail!("Local music IPC currently requires Linux or macOS");
         }
     }

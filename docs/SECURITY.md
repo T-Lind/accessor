@@ -17,6 +17,11 @@ again; while awake, “lock” alone also works. During audible output, the exis
 wake-interruption limitations still apply; keyboard `/lock` is the reliable
 fallback.
 
+With `wake-attention=true`, include an attention prefix in wake and unlock
+phrases, for example “hey twenty-nine”, then “unlock [your passphrase]”. The
+attention prefix reduces accidental activation; it does not identify a speaker
+or add authentication.
+
 Spoken unlocking is enabled by default. Both the wake and passphrase use local
 transcription, with cloud STT/streaming disabled while locked. Unlock phrases never enter agent history,
 relevance checks, activity messages, or analytics. Case, punctuation and whitespace
@@ -48,6 +53,15 @@ voice; and clears the dashboard and in-memory audio cache. Scheduled work, alarm
 and incoming events wait while locked. Already claimed jobs are marked interrupted
 instead of replayed. Work that becomes due while locked can run after unlocking.
 Actions already performed by an external service cannot be undone by locking.
+
+Locking also invalidates human-panel question/approval requests and clears the
+local request draft. The loopback panel has a separate random session credential;
+voice cannot approve requests or answer structured consent forms. Saved worker
+receipts and retained worktrees remain on disk for inspection. They contain
+objectives, progress and bounded results and should be treated as private data.
+Resume is explicit and does not restore pending approvals or undo file changes.
+See [task permissions](tasks.md#questions-and-permissions-without-typing-commands)
+for project profiles, request expiry and harness differences.
 
 There is one live Accessor interface per settings directory. File locking also
 prevents a second interface from using stale password state or a separate guess

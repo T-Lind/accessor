@@ -28,6 +28,17 @@ The offline suites above are the gate. Live microphone/noise, real-model WAV,
 Cartesia, and Linux/macOS hardware checks are separate and are not required for
 every commit.
 
+## Local command after building (required)
+
+- After every successful local release build, ensure the `acc` command on the
+  developer's `PATH` runs this checkout's `target/release/acc`, rather than an
+  older installed copy. On Unix, link the local `acc` launcher to the absolute
+  release-binary path; subsequent builds then update it automatically.
+- Verify both `acc --version` and `target/release/acc --version` match the
+  version in `Cargo.toml`. Check `command -v acc` if they differ, and fix the
+  local launcher before reporting the build complete.
+- Existing Accessor sessions need a restart to use a rebuilt binary.
+
 ## Conventions
 
 - Match the surrounding code style; this codebase favors compact, idiomatic Rust.

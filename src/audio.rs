@@ -1608,6 +1608,20 @@ pub fn chime(volume: f32) -> Result<()> {
 pub fn sleep_chime(volume: f32) -> Result<()> {
     play_cue(CueKind::Sleep, volume)
 }
+pub fn queue_sleep_chime(volume: f32, input: tokio::sync::mpsc::Sender<crate::Input>) {
+    static PLAYING: AtomicBool = AtomicBool::new(false);
+    if PLAYING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    tokio::task::spawn_blocking(move || {
+        if let Err(e) = sleep_chime(volume) {
+            let _ = input.try_send(crate::Input::Warning(format!(
+                "Sleep chime unavailable: {e}"
+            )));
+        }
+        PLAYING.store(false, Ordering::SeqCst);
+    });
+}
 /// Rising arpeggio played once when Accessor has finished starting and is
 /// ready for the wake code.
 pub fn ready_chime(volume: f32) -> Result<()> {

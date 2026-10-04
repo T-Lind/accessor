@@ -21,6 +21,16 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
+    /// Open the authenticated human controls for a running session.
+    Approvals {
+        #[arg(long)]
+        url: bool,
+    },
+    /// Inspect persistent task receipts without starting an agent.
+    Jobs {
+        #[command(subcommand)]
+        action: Option<JobsCommand>,
+    },
     /// Configure the local lock using masked terminal prompts (never arguments).
     Password {
         #[arg(value_parser = ["set", "remove", "status"], default_value = "status")]
@@ -143,6 +153,37 @@ enum Commands {
     },
 }
 #[derive(Subcommand)]
+enum JobsCommand {
+    List,
+    Show {
+        id: String,
+    },
+    Patch {
+        id: String,
+    },
+    /// Deliberate workspace-scoped launch authorization; never available through speech/MCP.
+    Profile {
+        #[command(subcommand)]
+        action: ProfileCommand,
+    },
+}
+#[derive(Subcommand)]
+enum ProfileCommand {
+    List,
+    Set {
+        name: String,
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        #[arg(long)]
+        write: bool,
+        #[arg(long,value_parser=["user","auto"],default_value="user")]
+        reviewer: String,
+    },
+    Remove {
+        name: String,
+    },
+}
+#[derive(Subcommand)]
 enum MemoryCommand {
     List,
     Search {
@@ -240,6 +281,9 @@ pub struct Run {
     pub workspace: PathBuf,
     #[arg(long)]
     pub workspace_write: bool,
+    /// Apply a saved permission profile only when its canonical workspace matches.
+    #[arg(long, conflicts_with = "workspace_write")]
+    pub project_profile: Option<String>,
     #[arg(long)]
     pub codex_bin: Option<PathBuf>,
     #[arg(long, conflicts_with = "no_speak")]
@@ -558,6 +602,37 @@ fn normalized(mut args: Vec<OsString>) -> Vec<OsString> {
 pub async fn entry() -> Result<()> {
     let cli = Cli::parse_from(normalized(std::env::args_os().collect()));
     match cli.command {
+        Commands::Approvals { url } => {
+            let address = crate::human::latest_url()?;
+            if url {
+                println!("{address}");
+            } else {
+                println!("{}", crate::human::open(&address).await?);
+            }
+            Ok(())
+        }
+        Commands::Jobs { action } => {
+            println!(
+                "{}",
+                match action.unwrap_or(JobsCommand::List) {
+                    JobsCommand::List => crate::jobs::report()?,
+                    JobsCommand::Show { id } => crate::jobs::get(&id)?.describe(),
+                    JobsCommand::Patch { id } => crate::jobs::patch(&id)?,
+                    JobsCommand::Profile { action } => match action {
+                        ProfileCommand::Set {
+                            name,
+                            workspace,
+                            write,
+                            reviewer,
+                        } => crate::jobs::set_profile(&name, &workspace, write, &reviewer)?,
+                        ProfileCommand::Remove { name } => crate::jobs::remove_profile(&name)?,
+                        ProfileCommand::List =>
+                            serde_json::to_string_pretty(&crate::jobs::profiles()?)?,
+                    },
+                }
+            );
+            Ok(())
+        }
         Commands::Music { session, action } => {
             use crate::music::{Action, Backend, Request};
             let mut request = Request {
@@ -1175,7 +1250,8 @@ async fn wake_test(
     crate::stt_models::ensure_ready(&assets, &engine, |msg| eprintln!("{msg}")).await?;
     let floor_db = floor_db.unwrap_or(s.stt.noise_floor_db);
     let denoise = denoise.unwrap_or(s.stt.denoise);
-    let wake = crate::wake::WakeCode::new(&wake_code, &wake_alias)?;
+    let wake =
+        crate::wake::WakeCode::new(&wake_code, &wake_alias)?.with_attention(s.wake_attention);
     let modes: Vec<(&str, bool)> = match noise_gate.as_str() {
         "on" => vec![("on", true)],
         "off" => vec![("off", false)],

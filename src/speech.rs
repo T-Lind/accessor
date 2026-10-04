@@ -680,10 +680,18 @@ pub struct Job {
     pub task: tokio::task::JoinHandle<Result<()>>,
     stop: Arc<AtomicBool>,
     playing: Arc<AtomicBool>,
+    cursor: Arc<std::sync::Mutex<(Vec<String>, usize)>>,
 }
 impl Job {
     pub fn is_playing(&self) -> bool {
         self.playing.load(Ordering::SeqCst)
+    }
+    /// Resume from the last fully played synthesis chunk, never from an
+    /// estimated word position. An interrupted chunk is repeated in full.
+    pub fn remaining(&self) -> Option<String> {
+        let cursor = self.cursor.lock().unwrap();
+        let text = cursor.0[cursor.1..].join(" ");
+        (!text.is_empty()).then_some(text)
     }
     pub fn cancel(&self) {
         self.stop.store(true, Ordering::SeqCst);
@@ -712,6 +720,9 @@ impl Drop for Synthesis {
     }
 }
 pub fn start(text: String, settings: Tts, capture: Arc<crate::audio::SpeechState>) -> Job {
+    let parts = speak_chunks_for(&text, &settings.provider);
+    let cursor = Arc::new(std::sync::Mutex::new((parts.clone(), 0)));
+    let position = cursor.clone();
     let stop = Arc::new(AtomicBool::new(false));
     let paused = capture.playback_pause();
     let pause = paused.clone();
@@ -719,7 +730,6 @@ pub fn start(text: String, settings: Tts, capture: Arc<crate::audio::SpeechState
     let playing = Arc::new(AtomicBool::new(false));
     let playback = playing.clone();
     let task = tokio::spawn(async move {
-        let parts = speak_chunks_for(&text, &settings.provider);
         if parts.is_empty() || settings.provider == "off" {
             return Ok(());
         }
@@ -733,27 +743,33 @@ pub fn start(text: String, settings: Tts, capture: Arc<crate::audio::SpeechState
             }
             let capture = capture.clone();
             let pause = pause.clone();
-            let flag = flag.clone();
+            let play_flag = flag.clone();
             let playback = playback.clone();
             let speed = settings.speed;
             let spoken = spoken_text(&text);
             tokio::task::spawn_blocking(move || {
                 capture.playback(true);
                 playback.store(true, Ordering::SeqCst);
-                let result = crate::audio::speak_system_direct(&spoken, speed, &flag, &pause);
+                let result = crate::audio::speak_system_direct(&spoken, speed, &play_flag, &pause);
                 playback.store(false, Ordering::SeqCst);
                 capture.playback(false);
                 result
             })
             .await??;
+            if !flag.load(Ordering::SeqCst) {
+                position.lock().unwrap().1 = parts.len();
+            }
             return Ok(());
         }
         if settings.provider == "cartesia" && settings.streaming {
-            for part in parts {
+            for (index, part) in parts.iter().enumerate() {
                 if flag.load(Ordering::SeqCst) {
                     break;
                 }
-                stream_cartesia(&part, &settings, capture.clone(), playback.clone()).await?;
+                stream_cartesia(part, &settings, capture.clone(), playback.clone()).await?;
+                if !flag.load(Ordering::SeqCst) {
+                    position.lock().unwrap().1 = index + 1;
+                }
             }
             return Ok(());
         }
@@ -782,17 +798,20 @@ pub fn start(text: String, settings: Tts, capture: Arc<crate::audio::SpeechState
             }
             let capture = capture.clone();
             let pause = pause.clone();
-            let flag = flag.clone();
+            let play_flag = flag.clone();
             let playback = playback.clone();
             tokio::task::spawn_blocking(move || {
                 capture.playback(true);
                 playback.store(true, Ordering::SeqCst);
-                let result = crate::audio::play_wav(&wav, &flag, pause, settings.volume);
+                let result = crate::audio::play_wav(&wav, &play_flag, pause, settings.volume);
                 playback.store(false, Ordering::SeqCst);
                 capture.playback(false);
                 result
             })
             .await??;
+            if !flag.load(Ordering::SeqCst) {
+                position.lock().unwrap().1 = i + 1;
+            }
         }
         Ok(())
     });
@@ -800,6 +819,7 @@ pub fn start(text: String, settings: Tts, capture: Arc<crate::audio::SpeechState
         task,
         stop,
         playing,
+        cursor,
     }
 }
 pub fn local_python(s: &config::Settings) -> Result<std::path::PathBuf> {

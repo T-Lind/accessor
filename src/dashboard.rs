@@ -29,8 +29,26 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/devices", "List microphones"),
     ("/mic", "Microphone status; /mic reconnect retries now"),
     ("/repeat", "Replay the last answer without a model call"),
+    (
+        "/continue-speaking",
+        "Resume output from its last completed speech chunk",
+    ),
     ("/copy", "Copy the last answer to your clipboard"),
     ("/jobs", "Show active work and the waiting queue"),
+    (
+        "/task",
+        "new [--isolated] PROMPT; show|resume|patch|cancel ID; steer TEXT",
+    ),
+    (
+        "/steer",
+        "Send guidance to the active task without cancelling it",
+    ),
+    ("/quiet", "Silence output while work continues"),
+    (
+        "/approvals",
+        "Open accessible human approvals and question controls",
+    ),
+    ("/capabilities", "Show supported harness controls"),
     ("/connectors", "Show agent connections"),
     ("/analytics", "Lifetime and past-week cost/call breakdown"),
     ("/usage", "Subscription quota bars and reset times"),
@@ -113,8 +131,14 @@ pub enum LocalCommand {
     Compact,
     Microphone(bool),
     Repeat,
+    ContinueSpeaking,
     Copy,
     Jobs,
+    Task(String),
+    Steer(String),
+    Quiet,
+    Approvals,
+    Capabilities,
     Update {
         check: bool,
     },
@@ -139,8 +163,14 @@ pub fn parse(text: &str, s: &Settings) -> Result<Option<LocalCommand>> {
         ["/mic"] => LocalCommand::Microphone(false),
         ["/mic", "reconnect"] => LocalCommand::Microphone(true),
         ["/repeat"] | ["/replay"] => LocalCommand::Repeat,
+        ["/continue-speaking"] => LocalCommand::ContinueSpeaking,
         ["/copy"] => LocalCommand::Copy,
         ["/jobs"] => LocalCommand::Jobs,
+        ["/task", ..] => LocalCommand::Task(text.strip_prefix("/task").unwrap().trim().into()),
+        ["/steer", rest @ ..] => LocalCommand::Steer(rest.join(" ")),
+        ["/quiet"] => LocalCommand::Quiet,
+        ["/approvals"] => LocalCommand::Approvals,
+        ["/capabilities"] => LocalCommand::Capabilities,
         ["/config"] | ["/config", "show"] => LocalCommand::Config,
         ["/config", "locations"] | ["/config", "path"] => LocalCommand::Locations,
         ["/config", "set", key, ..] => {
@@ -361,7 +391,7 @@ mod tests {
         };
         assert_eq!(key, "microphone");
         assert_eq!(value, "Microphone (Realtek)");
-        assert_eq!(matching("/con").len(), 3);
+        assert_eq!(matching("/con").len(), 4);
         assert!(matching("/tts key secret").is_empty());
         let Some(LocalCommand::Set(key, value)) =
             parse("/stt provider cartesia", &Settings::default()).unwrap()

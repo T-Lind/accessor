@@ -15,13 +15,16 @@ def reply(text):
 for line in sys.stdin:
     msg = json.loads(line)
     method = msg.get("method")
+    if os.environ.get("ACC_FIXTURE_PROTOCOL_LOG"):
+        with open(os.environ["ACC_FIXTURE_PROTOCOL_LOG"],"a") as log:
+            log.write(json.dumps(msg)+"\n")
     if method == "initialize":
         if msg["params"]["clientInfo"].get("title") == "Accessor":
             assert msg["params"]["capabilities"]["experimentalApi"] is True
         time.sleep(float(os.environ.get("ACC_FIXTURE_START_DELAY", "0")))
         send({"id": msg["id"], "result": {}})
-    elif method == "thread/start":
-        assert msg["params"]["sandbox"] == "read-only"
+    elif method in ("thread/start", "thread/resume"):
+        assert msg["params"]["sandbox"] == os.environ.get("ACC_FIXTURE_EXPECT_SANDBOX","read-only")
         assert msg["params"]["approvalsReviewer"] in ("auto_review", "user")
         send({"id": msg["id"], "result": {"thread": {"id": "thread-1"}}})
     elif method == "model/list":
@@ -41,6 +44,7 @@ for line in sys.stdin:
         if text.startswith("Conversation data to summarize:"):
             reply("compact-model=" + str(msg["params"].get("model")) + "; compact-effort=" + str(msg["params"].get("effort")))
             continue
+        text = text.rsplit("User's continuation: ", 1)[-1]
         # Reconnected sessions receive context followed by the new request.
         # Emulate an agent answering that request, rather than echoing context.
         text = text.rsplit("Current request:\n", 1)[-1]
@@ -62,7 +66,9 @@ for line in sys.stdin:
         if text == "plugin delegate fixture":
             reply(json.dumps({"accessor":{"action":"delegate","role":"plugin","prompt":"worker settings","harness":"codex","model":"ignored-worker-model","reasoning":"medium"}}))
             continue
-        if text == "approval test":
+        if text == "question test":
+            send({"id":"question-1","method":"item/tool/requestUserInput","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"question-item","isBlocking":True,"questions":[{"id":"direction","header":"Direction","question":"Which direction?","options":[{"label":"Coding","description":"Build software"},{"label":"Research","description":"Investigate sources"}]}]}})
+        elif text == "approval test":
             send({"id": "approval-1", "method": "item/commandExecution/requestApproval", "params": {"command": "fixture-only; no execution", "threadId": "thread-1", "turnId": "turn-1"}})
         elif text == "grant test":
             send({"id": "grant-1", "method": "item/permissions/requestApproval", "params": {"permissions": {"network": {"enabled": True}}}})
@@ -77,9 +83,19 @@ for line in sys.stdin:
             reply("model=" + str(msg["params"].get("model")))
         else:
             reply("fixture: " + text)
+    elif method == "turn/steer":
+        assert msg["params"]["expectedTurnId"] == "turn-1"
+        guidance=msg["params"]["input"][0]["text"]
+        if guidance=="reject guidance":
+            send({"id":msg["id"],"error":{"code":-32000,"message":"fixture rejected"}})
+        else:
+            send({"id":msg["id"],"result":{"turnId":"turn-1"}})
+            if guidance=="finish now":reply("Finished after accepted guidance")
     elif method == "turn/interrupt":
         send({"id": msg["id"], "result": {}})
         reply("interrupted")
+    elif msg.get("id") == "question-1":
+        reply("answer="+msg["result"]["answers"]["direction"]["answers"][0])
     elif msg.get("id") == "approval-1":
         reply("decision=" + msg["result"]["decision"])
     elif msg.get("id") == "grant-1":

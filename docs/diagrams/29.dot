@@ -17,16 +17,16 @@ digraph accessor {
   wake     [label = "Earshot VAD\nLocal wake detector — “29”", fillcolor = "#DCFCE7"];
   awake    [label = "Awake?", shape = diamond, fillcolor = "#FEF9C3", margin = "0.05,0.03"];
   stt      [label = "Speech recognition\nCanary 180M · Parakeet TDT · Whisper (local)\nCartesia Ink-2 streaming (opt-in cloud)", fillcolor = "#E0E7FF"];
-  gate     [label = "Room-noise gate · high-pass\n(finished clips before recognition)"];
+  gate     [label = "Room-noise gate\n(completed awake clips before recognition)"];
   rel      [label = "Jev relevance gate → routing\nmain · coding · plugin · coordinator", fillcolor = "#FAE8FF"];
   harness  [label = "Harness + Accessor metaprompt\nCodex · Claude Code · Antigravity · opencode · Cursor", fillcolor = "#DBEAFE"];
-  worker   [label = "Isolated worker ≤ 15 min\ncoding / analysis result", fillcolor = "#E0E7FF"];
+  worker   [label = "Separate worker · configurable deadline\ncoding / research / long tasks", fillcolor = "#E0E7FF"];
   tts      [label = "Spoken reply — one ordered speech queue\nPiper · Kokoro · System · Cartesia", fillcolor = "#DCFCE7"];
   speaker  [label = "Speaker\n(fed back as the AEC3 echo reference)", fillcolor = "#DBEAFE"];
 
   capture -> dsp -> wake -> awake;
-  awake -> stt [label = "yes"];
-  stt -> gate -> rel -> harness;
+  awake -> gate [label = "yes"];
+  gate -> stt -> rel -> harness;
   harness -> worker [label = "delegate"];
   worker -> harness [label = "bounded result", style = dashed, constraint = false];
   harness -> tts;
@@ -41,6 +41,8 @@ digraph accessor {
     notes   [label = "notes/ + schedules.json\nalarms, tasks, watches", fillcolor = "#F1F5F9"];
     notices [label = "notifications.json\ncapped, deduped alerts", fillcolor = "#F1F5F9"];
     journal [label = "journal.enc\nXChaCha20 dictation", fillcolor = "#F1F5F9"];
+    jobs    [label = "jobs/ receipts + optional worktrees/\nexplicit inspection and resume", fillcolor = "#F1F5F9"];
+    memory -> notes -> notices -> journal -> jobs [style = invis];
   }
   subgraph cluster_surface {
     label = "Surfaces";
@@ -48,6 +50,8 @@ digraph accessor {
     dash  [label = "Ratatui dashboard\nstatus · activity · commands", fillcolor = "#FFFFFF"];
     mcp   [label = "MCP tools\nsettings · memory · notes · organizer", fillcolor = "#FFFFFF"];
     lock  [label = "Password lock + quiet hours\ngate access and scheduling", fillcolor = "#FFFFFF"];
+    human [label = "Authenticated local human panel\nquestions · permissions", fillcolor = "#FFFFFF"];
+    dash -> mcp -> human -> lock [style = invis];
   }
 
   harness -> memory  [style = dotted, constraint = false];
@@ -56,4 +60,6 @@ digraph accessor {
   dash  -> harness   [style = dotted, constraint = false];
   mcp   -> harness   [style = dotted, constraint = false];
   lock  -> harness   [style = dotted, constraint = false];
+  worker -> jobs    [style = dotted, constraint = false];
+  human -> harness  [style = dotted, constraint = false];
 }

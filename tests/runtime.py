@@ -115,6 +115,111 @@ for index, line in enumerate(sys.stdin):
         self.addCleanup(app.close)
         return app
 
+    def saved_job(self, predicate=lambda j: True):
+        deadline=time.monotonic()+5
+        while time.monotonic()<deadline:
+            for path in (self.home / "settings" / "jobs").glob("*.json"):
+                job=json.loads(path.read_text())
+                if predicate(job):return job
+            time.sleep(.03)
+        self.fail("Missing saved task receipt")
+
+    def test_wake_and_silence_preserve_main_work_and_steer_does_not_cancel(self):
+        app=self.app()
+        app.send("29 hold");app.expect("▸ hold")
+        app.send("29");app.expect("Listening. Work continues")
+        app.send("stop talking");app.expect("Output silenced. Work continues")
+        app.send("task status");app.expect("conversation task is running")
+        app.send("tell the task reject guidance");app.expect("Guidance was not accepted")
+        app.send("tell the task finish now");app.expect("Guidance accepted")
+        app.expect("Finished after accepted guidance")
+        self.assertNotIn("Interrupted; preserved", "".join(app.seen))
+
+    def test_draft_pauses_and_corrections_submit_once(self):
+        app=self.app("mock")
+        app.send("29 let me explain");app.expect("Drafting locally")
+        app.send("Research battery recycling.");app.expect("Draft: Research")
+        app.send("Only use blogs.");app.expect("Draft: Only")
+        app.send("scratch that");app.expect("Removed the last draft segment")
+        app.send("Use primary sources.");app.expect("Draft: Use")
+        self.assertNotIn("Mock agent received", "".join(app.seen))
+        app.send("send that");app.expect("Mock agent received: Research battery recycling. Use primary sources.")
+
+    def test_persistent_job_receipts_native_resume_and_no_automatic_retry(self):
+        protocol=self.home / "protocol.jsonl";self.env["ACC_FIXTURE_PROTOCOL_LOG"]=str(protocol)
+        app=self.app();app.send("/task new hold");app.expect("▸ hold")
+        job=self.saved_job(lambda j:j["thread"]=="thread-1")
+        app.send("/steer Keep the existing API");app.expect("Guidance accepted")
+        self.saved_job(lambda j:bool(j["constraints"]))
+        app.send("/task cancel "+job["id"][:8]);app.expect("Named task cancelled")
+        app.close()
+        receipt=self.saved_job(lambda j:j["state"].startswith("cancelled"))
+        self.assertEqual(receipt["constraints"],["Keep the existing API"])
+        path=self.home / "settings" / "jobs" / (job["id"]+".json")
+        forged={**receipt,"workspace":str(self.home)};path.write_text(json.dumps(forged))
+        invalid=self.app();invalid.send("/task resume "+job["id"][:8]);invalid.expect("does not match this project");invalid.close()
+        path.write_text(json.dumps(receipt))
+        app=self.app();app.send("/jobs");app.expect("hold · cancelled")
+        self.assertFalse(any(m.get("method")=="thread/resume" for m in map(json.loads,protocol.read_text().splitlines())))
+        app.send("/task resume "+job["id"][:8]+" worker settings");app.expect("model="+str(receipt["model"]))
+        self.saved_job(lambda j:j["state"]=="completed")
+        messages=list(map(json.loads,protocol.read_text().splitlines()))
+        self.assertTrue(any(m.get("method")=="thread/resume" and m["params"]["threadId"]=="thread-1" for m in messages))
+        self.assertTrue(any(m.get("method")=="thread/start" and m["params"]["ephemeral"] is False for m in messages))
+
+    def test_human_controls_authenticate_scope_and_answer_structured_questions(self):
+        import urllib.request
+        from urllib.parse import urldefrag
+        from urllib.error import HTTPError
+        app=self.app();url=self.cli("approvals","--url").stdout.strip();base,token=urldefrag(url)
+        def request(path,body=None,auth=token):
+            data=json.dumps(body).encode() if body is not None else None
+            req=urllib.request.Request(base.rstrip("/")+path,data=data,headers={"Authorization":"Bearer "+auth,"Content-Type":"application/json"})
+            with urllib.request.urlopen(req,timeout=3) as result:return json.load(result)
+        with self.assertRaises(HTTPError) as error:request("/requests",auth="wrong")
+        self.assertEqual(error.exception.code,403)
+        app.send("29 question test");app.expect("Question 1:")
+        rows=request("/requests");self.assertEqual(rows[0]["questions"][0]["id"],"direction")
+        app.send("approve");app.expect("Queued your follow-up")
+        result=request("/respond",{"key":rows[0]["key"],"allow":True})
+        self.assertIn("does not match",result["error"])
+        result=request("/respond",{"key":rows[0]["key"],"answers":{"direction":{"answers":["Research"]}}})
+        self.assertIn("Response sent",result["receipt"])
+        app.expect("answer=Research")
+        self.assertIn("expired",request("/respond",{"key":rows[0]["key"],"allow":True})["error"])
+
+    def test_strict_wake_and_project_profile_boundaries(self):
+        self.config("wake-attention","true")
+        app=self.app("mock");app.send("29 hello")
+        time.sleep(.1);app.send("hey 29 hello");app.expect("Mock agent received: hello");app.close()
+        self.config("wake-attention","false")
+        self.cli("jobs","profile","set","review","--workspace",str(ROOT))
+        protocol=self.home / "profile.jsonl";self.env["ACC_FIXTURE_PROTOCOL_LOG"]=str(protocol)
+        self.config("routing.main","codex")
+        app=App("--codex-bin",str(self.codex),"--project-profile","review",env=self.env);self.addCleanup(app.close)
+        app.send("29 hello");app.expect("fixture: hello");app.close()
+        start=next(m for m in map(json.loads,protocol.read_text().splitlines()) if m.get("method")=="thread/start")
+        self.assertEqual(start["params"]["sandbox"],"read-only");self.assertEqual(start["params"]["approvalsReviewer"],"user")
+        result=self.cli("run","--text","--project-profile","review","--workspace",str(self.home),ok=False)
+        self.assertIn("different workspace",result.stderr)
+        self.config("jobs.timeout-seconds","10800")
+        self.cli("config","set","jobs.timeout-seconds","0",ok=False)
+
+    @unittest.skipIf(os.name=="nt", "Git fixture uses POSIX shim")
+    def test_optional_worktree_preserves_dirty_source_and_saved_workspace(self):
+        repo=self.home / "project";repo.mkdir();source=repo / "sample.txt";source.write_text("base\n")
+        for args in [("init",),("add","sample.txt"),("-c","user.name=Fixture","-c","user.email=fixture@example.invalid","commit","-m","base")]:
+            subprocess.run(["git",*args],cwd=repo,check=True,capture_output=True)
+        source.write_text("uncommitted user work\n")
+        self.config("routing.main","codex")
+        app=App("--codex-bin",str(self.codex),"--workspace",str(repo),env=self.env);self.addCleanup(app.close)
+        app.send("/task new --isolated hold");app.expect("▸ hold")
+        job=self.saved_job(lambda j:j["thread"] is not None)
+        self.assertNotEqual(Path(job["workspace"]),repo)
+        self.assertEqual((Path(job["workspace"])/"sample.txt").read_text(),"base\n")
+        self.assertEqual(source.read_text(),"uncommitted user work\n")
+        app.send("/task cancel "+job["id"][:8]);app.expect("Named task cancelled")
+
     def music_fixture(self):
         log = self.home / "music.jsonl"
         self.env["ACC_MUSIC_TEST_LOG"] = str(log)
@@ -338,7 +443,7 @@ for line in sys.stdin:
         app.send("29 first part of the request")
         app.expect("You: first part")
         app.send("and the second part")
-        app.expect("Interrupting;")
+        app.expect("Queued your follow-up.")
         app.expect("fixture: first part of the request")
         app.expect("Additional user speech: and the second part")
 
@@ -362,10 +467,11 @@ for line in sys.stdin:
         app.send("29 hold")
         app.expect("▸ hold")
         app.send("and include Chicago please")
-        app.expect("Interrupting;")
+        app.expect("Queued your follow-up.")
+        app.send("29 tell the task finish now")
+        app.expect("Guidance accepted")
         app.expect("fixture: and include Chicago please")
-        # The interrupted turn's partial output is preserved as context.
-        self.assertIn("Interrupted; preserved", "".join(app.seen))
+        self.assertNotIn("Interrupted; preserved", "".join(app.seen))
 
     def test_streaming_does_not_select_cloud_implicitly(self):
         self.config("stt.conversation", "local")
@@ -457,13 +563,13 @@ for line in sys.stdin:
         app.close()
         self.assertFalse(sessions[0].exists())
 
-    def test_bare_wake_interrupts_worker_then_waits_without_a_reply(self):
+    def test_bare_wake_preserves_worker_then_waits_without_a_reply(self):
         app = self.app()
         app.send("29 delegate hold fixture")
         app.expect("Started worker:")
         app.expect("worker: ")
         app.send("29")
-        app.expect("Listening. Take your time")
+        app.expect("Listening. Work continues")
         before = len(app.seen)
         time.sleep(.3)
         app.send("/status")
@@ -471,6 +577,8 @@ for line in sys.stdin:
         self.assertNotIn("Agent:", "".join(app.seen[before:]))
         app.send("hello after interruption")
         app.expect("Agent: fixture: hello after interruption")
+        app.send("/steer finish now");app.expect("Guidance accepted by the active task")
+        self.saved_job(lambda j:j["state"]=="completed")
 
     def test_compaction_honors_harness_model_and_reasoning(self):
         for harness in ("codex", "claude", "antigravity"):
@@ -649,7 +757,7 @@ for line in sys.stdin:
                 app.expect("stdio reply: follow up")
                 app.send("29 hold")
                 app.expect("holding-stdio")
-                app.send("29 replacement")
+                app.send("29 stop, replacement")
                 app.expect("stdio reply: replacement")
                 app.close()
 

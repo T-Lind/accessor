@@ -37,12 +37,13 @@ is thinking you can keep speaking; completed clips queue in order. During audibl
 speech, saying "29" interrupts and opens listening — the recognizer decodes only
 short wake windows, and mixed speaker/user text is never submitted as a request.
 
-Saying **"29"** while the assistant is thinking or speaking cancels the current
-turn and playback and returns to listening. Interrupting preserves whatever the
-agent had already produced — commentary, tool activity, and any partial reply — in
-the conversation history, so your next request keeps that context even when the
-harness restarts with a fresh session. Spoken interruption during playback
-requires barge-ins to be enabled (the default).
+Saying **"29"** while the assistant is thinking or speaking pauses playback and
+opens listening while work continues. “Stop talking” silences output; “tell the
+task …” steers an active Codex task; other follow-up requests queue. Explicit
+stop/cancel ends work and preserves completed context. “Let me explain” starts a
+local draft; “scratch that” removes the last segment and “send that” submits it.
+See [Hands-free tasks](tasks.md) for saved jobs, explicit resume, worktrees and
+project permission profiles. Spoken playback interruption requires barge-ins.
 
 The numeric word reduces accidental activations; it is not authentication. See the
 [local access lock](SECURITY.md) for the real boundary.
@@ -65,13 +66,22 @@ The numeric word reduces accidental activations; it is not authentication. See t
   at most five per batch, with one ding per batch. Logging uses a bounded writer;
   storage failures or dropped log entries are reported visibly.
 
+## Music
+
+Play local files or generated brown, rain, and white ambience with `/music`.
+MPV runs separately from speech and lowers local music volume during replies and
+user capture/recognition.
+Spotify controls use a separately running, paired Soloist player on Linux;
+enabling Codex's Spotify plugin does not pair that player. See
+[Music on this machine](music.md) for setup, commands, and playback lifecycle.
+
 ## Harnesses and routing
 
 Accessor drives Codex App Server, Claude Code, Antigravity (`agy`), opencode, and
 Cursor (`cursor-agent`); mock mode needs no account. Routing picks the **main**,
 **coding**, or **plugin** role, and a lightweight coordinator owns the main
 conversation by default and delegates from its metaprompt. Coding and difficult
-work runs in an isolated 15-minute worker that returns a bounded result. See
+work runs in a separate worker with a configurable one-hour deadline that returns a bounded result. See
 [Harnesses](harnesses.md).
 
 Accessor reuses the agent's own connectors — Gmail, Google Calendar, Drive, Slack,
@@ -187,10 +197,11 @@ acc journal path
 ## Permissions and scope
 
 The default Codex sandbox is read-only. Structured command/file approvals and
-empty-form MCP confirmations require a typed `/approve N` and expire after 60
+empty-form MCP confirmations require deliberate human panel or typed controls and expire after 60
 seconds — no spoken transcript can approve. Authentication/device-verification
-requests, forms requiring field values, and permission-profile grants are declined
-rather than guessed.
+requests, secret/authentication forms and unsupported permission grants are declined
+rather than guessed. Structured questions use the authenticated local browser
+panel (`/approvals`) or typed answer commands; speech cannot answer a consent form.
 
 The agent's sandbox and connector permissions remain the enforcement boundary.
 Accessor is not a sandbox around arbitrary tools.

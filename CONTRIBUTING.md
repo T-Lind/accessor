@@ -36,6 +36,12 @@ The first run downloads ONNX Runtime and the default Canary speech model into
 Accessor's assets folder. `--agent mock` and `--text` need no account and no
 microphone, which is the fastest way to exercise the conversation plumbing.
 
+After a local release build, verify that `acc --version` matches both
+`target/release/acc --version` and `Cargo.toml`. The
+[development launcher](docs/getting-started.md#keep-the-local-command-on-your-development-build)
+links the local command to the checkout's release binary so later builds are
+picked up automatically. Restart any already-running Accessor session.
+
 ## Before you open a pull request
 
 Run the full gate; it must pass:

@@ -42,6 +42,20 @@ pub struct Settings {
     pub computer: Computer,
     pub memory: Memory,
     pub logging: Logging,
+    pub jobs: Jobs,
+    pub wake_attention: bool,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Jobs {
+    pub timeout_seconds: u64,
+}
+impl Default for Jobs {
+    fn default() -> Self {
+        Self {
+            timeout_seconds: 3600,
+        }
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -286,6 +300,8 @@ impl Default for Settings {
             computer: Computer::default(),
             memory: Memory::default(),
             logging: Logging::default(),
+            jobs: Jobs::default(),
+            wake_attention: false,
         }
     }
 }
@@ -627,6 +643,10 @@ impl Settings {
         Ok(next)
     }
     pub fn validate(&self) -> Result<()> {
+        ensure!(
+            (60..=86_400).contains(&self.jobs.timeout_seconds),
+            "jobs.timeout-seconds must be 60–86400"
+        );
         ensure!((300..=2000).contains(&self.stt.endpoint_ms), "stt.endpoint-ms must be 300–2000; shorter pauses respond faster but can split hesitant speech");
         ensure!(
             (1..=8).contains(&self.stt.threads),
@@ -868,6 +888,8 @@ impl Settings {
     pub fn assign(&mut self, key: &str, value: &str) -> Result<()> {
         match key {
             "stt.endpoint-ms" => self.stt.endpoint_ms = value.parse()?,
+            "jobs.timeout-seconds" => self.jobs.timeout_seconds = value.parse()?,
+            "wake-attention" => self.wake_attention = value.parse()?,
             "stt.threads" => self.stt.threads = value.parse()?,
             "stt.spin" => self.stt.spin = value.parse()?,
             "security.lock-seconds" => self.security.lock_seconds = value.parse()?,

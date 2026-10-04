@@ -24,7 +24,7 @@ without running an LLM; the last successful list is cached for offline display.
 Three roles can use the same or different harnesses and models:
 
 - **Main** — the persistent conversation, with a lightweight model by default.
-- **Coding** — isolated workers for code and difficult analysis.
+- **Coding** — separate workers for code, research and other long or difficult work.
 - **Plugin** — connector/plugin work; defaults to following Main.
 
 ```sh
@@ -34,12 +34,15 @@ acc config set routing.coding codex
 acc config set model gpt-5.6-sol
 ```
 
-The metaprompt tells the main agent to delegate coding, difficult analysis, and
-plugin work — even when all roles use the same CLI. A worker gets a fresh process,
-its own model and reasoning level, a 15-minute deadline, and returns a **bounded**
+The metaprompt tells the main agent to delegate coding, research and other long
+or difficult work; plugin delegation depends on the selected role and task.
+A worker gets a separate process, its own model and reasoning level, a
+configurable one-hour deadline (`jobs.timeout-seconds`), and returns a **bounded**
 result to the main conversation. Only one worker runs at a time, and worker
-controls cannot recursively delegate. See
-[Routing and delegation](architecture.md#routing-and-delegation).
+controls cannot recursively delegate. Workers normally share the project
+workspace; `/task new --isolated` creates a detached Git worktree from committed
+HEAD. See [Routing and delegation](architecture.md#routing-and-delegation) and
+[Hands-free tasks](tasks.md) for saved receipts, explicit resume and live steering.
 
 ## Models and reasoning
 
@@ -100,9 +103,17 @@ sessions, not to isolated workers or compaction jobs.
 
 The default Codex sandbox is read-only; `--workspace-write --workspace PATH`
 permits workspace edits under Codex's policy. Structured command/file approvals
-and empty-form MCP confirmations require a typed `/approve N` and expire after 60
-seconds. Authentication and device-verification requests, forms requiring field
-values, and permission-profile grants are declined rather than guessed — complete
-those in the harness's native interface.
+and empty-form MCP confirmations require deliberate human controls through
+`/approvals` or typed approval commands and expire after 60 seconds. Supported
+structured questions use the same local panel or typed answer commands; spoken
+answers cannot resolve them. Authentication/device-verification requests, secret
+forms and unsupported permission grants are declined rather than guessed —
+complete those in the harness's native interface.
+
+`/capabilities` reports differences between adapters. Codex supports live steering
+and native saved-worker resume; other saved workers use a bounded handoff. Writable
+Antigravity sessions with automatic review use `accept-edits` and its
+`--dangerously-skip-permissions` flag inside its sandbox, rather than interactive
+approval forwarding. Select the harness and launch policy deliberately.
 
 See [Features → Permissions and scope](features.md#permissions-and-scope).

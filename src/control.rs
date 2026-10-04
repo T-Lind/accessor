@@ -100,7 +100,7 @@ async fn frame(stream: &mut TcpStream) -> Result<Value> {
 }
 /// Constant-time comparison for the loopback session token, so a local caller
 /// cannot learn the token one byte at a time from response timing.
-fn token_matches(provided: Option<&str>, expected: &str) -> bool {
+pub(crate) fn token_matches(provided: Option<&str>, expected: &str) -> bool {
     let Some(provided) = provided else {
         return false;
     };

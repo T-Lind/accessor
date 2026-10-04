@@ -28,7 +28,7 @@ flowchart LR
   stt --> gate["Relevance + input gate"]
   gate --> router["Routing"]
   router --> main["Main harness"]
-  main --> worker["Coding / plugin worker<br/>(isolated, 15 min)"]
+  main --> worker["Coding / plugin worker<br/>(isolated, configurable deadline)"]
   worker -. "bounded result" .-> main
   main --> ttsq["Ordered speech queue"]
   ttsq --> spk["Speakers"]
@@ -52,7 +52,7 @@ flowchart TD
   utt["Completed utterance"] --> rel{"Addressed<br/>to the agent?"}
   rel -->|no| drop["Ignored<br/>(kept out of history)"]
   rel -->|yes| coord["Main conversation"]
-  coord -->|"coding or difficult work"| work["Isolated worker<br/>fresh process, own model, 15 min"]
+  coord -->|"coding, research or long work"| work["Isolated worker<br/>fresh process, own model, configurable deadline"]
   coord -->|"connector / plugin work"| plug["Plugin harness"]
   work --> res["Bounded result"]
   res --> coord
