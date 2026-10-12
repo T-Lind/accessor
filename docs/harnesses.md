@@ -13,6 +13,7 @@ its tools, sandbox, permissions, and its own native conversation thread.
 | `antigravity` | `agy` | Passes the active workspace to its server |
 | `opencode` | `opencode` | Read headless; management commands are interactive |
 | `cursor` | `cursor-agent` | Read headless; reads `.cursor/mcp.json` |
+| `ty` | `ty` | Local single-file agent on Ollama; one-shot NDJSON, resumes its own session id, no MCP |
 | `mock` | none | No account needed; useful for testing the plumbing |
 
 A "gateway" and "local" compaction path also exist for summarization without a
@@ -95,6 +96,11 @@ available. `acc mcp-install` repairs registration manually.
 Registration preserves unrelated entries and refuses name collisions. Native
 harness tool permissions still apply. Session capabilities are supplied to main
 sessions, not to isolated workers or compaction jobs.
+
+Harnesses that are not given an MCP connection (opencode, Cursor, and ty) are
+pointed at `acc guide`, which lists the equivalent local commands: shared memory
+(`acc memory`), private notes and alarms/schedules (`acc organizer`),
+notifications, quota, and validated settings.
 
 ## Permissions and approvals
 

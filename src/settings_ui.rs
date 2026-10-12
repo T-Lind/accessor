@@ -836,6 +836,20 @@ fn harness_models(harness: &str, discovered: &[Model]) -> Vec<Model> {
                 name: id.into(),
             })
             .collect(),
+        // ty resolves these aliases to local Ollama tags. LFM2.5 8B-A1B is the
+        // tools+thinking Liquid MoE; the Qwen3.5 tags stay the small-machine default.
+        "ty" => [
+            ("lfm", "lfm2.5:8b · LFM2.5 8B-A1B (MoE, tools, thinking)"),
+            ("2b", "qwen3.5:2b"),
+            ("0.8b", "qwen3.5:0.8b"),
+            ("4b", "qwen3.5:4b"),
+        ]
+        .into_iter()
+        .map(|(id, name)| Model {
+            id: id.into(),
+            name: name.into(),
+        })
+        .collect(),
         "mock" => Vec::new(),
         _ => [
             "google/gemini-3.5-flash",

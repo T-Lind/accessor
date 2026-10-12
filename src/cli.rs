@@ -77,6 +77,8 @@ enum Commands {
     },
     /// Check local dependencies without opening the microphone.
     Doctor,
+    /// Print a short list of Accessor commands an agent with shell access can use.
+    Guide,
     /// Check harness CLI versions and apply updates where supported.
     Update {
         /// Print versions only; do not install.
@@ -781,6 +783,10 @@ pub async fn entry() -> Result<()> {
             }
         },
         Commands::Doctor => doctor().await,
+        Commands::Guide => {
+            print!("{}", guide_text());
+            Ok(())
+        }
         Commands::Update { check } => {
             let text = crate::updates::report(&Settings::load()?, !check).await?;
             print!("{text}");
@@ -1389,6 +1395,40 @@ async fn doctor() -> Result<()> {
     println!("\n{}", config::locations(&s));
     Ok(())
 }
+/// A short, stable inventory for an agent that reaches Accessor through the
+/// shell instead of MCP. Keep it accurate: ty, opencode and Cursor read it.
+fn guide_text() -> &'static str {
+    "Accessor local guide — commands an agent may run with its shell tool.\n\
+     \n\
+     Memory (durable facts and preferences; search before saving)\n\
+     \x20 acc memory search \"<query>\"\n\
+     \x20 acc memory list\n\
+     \x20 acc memory save <key> \"<text>\" --scope project|global --source \"<where>\" [--revision N]\n\
+     \x20 acc memory forget <key> --scope project|global --revision N\n\
+     \n\
+     Notes (private Markdown files; save one per note)\n\
+     \x20 acc organizer note \"<text>\" --title \"<title>\"\n\
+     \x20 acc organizer status        # notes folder, note titles, alarms, scheduled tasks\n\
+     \n\
+     Alarms and scheduled tasks (run only while Accessor is open)\n\
+     \x20 acc organizer alarm --in-seconds <n> --label \"<label>\"\n\
+     \x20 acc organizer task \"<prompt>\" --in-seconds <n> --harness <h> --model <m> --reasoning low\n\
+     \x20 acc organizer task \"<prompt>\" --local-time HH:MM --every-days 1 --harness <h> --model <m>\n\
+     \n\
+     Notifications\n\
+     \x20 acc notifications list [--unread]\n\
+     \x20 acc notifications read <id> | read-all | dismiss <id>\n\
+     \n\
+     Subscription quota (cached; no model request)\n\
+     \x20 acc usage --cached\n\
+     \n\
+     Settings (validated; same preferences as the settings_update MCP tool)\n\
+     \x20 acc config show\n\
+     \x20 acc config set <key> <value>\n\
+     \n\
+     Everything else: acc --help\n"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1411,5 +1451,13 @@ mod tests {
     #[test]
     fn management_help_stays_root() {
         assert_eq!(normalized(vec!["acc".into(), "--help".into()])[1], "--help");
+    }
+    #[test]
+    fn guide_points_at_notes_and_memory() {
+        let guide = guide_text();
+        assert!(guide.contains("acc organizer note"));
+        assert!(guide.contains("acc organizer status"));
+        assert!(guide.contains("acc memory save"));
+        assert!(guide.contains("acc --help"));
     }
 }

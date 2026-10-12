@@ -375,6 +375,7 @@ pub const HARNESSES: &[&str] = &[
     "antigravity",
     "opencode",
     "cursor",
+    "ty",
     "mock",
 ];
 pub fn harness_default_model(harness: &str) -> Option<&'static str> {
@@ -382,6 +383,7 @@ pub fn harness_default_model(harness: &str) -> Option<&'static str> {
         "antigravity" => Some("gemini-3.8-flash"),
         "opencode" => Some("opencode/big-pickle"),
         "cursor" => Some("auto"),
+        "ty" => Some("2b"),
         _ => None,
     }
 }
@@ -391,6 +393,9 @@ pub fn light_model(harness: &str) -> &'static str {
         "antigravity" => "gemini-3.8-flash",
         "opencode" => "opencode/big-pickle",
         "cursor" => "auto",
+        // ty aliases: 0.8b / 2b / 4b / lfm (LFM2.5 8B-A1B). The tiny model keeps
+        // the main conversation responsive on CPU.
+        "ty" => "0.8b",
         "mock" => "mock-light",
         _ => "gpt-5.6-luna",
     }
@@ -401,6 +406,7 @@ pub fn worker_model(harness: &str) -> &'static str {
         "antigravity" => "gemini-3.8-flash",
         "opencode" => "opencode/big-pickle",
         "cursor" => "auto",
+        "ty" => "2b",
         "mock" => "mock-worker",
         _ => "gpt-5.6-sol",
     }
@@ -647,12 +653,12 @@ impl Settings {
         );
         ensure!(
             HARNESSES.contains(&self.agent.as_str()),
-            "Supported harnesses: codex, claude, antigravity, opencode, cursor, mock"
+            "Supported harnesses: codex, claude, antigravity, opencode, cursor, ty, mock"
         );
         for name in [&self.routing.coding, &self.routing.main] {
             ensure!(
                 HARNESSES.contains(&name.as_str()),
-                "routing harnesses must be codex, claude, antigravity, opencode, cursor, or mock"
+                "routing harnesses must be codex, claude, antigravity, opencode, cursor, ty, or mock"
             );
         }
         ensure!(
@@ -1113,6 +1119,9 @@ pub fn harness_bin(
                 "cursor-agent"
             })
         }),
+        "ty" => find_on_path(&["ty"]).unwrap_or_else(|| {
+            PathBuf::from(if cfg!(windows) { "ty.exe" } else { "ty" })
+        }),
         "mock" => PathBuf::from("mock"),
         _ => codex_override.cloned().unwrap_or_else(|| codex(settings)),
     }
@@ -1176,6 +1185,14 @@ pub fn harness_offers(settings: &Settings, codex_override: Option<&PathBuf>) -> 
             detail: cursor
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "cursor-agent".into()),
+        },
+        HarnessOffer {
+            id: "ty",
+            name: "ty (local · Ollama)",
+            found: find_on_path(&["ty"]).is_some(),
+            detail: find_on_path(&["ty"])
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "ty not on PATH".into()),
         },
         HarnessOffer {
             id: "mock",

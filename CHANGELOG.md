@@ -6,6 +6,24 @@ GitHub, and full notes are generated there. This file starts at 0.34.3 — see t
 [releases page](https://github.com/T-Lind/accessor/releases) and `git log` for
 earlier history.
 
+## [0.38.0] - 2026-10-12
+
+### Added
+
+- The `ty` harness: a local, single-file Ollama agent. Select it as Main or
+  Coding in `/settings` → Harnesses, or pin a conversation with
+  `session.harness=ty`. Accessor drives it one-shot with NDJSON and resumes its
+  saved session by id. It runs without MCP, reaching shared memory through the
+  `acc memory` CLI, and its models are the local Ollama aliases (`lfm`, `2b`,
+  `0.8b`, `4b`). Read-only sessions use ty's `control` mode: no workspace writes,
+  but Accessor's own `acc` commands (notes, memory, status, notifications, quota)
+  still run so spoken side effects work; writable sessions approve automatically
+  only when auto-review is selected.
+- `acc guide`: a short inventory of the local commands an agent with shell access
+  can use (memory, notes, alarms/schedules, notifications, quota, settings). The
+  no-MCP harnesses (ty, opencode, Cursor) are pointed at it, so spoken requests
+  like "take down a note" reach `acc organizer note`.
+
 ## [0.36.0] - 2026-10-12
 
 ### Added
