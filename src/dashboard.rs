@@ -19,6 +19,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     ("/noise", "Room-noise gate: /noise calibrate|on|off|reset"),
     ("/jev", "Save a TypeSafe API key for Jev: /jev key"),
+    ("/mascot", "Set or show the companion's expression"),
     ("/computer", "Desktop control: /computer test|on|off"),
     ("/dictate", "Local-only private dictation: /dictate on|off"),
     ("/journal", "Show the private dictation journal"),
@@ -118,6 +119,8 @@ pub enum LocalCommand {
     Watch(String),
     /// `/prompt …` — show, pick a tone, edit extra instructions, or open $EDITOR.
     Prompt(String),
+    /// `/mascot [NAME]` — show or force the companion's mood.
+    Mascot(String),
     /// `/logs` — show the master log path and tail it.
     Logs,
 }
@@ -231,6 +234,7 @@ pub fn parse(text: &str, s: &Settings) -> Result<Option<LocalCommand>> {
         }
         ["/watch", rest @ ..] => LocalCommand::Watch(rest.join(" ")),
         ["/prompt", rest @ ..] => LocalCommand::Prompt(rest.join(" ")),
+        ["/mascot", rest @ ..] => LocalCommand::Mascot(rest.join(" ")),
         ["/logs"] => LocalCommand::Logs,
         ["/stt", "provider", provider] => {
             LocalCommand::Set("stt.conversation".into(), (*provider).into())

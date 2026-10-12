@@ -1,3 +1,4 @@
+use crate::mascot::Mood;
 use anyhow::Result;
 use crossterm::{
     event::{
@@ -9,7 +10,7 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Layout},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
@@ -18,7 +19,7 @@ use ratatui::{
 use std::{
     collections::VecDeque,
     io::{self, IsTerminal},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 pub fn safe(text: &str) -> String {
@@ -67,6 +68,9 @@ pub struct Ui {
     notice: String,
     chat: String,
     history: InputHistory,
+    mood: Mood,
+    auto_mood: Mood,
+    mood_until: Option<Instant>,
 }
 impl Ui {
     pub fn new(plain: bool) -> Result<Self> {
@@ -105,7 +109,31 @@ impl Ui {
             notice: String::new(),
             chat: "activity".into(),
             history: InputHistory::default(),
+            mood: Mood::Asleep,
+            auto_mood: Mood::Asleep,
+            mood_until: None,
         })
+    }
+    /// Update the phase-derived mood. A live override (an agent directive or a
+    /// Jev classification) keeps the face until it expires.
+    pub fn set_mood(&mut self, mood: Mood) {
+        if self.auto_mood != mood {
+            self.auto_mood = mood;
+            if self.mood_until.is_none_or(|until| Instant::now() >= until) {
+                self.mood = mood;
+                self.dirty = true;
+            }
+        }
+    }
+    /// Hold a specific mood on screen for `hold`, then fall back to the phase.
+    pub fn override_mood(&mut self, mood: Mood, hold: Duration) {
+        self.mood = mood;
+        self.mood_until = Some(Instant::now() + hold);
+        self.dirty = true;
+    }
+    /// The mood currently on screen, for status lines and commands.
+    pub fn mood_label(&self) -> &'static str {
+        self.mood.label()
     }
     pub fn set_chat(&mut self, chat: &str) {
         self.chat = chat.to_owned();
@@ -392,7 +420,20 @@ impl Ui {
         }
         self.dirty = true;
     }
+    /// Resolve the mood to show, retiring an expired override. Marks the frame
+    /// dirty when the face changes so an override visibly times out.
+    fn effective_mood(&mut self) -> Mood {
+        if self.mood_until.is_some_and(|until| Instant::now() >= until) {
+            self.mood_until = None;
+            if self.mood != self.auto_mood {
+                self.mood = self.auto_mood;
+                self.dirty = true;
+            }
+        }
+        self.mood
+    }
     pub fn draw(&mut self) -> Result<()> {
+        let mood = self.effective_mood();
         if !self.dirty {
             return Ok(());
         }
@@ -401,15 +442,24 @@ impl Ui {
             return Ok(());
         };
         terminal.draw(|f| {
+            let area = f.area();
+            let show_mascot = area.width >= 48 && area.height >= 12;
             let layout = Layout::vertical([
-                Constraint::Length(4),
+                Constraint::Length(if show_mascot { 5 } else { 4 }),
                 Constraint::Min(3),
                 Constraint::Length(3),
                 Constraint::Length(1),
             ])
-            .split(f.area());
+            .split(area);
             let color = status_color(&self.status);
             let border = Style::default().fg(color);
+            let (status_area, mascot_area) = if show_mascot {
+                let split = Layout::horizontal([Constraint::Min(24), Constraint::Length(13)])
+                    .split(layout[0]);
+                (split[0], Some(split[1]))
+            } else {
+                (layout[0], None)
+            };
             f.render_widget(
                 Paragraph::new(status_lines(&self.status))
                     .style(Style::default().fg(color))
@@ -423,8 +473,29 @@ impl Ui {
                                 env!("CARGO_PKG_VERSION")
                             )),
                     ),
-                layout[0],
+                status_area,
             );
+            if let Some(mascot_area) = mascot_area {
+                let tint = Style::default().fg(mood.color());
+                let face: Vec<Line> = mood
+                    .face()
+                    .iter()
+                    .map(|row| Line::from(Span::styled(row.to_string(), tint)))
+                    .collect();
+                f.render_widget(
+                    Paragraph::new(face).alignment(Alignment::Center).block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded)
+                            .border_style(tint)
+                            .title(Span::styled(
+                                format!(" {} ", mood.label()),
+                                tint.add_modifier(Modifier::BOLD),
+                            )),
+                    ),
+                    mascot_area,
+                );
+            }
             let width = layout[1].width.saturating_sub(2).max(1) as usize;
             let mut visual: Vec<Line> = Vec::new();
             if self.settings.is_some() {
@@ -482,12 +553,17 @@ impl Ui {
                 ),
                 layout[1],
             );
+            let input_body = if self.secret {
+                "*".repeat(self.input.chars().count())
+            } else {
+                self.input.clone()
+            };
+            let prompt_style = Style::default().fg(color).add_modifier(Modifier::BOLD);
             f.render_widget(
-                Paragraph::new(if self.secret {
-                    "*".repeat(self.input.chars().count())
-                } else {
-                    self.input.clone()
-                })
+                Paragraph::new(Line::from(vec![
+                    Span::styled(if self.secret { "# " } else { "❯ " }, prompt_style),
+                    Span::raw(input_body),
+                ]))
                 .wrap(Wrap { trim: false })
                 .block(
                     Block::default()
@@ -511,41 +587,50 @@ impl Ui {
                 let matches = crate::dashboard::matching(&self.input);
                 if !matches.is_empty() && layout[1].height >= 5 {
                     let height = (matches.len() as u16 + 2).min(layout[1].height);
-                    let popup = ratatui::layout::Rect::new(
+                    let popup = Rect::new(
                         layout[1].x,
                         layout[1].bottom() - height,
                         layout[1].width,
                         height,
                     );
-                    let menu = matches
+                    let items: Vec<Line> = matches
                         .iter()
                         .enumerate()
                         .map(|(i, (name, desc))| {
-                            format!(
-                                "{} {name:14} {desc}",
-                                if i == self.menu_index { "›" } else { " " }
-                            )
+                            let selected = i == self.menu_index;
+                            let lead = if selected {
+                                Style::default().fg(Color::Black).bg(Color::Cyan)
+                            } else {
+                                Style::default().fg(Color::Cyan)
+                            };
+                            let desc_style = if selected {
+                                lead.add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default().fg(Color::DarkGray)
+                            };
+                            Line::from(vec![
+                                Span::styled(if selected { "› " } else { "  " }, lead),
+                                Span::styled(format!("{name:<14}"), lead),
+                                Span::styled(desc.to_string(), desc_style),
+                            ])
                         })
-                        .collect::<Vec<_>>()
-                        .join("\n");
+                        .collect();
                     f.render_widget(Clear, popup);
                     f.render_widget(
-                        Paragraph::new(menu)
-                            .style(Style::default().fg(Color::Cyan))
-                            .block(
-                                Block::default()
-                                    .borders(Borders::ALL)
-                            .border_type(BorderType::Rounded)
-                                    .border_style(border)
-                                    .title(" Commands · ↑/↓ choose · Enter opens · Tab completes "),
-                            ),
+                        Paragraph::new(items).block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .border_type(BorderType::Rounded)
+                                .border_style(border)
+                                .title(" Commands · ↑/↓ choose · Enter opens · Tab completes "),
+                        ),
                         popup,
                     );
                 }
             }
             if layout[2].width > 2 && layout[2].height > 2 {
                 f.set_cursor_position((
-                    layout[2].x + 1 + (self.input.chars().count() as u16).min(layout[2].width - 3),
+                    layout[2].x + 3 + (self.input.chars().count() as u16).min(layout[2].width - 4),
                     layout[2].y + 1,
                 ));
             }
@@ -714,7 +799,7 @@ fn styled_entry(entry: &Entry, width: usize) -> Vec<Line<'static>> {
         if i == 0 {
             let mut spans = vec![Span::styled(
                 format!("{label:<5} "),
-                Style::default().fg(color),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
             )];
             spans.extend(line.spans);
             line = Line::from(spans);

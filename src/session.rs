@@ -40,6 +40,12 @@ impl Session {
     pub fn addressed(&self, text: &str) -> bool {
         self.wake.strip(text).is_some()
     }
+    /// The text after a leading wake phrase, if the utterance *begins* with one.
+    /// Lets a request spoken in the same breath as the wake word during output
+    /// ("29 stop the music") be accepted without echoing speaker words.
+    pub fn remainder<'a>(&self, text: &'a str) -> Option<&'a str> {
+        self.wake.strip(text)
+    }
     pub fn replaces_work(&self, text: &str) -> bool {
         stop_replacement(self.wake.strip(text).unwrap_or(text)).is_some()
     }

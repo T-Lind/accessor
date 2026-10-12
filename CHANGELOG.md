@@ -6,6 +6,27 @@ GitHub, and full notes are generated there. This file starts at 0.34.3 — see t
 [releases page](https://github.com/T-Lind/accessor/releases) and `git log` for
 earlier history.
 
+## [0.36.0] - 2026-10-12
+
+### Added
+
+- A companion mascot in the top-right of the main screen with distinct faces for
+  idle, listening, thinking, speaking, happy, sad, confused, alarmed and more.
+  Its expression follows the live phase, the agent can steer it with a
+  `[[mood:NAME]]` marker in a reply (stripped before display and speech), and
+  with a Jev key replies are classified for tone off the hot path. `/mascot
+  [NAME]` shows or forces the mood.
+- `/mascot` command.
+
+### Changed
+
+- Main-screen layout refresh: the status panel shares its row with the mascot
+  (hidden on small terminals), a `❯` prompt glyph, bold entry labels, and a
+  highlighted command palette.
+- Saying the wake code and a request in one breath during speech
+  ("29 stop the music") now both interrupts and runs the request, instead of
+  only opening listening.
+
 ## [0.35.0] - 2026-10-01
 
 ### Added

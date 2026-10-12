@@ -15,6 +15,7 @@ mod identity;
 mod journal;
 mod limits;
 mod markdown;
+mod mascot;
 mod masterlog;
 mod mcp;
 mod memory;
@@ -93,6 +94,8 @@ pub enum Input {
     Activity {
         epoch: u64,
     },
+    /// A mood chosen off the hot path (e.g. Jev emotion classification).
+    Mood(mascot::Mood),
     /// Recoverable audio or background failure; never ends the session.
     Warning(String),
     Error(String),

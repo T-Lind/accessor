@@ -1,7 +1,7 @@
 use crate::cli::{Backend, Run};
 use crate::session::{Action, Session};
 use crate::ui::{safe, Kind, Ui};
-use crate::{agent, audio, config, speech, wake, Input};
+use crate::{agent, audio, config, mascot, speech, wake, Input};
 use anyhow::{bail, Context, Result};
 use std::{
     collections::{HashMap, VecDeque},
@@ -1129,6 +1129,18 @@ pub async fn run(mut args: Run) -> Result<()> {
         } else {
             status
         });
+        // The companion's face follows the live phase unless an agent directive
+        // or a Jev classification is still holding a specific mood.
+        ui.set_mood(mascot::Mood::automatic(&mascot::Snapshot {
+            locked: access.locked(),
+            alarm: alarm.is_some(),
+            mic_error: mic_unavailable,
+            speaking: speaker.is_some(),
+            thinking: busy || worker.is_some(),
+            approval: approval || worker_approval,
+            listening: wake_listening,
+            active: session.active(),
+        }));
         ui.draw()?;
         tokio::select! {
             biased;
@@ -1394,6 +1406,11 @@ pub async fn run(mut args: Run) -> Result<()> {
                         let _ = e;
                         continue;
                     }
+                    Input::Mood(mood) => {
+                        // Off-hot-path classification of a finished reply.
+                        ui.override_mood(mood, Duration::from_secs(12));
+                        continue;
+                    }
                     Input::Warning(e) => {
                         ui.message(format!("Warning: {}", safe(&e)));
                         continue;
@@ -1408,7 +1425,15 @@ pub async fn run(mut args: Run) -> Result<()> {
                         if echo_guard.matches(&text,speaker.is_some()) || echo_guard.recent_matches(speaker.is_some(),|spoken|session.wake_in_probe(spoken)) {wake_echoes+=1;continue;}
                         if access.enabled() && crate::auth::spoken_lock(&auth_wake, &text) { lock_requested = true; continue; }
                         wake_hits+=1;
-                        (settings.wake_code.clone(),false,true,true,None)
+                        // A probe that begins with the wake word can carry the
+                        // request in the same breath ("29 stop the music"). Feed
+                        // that remainder through so one utterance both interrupts
+                        // and runs; a bare wake still just opens listening.
+                        let text=match session.remainder(&text) {
+                            Some(rest) if !rest.trim().is_empty() => format!("{} {}",settings.wake_code,rest.trim()),
+                            _ => settings.wake_code.clone(),
+                        };
+                        (text,false,true,true,None)
                     }
                     Input::Voice { text, confidence, epoch: captured_epoch, .. } => {
                         if muted.load(Ordering::SeqCst) || captured_epoch != epoch.load(Ordering::SeqCst) { continue; }
@@ -1596,6 +1621,16 @@ pub async fn run(mut args: Run) -> Result<()> {
                             LocalCommand::Tts=>ui.message(crate::dashboard::tts_help(&settings)),
                             LocalCommand::Watch(rest)=>match watch_command(&rest,&settings){Ok(message)=>ui.message(message),Err(e)=>ui.message(format!("{e:#}"))},
                             LocalCommand::Prompt(rest)=>match prompt_command(&rest,&mut settings,&mut ui){Ok(message)=>ui.message(message),Err(e)=>ui.message(format!("{e:#}"))},
+                            LocalCommand::Mascot(name)=>{
+                                let name=name.trim();
+                                if name.is_empty() {
+                                    ui.message(format!("Companion mood: {}\nAvailable: {}\nUse /mascot NAME, or the agent can emit [[mood:NAME]] in a reply. With a Jev key, replies are classified automatically.",ui.mood_label(),mascot::Mood::names().join(", ")));
+                                } else if let Some(mood)=mascot::Mood::from_name(name) {
+                                    ui.override_mood(mood,Duration::from_secs(30));
+                                } else {
+                                    ui.message(format!("Unknown mood \"{}\". Available: {}",safe(name),mascot::Mood::names().join(", ")));
+                                }
+                            }
                             LocalCommand::Logs=>{
                                 if utility.is_some() {ui.message("A diagnostic is already running; try /logs when it finishes.");}
                                 else if let Some(path)=crate::masterlog::path() {
@@ -2487,6 +2522,26 @@ pub async fn run(mut args: Run) -> Result<()> {
                             continue;
                         }
                         if pending_prompt.is_some() || pending_setting.is_some() {continue;}
+                        // The reply may carry an explicit `[[mood:...]]` marker.
+                        // Failing that, read the tone locally, and only reach for
+                        // Jev when it is configured and nothing obvious stands out.
+                        let (text, mood) = mascot::take_mood(&text);
+                        if let Some(mood) = mood {
+                            ui.override_mood(mood, Duration::from_secs(14));
+                        } else if let Some(mood) = mascot::sense(&text) {
+                            ui.override_mood(mood, Duration::from_secs(10));
+                        } else if crate::route::jev_available() {
+                            let reply = text.clone();
+                            let history: Vec<_> = transcript.iter().cloned().collect();
+                            let tx = input_tx.clone();
+                            tokio::spawn(async move {
+                                if let Ok(Some(mood)) =
+                                    crate::route::classify_mood(&reply, &history).await
+                                {
+                                    let _ = tx.send(Input::Mood(mood)).await;
+                                }
+                            });
+                        }
                         let (text, mut directives) = crate::organizer::take_directives(&text);
                         if current_event.is_some() {directives.clear();}
                         for directive in directives {
