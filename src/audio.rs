@@ -955,7 +955,10 @@ impl OutputPause {
         } else {
             0
         };
-        if self.voiced >= 512 {
+        // AEC can leave a few voiced frames of the speaker's own output.
+        // Require sustained near-end speech before pausing playback; otherwise
+        // each false hit inserts an endpoint-length gap into the reply.
+        if self.voiced >= 2560 {
             self.remaining = (endpoint_ms as usize + 100) * 16;
         } else {
             self.remaining = self.remaining.saturating_sub(256);
@@ -2503,14 +2506,18 @@ mod tests {
         let mut pause = OutputPause::default();
         assert!(!pause.push(true, true, 600));
         assert!(!pause.push(false, true, 600));
-        assert!(!pause.push(true, true, 600));
+        for _ in 0..9 {
+            assert!(!pause.push(true, true, 600));
+        }
         assert!(pause.push(true, true, 600));
         for _ in 0..43 {
             assert!(pause.push(false, true, 600));
         }
         assert!(!pause.push(false, true, 600));
         assert!(!pause.push(true, false, 600));
-        assert!(!pause.push(true, true, 600));
+        for _ in 0..9 {
+            assert!(!pause.push(true, true, 600));
+        }
         assert!(pause.push(true, true, 600));
         let state = SpeechState::default();
         state.playback_pause().store(true, Ordering::SeqCst);

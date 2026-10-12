@@ -627,6 +627,60 @@ for line in sys.stdin:
         status = self.cli("organizer", "status").stdout
         self.assertIn("completed", status)
 
+    @unittest.skipIf(os.name == "nt", "Unix executable fixture")
+    def test_scheduled_reply_reaches_tts_while_asleep_and_respects_silence(self):
+        assets = self.home / "assets"
+        voices = assets / "piper" / "voices"
+        voices.mkdir(parents=True)
+        (voices / "en_GB-alan-medium.onnx").touch()
+        (voices / "en_GB-alan-medium.onnx.json").write_text("{}")
+        binary = assets / "piper" / "bin" / "piper"
+        binary.parent.mkdir()
+        log = self.home / "spoken.txt"
+        binary.write_text(f"#!{sys.executable}\n" + f'''import pathlib, sys, time
+for line in sys.stdin:
+    with pathlib.Path({str(log)!r}).open('a') as output:
+        output.write(line)
+    time.sleep(10)
+''')
+        binary.chmod(0o700)
+        self.env["ACC_ASSETS"] = str(assets)
+        self.config("tts.provider", "piper")
+        self.config("speak-progress", "false")
+        for enabled, silenced in ((False, False), (True, True), (True, False)):
+            with self.subTest(speak=enabled, silenced=silenced):
+                self.config("speak", str(enabled).lower())
+                harness = "codex" if silenced else "mock"
+                app = App("--agent", harness, "--codex-bin", str(self.codex),
+                          "--speak" if enabled else "--no-speak", env=self.env)
+                self.addCleanup(app.close)
+                app.send("/sleep")
+                app.expect("Asleep.")
+                self.cli("organizer", "task", "hold" if silenced else "Morning briefing fixture", "--in-seconds", "1",
+                         "--harness", harness, "--model", "gpt-5.6-luna" if silenced else "mock-light")
+                app.expect(f"started in an isolated {harness} worker", timeout=5)
+                if silenced:
+                    app.expect("codex worker: ▸ hold")
+                    app.send("/quiet")
+                    app.expect("Output silenced. Work continues.")
+                    app.send("/steer finish now")
+                    app.expect("Guidance accepted")
+                app.expect("finished (failed=false)")
+                app.expect("Finished after accepted guidance" if silenced else "Mock agent received: Morning briefing fixture")
+                if enabled and not silenced:
+                    deadline = time.monotonic() + 3
+                    while time.monotonic() < deadline and not log.exists():
+                        time.sleep(0.01)
+                    self.assertTrue(log.exists(), "Sleeping scheduled task never reached TTS")
+                    self.assertEqual(log.read_text().strip(), "Mock agent received: Morning briefing fixture")
+                else:
+                    app.send("/status")
+                    app.expect("WHITE: waiting for wake code")
+                    time.sleep(0.3)
+                    self.assertFalse(log.exists(), "Silenced scheduled task reached TTS")
+                self.assertNotIn("Returning the local result", "".join(app.seen))
+                app.close()
+
     def test_worker_uses_own_model_and_main_stays_light(self):
         app = self.app()
         app.send("29 delegate fixture")
