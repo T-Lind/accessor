@@ -24,3 +24,9 @@ Local neural speech:
 - The separate Kokoro environment includes phonemizer/espeak-ng dependencies, whose GPL and other upstream license requirements apply when redistributing them. Keep their package license notices; Accessor does not relicense these components.
 
 Terminal UI uses Ratatui and Crossterm. Credential storage uses keyring with native OS backends. These Rust dependencies and their licenses are recorded in package metadata and Cargo.lock.
+
+The animated terminal bear is adapted from the supplied **Accessor mascot**,
+MIT, Copyright (c) 2026 Accessor mascot contributors. Its original renderer,
+documentation, and license are preserved in `vendor/accessor-mascot/`.
+`src/mascot/bear.rs` ports the renderer and animator to Rust; pixel hashes from
+the original implementation verify all poses and directed transitions.

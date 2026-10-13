@@ -822,6 +822,8 @@ pub async fn run(mut args: Run) -> Result<()> {
     );
     let mut gate_job: Option<tokio::task::JoinHandle<()>> = None;
     let mut cloud_job: Option<tokio::task::JoinHandle<()>> = None;
+    let mut mood_job: Option<tokio::task::JoinHandle<()>> = None;
+    let mut mood_generation = 0u64;
     let mut announce_next = false;
     let mut last_identity: Option<Instant> = None;
     // Each warm harness retains the turns it handled. Track the global history
@@ -907,7 +909,9 @@ pub async fn run(mut args: Run) -> Result<()> {
             crate::decider::size_label()
         ));
         let target = assets.clone();
-        decider_download = Some(tokio::spawn(async move { crate::decider::download(target).await }));
+        decider_download = Some(tokio::spawn(async move {
+            crate::decider::download(target).await
+        }));
     }
     let mut speech_queue = VecDeque::<String>::new();
     let mut wake_listening = false;
@@ -969,6 +973,10 @@ pub async fn run(mut args: Run) -> Result<()> {
             let discard_pending = epoch.load(Ordering::SeqCst) != 0;
             lock_requested = false;
             access.lock();
+            mood_generation = mood_generation.wrapping_add(1);
+            if let Some(job) = mood_job.take() {
+                job.abort();
+            }
             poll_generation = poll_generation.wrapping_add(1);
             crate::config::clear_secret_cache();
             // Revoke access before cancelling anything that can still produce output.
@@ -1155,6 +1163,7 @@ pub async fn run(mut args: Run) -> Result<()> {
             mic_error: mic_unavailable,
             speaking: speaker.is_some(),
             thinking: busy || worker.is_some(),
+            working: worker.is_some(),
             approval: approval || worker_approval,
             listening: wake_listening,
             active: session.active(),
@@ -1417,16 +1426,23 @@ pub async fn run(mut args: Run) -> Result<()> {
                         ui.message(if task.watch.is_some() {format!("Watch {} started in an isolated {} worker.",task.id,harness)} else {format!("Scheduled task {} started in an isolated {} worker.",task.id,harness)});
                         continue;
                     }
-                    Input::Internal(text)=>(text,false,false,false,None),
+                    Input::Internal(text)=>{
+                        // A user request may have started after this acknowledgment
+                        // was queued. Background feedback must wait for that turn.
+                        if busy { feedback.push_front(text); continue; }
+                        (text,false,false,false,None)
+                    },
                     Input::Eof => { if args.text { eof=true; } continue; }
                     Input::Activity { epoch: e } => {
                         // Room noise must not keep the conversation awake indefinitely.
                         let _ = e;
                         continue;
                     }
-                    Input::Mood(mood) => {
+                    Input::Mood { mood, generation } => {
                         // Off-hot-path classification of a finished reply.
-                        ui.override_mood(mood, Duration::from_secs(12));
+                        if generation == mood_generation && !access.locked() {
+                            ui.override_mood(mood, Duration::from_secs(12));
+                        }
                         continue;
                     }
                     Input::Warning(e) => {
@@ -1642,8 +1658,9 @@ pub async fn run(mut args: Run) -> Result<()> {
                             LocalCommand::Mascot(name)=>{
                                 let name=name.trim();
                                 if name.is_empty() {
-                                    ui.message(format!("Companion mood: {}\nAvailable: {}\nUse /mascot NAME, or the agent can emit [[mood:NAME]] in a reply. With a Jev key, replies are classified automatically.",ui.mood_label(),mascot::Mood::names().join(", ")));
+                                    ui.message(format!("Companion mood: {}\nAvailable: {}\nUse /mascot NAME, or the agent can emit [[mood:NAME]] in a reply. The local decision model classifies reply tone; Jev is the optional fallback.",ui.mood_label(),mascot::Mood::names().join(", ")));
                                 } else if let Some(mood)=mascot::Mood::from_name(name) {
+                                    mood_generation = mood_generation.wrapping_add(1);
                                     ui.override_mood(mood,Duration::from_secs(30));
                                 } else {
                                     ui.message(format!("Unknown mood \"{}\". Available: {}",safe(name),mascot::Mood::names().join(", ")));
@@ -2422,6 +2439,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                             }));
                         }
                         seen_history.insert(target.harness.clone(), transcript.len());
+                        mood_generation = mood_generation.wrapping_add(1);
                         busy=true;
                         crate::usage::record_harness(&target.harness, crate::usage::approx_tokens(&outbound));
                         let model_mismatch=agents.get(&target.harness).is_some_and(|live|live.model!=target.model);
@@ -2519,6 +2537,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                     }
                     agent::Event::Started => {
                         if harness == active_harness {
+                            mood_generation = mood_generation.wrapping_add(1);
                             busy=true;
                             turn_trace.clear();
                             interrupted_reply=None;
@@ -2553,24 +2572,12 @@ pub async fn run(mut args: Run) -> Result<()> {
                         }
                         if pending_prompt.is_some() || pending_setting.is_some() {continue;}
                         // The reply may carry an explicit `[[mood:...]]` marker.
-                        // Failing that, read the tone locally, and only reach for
-                        // Jev when it is configured and nothing obvious stands out.
+                        // Show a quick heuristic while the local decision model
+                        // classifies the reply off the voice/UI hot path.
                         let (text, mood) = mascot::take_mood(&text);
+                        mood_generation = mood_generation.wrapping_add(1);
                         if let Some(mood) = mood {
                             ui.override_mood(mood, Duration::from_secs(14));
-                        } else if let Some(mood) = mascot::sense(&text) {
-                            ui.override_mood(mood, Duration::from_secs(10));
-                        } else if crate::route::jev_available() || crate::decider::available() {
-                            let reply = text.clone();
-                            let history: Vec<_> = transcript.iter().cloned().collect();
-                            let tx = input_tx.clone();
-                            tokio::spawn(async move {
-                                if let Ok(Some(mood)) =
-                                    crate::route::classify_mood(&reply, &history).await
-                                {
-                                    let _ = tx.send(Input::Mood(mood)).await;
-                                }
-                            });
                         }
                         let (text, mut directives) = crate::organizer::take_directives(&text);
                         if current_event.is_some() {directives.clear();}
@@ -2640,6 +2647,27 @@ pub async fn run(mut args: Run) -> Result<()> {
                         }
                         if text.trim().is_empty() {
                             continue;
+                        }
+                        // Classify the displayed reply, after stripping controls.
+                        // Hidden control acknowledgments have no conversational tone.
+                        if mood.is_none() && !turn_feedback {
+                            if let Some(mood) = mascot::sense(&text) {
+                                ui.override_mood(mood, Duration::from_secs(10));
+                            }
+                            if (crate::decider::available() || crate::route::jev_available())
+                                && mood_job.as_ref().is_none_or(|job| job.is_finished()) {
+                                let reply = text.clone();
+                                let history: Vec<_> = transcript.iter().cloned().collect();
+                                let tx = input_tx.clone();
+                                let generation = mood_generation;
+                                mood_job = Some(tokio::spawn(async move {
+                                    if let Ok(Some(mood)) = crate::route::classify_mood(&reply, &history).await {
+                                        let _ = tx.send(Input::Mood { mood, generation }).await;
+                                    }
+                                }));
+                            } else if mood_job.as_ref().is_some_and(|job| !job.is_finished()) {
+                                ui.message("Companion classifier busy; keeping live-state animation.");
+                            }
                         }
                         if !turn_feedback {last_reply = Some(text.chars().take(64_000).collect());}
                         ui.chat(if turn_feedback {Kind::Progress} else {Kind::Agent}, &text);
@@ -3033,6 +3061,9 @@ pub async fn run(mut args: Run) -> Result<()> {
         job.abort();
     }
     if let Some(job) = cloud_job {
+        job.abort();
+    }
+    if let Some(job) = mood_job {
         job.abort();
     }
     if let Some(task) = model_lookup {

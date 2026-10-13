@@ -6,6 +6,36 @@ GitHub, and full notes are generated there. This file starts at 0.34.3 — see t
 [releases page](https://github.com/T-Lind/accessor/releases) and `git log` for
 earlier history.
 
+## [0.42.0] - 2026-10-13
+
+### Added
+
+- The supplied honey bear and mint scarf mascot, rendered natively in Rust at
+  its original 40-column × 18-row size. All fifteen poses retain their local
+  animation loops and interruptible blink, doze, wake, and reassurance transitions.
+- A companion panel beside the conversation in terminals at least 80 × 24;
+  terminals at least 44 × 33 stack the full bear above the conversation.
+  Small terminals keep a compact expression, and settings use the full width.
+- `/mascot` accepts the supplied pose names, including `greeting`, `curious`,
+  `working`, `focused`, `success`, `surprised`, `error`, `sleepy`, `sleeping`,
+  and `celebrating`.
+
+### Changed
+
+- Reply tone is classified by the existing local openJev model even when the
+  keyword heuristic finds an initial expression. Classification is bounded to
+  one background job; obsolete results cannot replace a newer reply, manual
+  pose, or locked session. Uncertain local decisions stay local.
+- Live alarms, locks, microphone problems, approvals, listening, speech, and
+  task activity take precedence over reply tone; workers use the typing pose.
+- Decision models use two CPU threads and stop spinning between requests;
+  control-only replies and hidden acknowledgments skip tone inference.
+
+### Fixed
+
+- A queued local control acknowledgment waits if a newer user request has
+  started, so background feedback cannot interrupt an edit or other follow-up.
+
 ## [0.41.0] - 2026-10-13
 
 ### Added

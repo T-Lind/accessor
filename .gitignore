@@ -1,6 +1,7 @@
 /target/
 /models/
 /runtime/
+/decider/
 /scratch/
 *.part
 .env*

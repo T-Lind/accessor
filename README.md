@@ -84,6 +84,21 @@ Codex uses its existing login; Accessor does not call the OpenAI API directly. W
 
 ## A CLI for main use
 
+The animated honey bear appears at its original **40 columns × 18 rows** beside
+the conversation in an **80 × 24** or larger terminal. A tall **44 × 33** terminal
+stacks it above the conversation; smaller terminals show a compact expression.
+The bear breathes, blinks, waves, types, and changes expressions as Accessor
+listens, works, speaks, waits for approval, or sleeps. Settings use the full width.
+
+Reply tone uses the local openJev decision model, independently of playback:
+`acc decider install` installs it, and `acc decider status` checks it. While it is
+absent, live phases and a lightweight tone heuristic still animate the bear;
+hosted Jev is an optional fallback when its credential is configured. An
+uncertain local decision keeps the current phase. Live activity takes priority
+over tone. `/mascot happy`, `/mascot working`, `/mascot greeting`, or
+`/mascot celebrating` selects a pose between active phases; `/mascot` lists all
+names. Agents can also request a pose with `[[mood:NAME]]` in a reply.
+
 ```sh
 acc setup
 acc doctor

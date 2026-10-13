@@ -1063,8 +1063,7 @@ fn parse_oneshot(spec: OneShot, msg: &Value) -> OneLine {
             Some("result") => {
                 if msg["error"] == true {
                     OneLine::Error(
-                        nonempty_str(&msg["text"])
-                            .unwrap_or_else(|| "ty task failed".into()),
+                        nonempty_str(&msg["text"]).unwrap_or_else(|| "ty task failed".into()),
                     )
                 } else {
                     nonempty_str(&msg["text"])

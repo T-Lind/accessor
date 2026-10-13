@@ -238,10 +238,7 @@ pub async fn choose(
     let jev = jev_available();
     // auto-model upgrades the keyword heuristic to a model router; it never
     // overrides an explicit choice, so a local (or Jev) selection sticks.
-    let router = if settings.routing.auto_model
-        && jev
-        && settings.routing.router == "keywords"
-    {
+    let router = if settings.routing.auto_model && jev && settings.routing.router == "keywords" {
         "jev"
     } else {
         settings.routing.router.as_str()
@@ -292,9 +289,18 @@ async fn classify(
 /// Route options for the local decision model. Short category descriptions work
 /// best with the model; the ids match `choose`'s target kinds.
 const ROUTE_OPTIONS: [(&str, &str); 3] = [
-    ("main", "General conversation, a quick question, or a local control"),
-    ("coding", "A software engineering task: code, debug, git, tests"),
-    ("plugin", "Email, calendar, docs, Slack, or another connected app"),
+    (
+        "main",
+        "General conversation, a quick question, or a local control",
+    ),
+    (
+        "coding",
+        "A software engineering task: code, debug, git, tests",
+    ),
+    (
+        "plugin",
+        "Email, calendar, docs, Slack, or another connected app",
+    ),
 ];
 
 fn local_route(
@@ -503,19 +509,20 @@ pub async fn watch_relevance(finding: &str, guidelines: &str) -> Result<Option<f
     Ok(Some(noul(&data, "relevant")? as f32))
 }
 
-/// Ask Jev to read the emotional tone of an assistant reply, returning the
-/// strongest match above a confidence threshold. Best-effort: `None` when Jev is
-/// not configured, the request fails, or nothing stands out. Runs off the hot
-/// path so it never delays playback.
+/// Read reply tone with local openJev, falling back to hosted Jev only when the
+/// local model is absent. An uncertain local result leaves the live phase alone.
+/// Runs off the hot path so it never delays playback.
 pub async fn classify_mood(
     reply: &str,
     history: &[(String, String)],
 ) -> Result<Option<crate::mascot::Mood>> {
-    let (reply_owned, history_owned) = (reply.to_string(), history.to_vec());
-    if let Ok(Some(mood)) =
-        tokio::task::spawn_blocking(move || local_mood(&reply_owned, &history_owned)).await
-    {
-        return Ok(Some(mood));
+    if crate::decider::available() {
+        let (reply_owned, history_owned) = (reply.to_string(), history.to_vec());
+        return Ok(
+            tokio::task::spawn_blocking(move || local_mood(&reply_owned, &history_owned))
+                .await
+                .unwrap_or(None),
+        );
     }
     if !jev_available() {
         return Ok(None);
@@ -563,13 +570,41 @@ pub async fn classify_mood(
 }
 
 const MOOD_OPTIONS: [(&str, crate::mascot::Mood, &str); 7] = [
-    ("happy", crate::mascot::Mood::Happy, "Warm, agreeable, or willing to help"),
-    ("excited", crate::mascot::Mood::Excited, "Enthusiastic or delighted"),
-    ("proud", crate::mascot::Mood::Proud, "A task completed successfully"),
-    ("apologetic", crate::mascot::Mood::Apologetic, "An apology or admission of a mistake"),
-    ("concerned", crate::mascot::Mood::Concerned, "A problem, failure, or bad news"),
-    ("confused", crate::mascot::Mood::Confused, "Uncertainty or ambiguity"),
-    ("cautious", crate::mascot::Mood::Cautious, "A warning or a call to be careful"),
+    (
+        "happy",
+        crate::mascot::Mood::Happy,
+        "Warm, agreeable, or willing to help",
+    ),
+    (
+        "excited",
+        crate::mascot::Mood::Excited,
+        "Enthusiastic or delighted",
+    ),
+    (
+        "proud",
+        crate::mascot::Mood::Proud,
+        "A task completed successfully",
+    ),
+    (
+        "apologetic",
+        crate::mascot::Mood::Apologetic,
+        "An apology or admission of a mistake",
+    ),
+    (
+        "concerned",
+        crate::mascot::Mood::Concerned,
+        "A problem, failure, or bad news",
+    ),
+    (
+        "confused",
+        crate::mascot::Mood::Confused,
+        "Uncertainty or ambiguity",
+    ),
+    (
+        "cautious",
+        crate::mascot::Mood::Cautious,
+        "A warning or a call to be careful",
+    ),
 ];
 
 /// Local mascot tone via the decision model, or `None` when it is absent or the
@@ -1004,6 +1039,28 @@ fn parse_switch_line(line: &str) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn local_bear_tone_when_installed() {
+        if !crate::decider::available() {
+            return;
+        }
+        for (reply, expected) in [
+            (
+                "All done. I finished the task successfully and everything passed.",
+                crate::mascot::Mood::Proud,
+            ),
+            (
+                "I'm sorry. I made a mistake and gave you the wrong answer.",
+                crate::mascot::Mood::Apologetic,
+            ),
+            (
+                "I'm not sure. The evidence is unclear and I don't know which answer is correct.",
+                crate::mascot::Mood::Confused,
+            ),
+        ] {
+            assert_eq!(local_mood(reply, &[]), Some(expected), "{reply}");
+        }
+    }
     #[tokio::test]
     async fn unavailable_compactor_retains_recent_context_locally() {
         let dir = tempfile::tempdir().unwrap();

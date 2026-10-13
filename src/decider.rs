@@ -36,7 +36,8 @@ const GATE_URL: &str =
 const GATE_TOKENIZER_URL: &str =
     "https://github.com/T-Lind/accessor/releases/download/openjev-v1/openjev-gate-tokenizer.json";
 const GATE_SHA256: &str = "5b3b0bbbd49f7f1564d42c4d869dcb0304cd4e9062ea1f8bfdc38d8c1fe12d3d";
-const GATE_TOKENIZER_SHA256: &str = "79ea220416a57ca8acdf069d71875d5d2ddadef66021aeb6c120a7c546c04344";
+const GATE_TOKENIZER_SHA256: &str =
+    "79ea220416a57ca8acdf069d71875d5d2ddadef66021aeb6c120a7c546c04344";
 
 const RANK_FILE: &str = "openjev-rank-int8.onnx";
 const RANK_TOKENIZER_FILE: &str = "openjev-rank-tokenizer.json";
@@ -45,7 +46,8 @@ const RANK_URL: &str =
 const RANK_TOKENIZER_URL: &str =
     "https://github.com/T-Lind/accessor/releases/download/openjev-v1/openjev-rank-tokenizer.json";
 const RANK_SHA256: &str = "f914ad5da01d8f2724f757bf91ab0aec903f0a454e4dffff8aa92ccebfb84732";
-const RANK_TOKENIZER_SHA256: &str = "8b79639ec74b46604e730f505186eaafb1006d2fd00f2c4930d168bb7f894680";
+const RANK_TOKENIZER_SHA256: &str =
+    "8b79639ec74b46604e730f505186eaafb1006d2fd00f2c4930d168bb7f894680";
 
 /// Free a model after this long without a decision. Long enough that an active
 /// conversation never reloads, short enough that idle Accessor reclaims memory.
@@ -86,8 +88,12 @@ pub async fn download_gate(assets: &Path) -> Result<()> {
     let dir = dir(assets);
     std::fs::create_dir_all(&dir)?;
     crate::stt_models::fetch(GATE_URL, &dir.join(GATE_FILE), GATE_SHA256).await?;
-    crate::stt_models::fetch(GATE_TOKENIZER_URL, &dir.join(GATE_TOKENIZER_FILE), GATE_TOKENIZER_SHA256)
-        .await?;
+    crate::stt_models::fetch(
+        GATE_TOKENIZER_URL,
+        &dir.join(GATE_TOKENIZER_FILE),
+        GATE_TOKENIZER_SHA256,
+    )
+    .await?;
     Ok(())
 }
 
@@ -148,6 +154,21 @@ struct Decider {
     tokenizer: Tokenizer,
 }
 
+/// Keep background decisions from consuming speech/UI CPU between requests.
+fn decision_session() -> Result<ort::session::builder::SessionBuilder> {
+    Ok(Session::builder()?
+        .with_intra_threads(2)
+        .map_err(ort::Error::<()>::from)?
+        .with_inter_threads(1)
+        .map_err(ort::Error::<()>::from)?
+        .with_independent_thread_pool()
+        .map_err(ort::Error::<()>::from)?
+        .with_intra_op_spinning(false)
+        .map_err(ort::Error::<()>::from)?
+        .with_inter_op_spinning(false)
+        .map_err(ort::Error::<()>::from)?)
+}
+
 pub struct Choice {
     pub index: usize,
     pub confidence: f32,
@@ -160,7 +181,7 @@ impl Decider {
         let dir = dir(assets);
         let tokenizer = Tokenizer::from_file(dir.join(TOKENIZER_FILE))
             .map_err(|e| anyhow!("decision tokenizer: {e}"))?;
-        let session = Session::builder()?
+        let session = decision_session()?
             .commit_from_file(dir.join(MODEL_FILE))
             .context("Could not load the decision model")?;
         Ok(Decider { session, tokenizer })
@@ -215,7 +236,7 @@ impl Gate {
         let dir = dir(assets);
         let tokenizer = Tokenizer::from_file(dir.join(GATE_TOKENIZER_FILE))
             .map_err(|e| anyhow!("gate tokenizer: {e}"))?;
-        let session = Session::builder()?
+        let session = decision_session()?
             .commit_from_file(dir.join(GATE_FILE))
             .context("Could not load the relevance model")?;
         Ok(Gate { session, tokenizer })
@@ -237,7 +258,11 @@ fn run_single(session: &mut Session, tokenizer: &Tokenizer, text: &str) -> Resul
         .map_err(|e| anyhow!("tokenizer: {e}"))?;
     let len = encoded.get_ids().len();
     let ids: Vec<i64> = encoded.get_ids().iter().map(|&x| x as i64).collect();
-    let mask: Vec<i64> = encoded.get_attention_mask().iter().map(|&x| x as i64).collect();
+    let mask: Vec<i64> = encoded
+        .get_attention_mask()
+        .iter()
+        .map(|&x| x as i64)
+        .collect();
     let ids = Array2::from_shape_vec((1, len), ids)?;
     let mask = Array2::from_shape_vec((1, len), mask)?;
     let outputs = session.run(ort::inputs![
@@ -260,7 +285,7 @@ impl Rank {
         let dir = dir(assets);
         let tokenizer = Tokenizer::from_file(dir.join(RANK_TOKENIZER_FILE))
             .map_err(|e| anyhow!("rank tokenizer: {e}"))?;
-        let session = Session::builder()?
+        let session = decision_session()?
             .commit_from_file(dir.join(RANK_FILE))
             .context("Could not load the reranker")?;
         Ok(Rank { session, tokenizer })
@@ -273,7 +298,11 @@ impl Rank {
             .map_err(|e| anyhow!("rank tokenizer: {e}"))?;
         let len = encoded.get_ids().len();
         let ids: Vec<i64> = encoded.get_ids().iter().map(|&x| x as i64).collect();
-        let mask: Vec<i64> = encoded.get_attention_mask().iter().map(|&x| x as i64).collect();
+        let mask: Vec<i64> = encoded
+            .get_attention_mask()
+            .iter()
+            .map(|&x| x as i64)
+            .collect();
         let types: Vec<i64> = encoded.get_type_ids().iter().map(|&x| x as i64).collect();
         let ids = Array2::from_shape_vec((1, len), ids)?;
         let mask = Array2::from_shape_vec((1, len), mask)?;
@@ -356,8 +385,12 @@ pub async fn download_rank(assets: &Path) -> Result<()> {
     let dir = dir(assets);
     std::fs::create_dir_all(&dir)?;
     crate::stt_models::fetch(RANK_URL, &dir.join(RANK_FILE), RANK_SHA256).await?;
-    crate::stt_models::fetch(RANK_TOKENIZER_URL, &dir.join(RANK_TOKENIZER_FILE), RANK_TOKENIZER_SHA256)
-        .await?;
+    crate::stt_models::fetch(
+        RANK_TOKENIZER_URL,
+        &dir.join(RANK_TOKENIZER_FILE),
+        RANK_TOKENIZER_SHA256,
+    )
+    .await?;
     Ok(())
 }
 
@@ -384,7 +417,11 @@ mod tests {
             &options,
         )
         .expect("local decision");
-        assert_eq!(choice.index, 1, "conf={} abstain={}", choice.confidence, choice.abstain);
+        assert_eq!(
+            choice.index, 1,
+            "conf={} abstain={}",
+            choice.confidence, choice.abstain
+        );
     }
 
     #[test]
@@ -403,8 +440,14 @@ mod tests {
             "wake_addressed: no\nconversation:\n(none)\nutterance: and then she told him to wait outside",
         )
         .expect("gate");
-        assert!(request.0 >= 0.5 && request.1 >= 0.5, "accepted: {request:?}");
-        assert!(background.0 < 0.5 && background.1 < 0.5, "rejected: {background:?}");
+        assert!(
+            request.0 >= 0.5 && request.1 >= 0.5,
+            "accepted: {request:?}"
+        );
+        assert!(
+            background.0 < 0.5 && background.1 < 0.5,
+            "rejected: {background:?}"
+        );
     }
 
     #[test]
@@ -415,12 +458,16 @@ mod tests {
         if !rank_installed(&assets) {
             return;
         }
-        let relevant = rank("what is my wifi password", "the wifi password is hunter2").expect("rank");
+        let relevant =
+            rank("what is my wifi password", "the wifi password is hunter2").expect("rank");
         let distractor = rank(
             "what is my wifi password",
             "the neighbour's dog was barking again",
         )
         .expect("rank");
-        assert!(relevant > distractor, "relevant {relevant} should beat {distractor}");
+        assert!(
+            relevant > distractor,
+            "relevant {relevant} should beat {distractor}"
+        );
     }
 }

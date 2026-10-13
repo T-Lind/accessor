@@ -1119,9 +1119,8 @@ pub fn harness_bin(
                 "cursor-agent"
             })
         }),
-        "ty" => find_on_path(&["ty"]).unwrap_or_else(|| {
-            PathBuf::from(if cfg!(windows) { "ty.exe" } else { "ty" })
-        }),
+        "ty" => find_on_path(&["ty"])
+            .unwrap_or_else(|| PathBuf::from(if cfg!(windows) { "ty.exe" } else { "ty" })),
         "mock" => PathBuf::from("mock"),
         _ => codex_override.cloned().unwrap_or_else(|| codex(settings)),
     }

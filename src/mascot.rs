@@ -1,14 +1,16 @@
-//! A small on-screen companion whose expression mirrors Accessor's state.
+//! A full-size animated bear whose expression mirrors Accessor's state.
 //!
 //! The mood is normally chosen automatically from the live phase (asleep,
 //! listening, thinking, speaking, alarmed...). The agent can also steer it by
 //! emitting a directive such as `[[mood:happy]]` inside a reply — the same idea
 //! as the OpenAI realtime `set_emotion` pattern — which is parsed and removed
-//! before the text is shown or spoken. When a Jev (TypeSafe) key is configured,
-//! a reply is additionally classified off the hot path as a richer fallback.
+//! before the text is shown or spoken. The local openJev decision model reads
+//! reply tone off the hot path, with hosted Jev as an optional fallback.
 //!
-//! All inference here is a pure function of text and phase, so it never adds
-//! latency to the speech or UI hot path.
+//! The renderer and phase mapping are local; model inference runs separately
+//! so it never adds latency to the speech or UI hot path.
+
+pub mod bear;
 
 use ratatui::style::Color;
 
@@ -32,6 +34,12 @@ pub enum Mood {
     Worried,
     Locked,
     Waving,
+    Curious,
+    Working,
+    Focused,
+    Surprised,
+    Sleepy,
+    Celebrating,
 }
 
 impl Mood {
@@ -56,6 +64,12 @@ impl Mood {
             Self::Worried => "worried",
             Self::Locked => "locked",
             Self::Waving => "hi!",
+            Self::Curious => "curious",
+            Self::Working => "working",
+            Self::Focused => "focused",
+            Self::Surprised => "surprised",
+            Self::Sleepy => "sleepy",
+            Self::Celebrating => "celebrating",
         }
     }
 
@@ -64,18 +78,20 @@ impl Mood {
         match self {
             Self::Asleep => ["  .----.  ", " ( -  - ) ", "  ' .. ' z"],
             Self::Idle => ["  .----.  ", " ( o  o ) ", "  ' .. '  "],
-            Self::Listening => ["  .----.  ", " ( O  O ) ", "  \\____/  "],
-            Self::Thinking => ["  .----.  ", " ( o  o ) ", "  ' ~~ ' ."],
+            Self::Listening | Self::Curious => ["  .----.  ", " ( O  O ) ", "  \\____/  "],
+            Self::Thinking | Self::Working => ["  .----.  ", " ( o  o ) ", "  ' ~~ ' ."],
             Self::Speaking => ["  .----.  ", " ( O  O ) ", "  ' \\/ '  "],
             Self::Happy => ["  .----.  ", " ( ^  ^ ) ", "  ' \\/ '  "],
-            Self::Delighted => ["  .----.  ", " ( ^  ^ ) ", "  ' \\/ '* "],
+            Self::Delighted | Self::Celebrating => ["  .----.  ", " ( ^  ^ ) ", "  ' \\/ '* "],
             Self::Proud => ["  .----.  ", " ( ^  ^ ) ", "  ' \\/ ' +"],
-            Self::Excited => ["  .----.  ", " ( ^  o ) ", "  ' \\/ ' !"],
+            Self::Excited | Self::Surprised => ["  .----.  ", " ( ^  o ) ", "  ' \\/ ' !"],
             Self::Sad => ["  .----.  ", " ( ;  ; ) ", "  ' /\\ '  "],
             Self::Concerned => ["  .----.  ", " ( o  o ) ", "  ' /\\ '  "],
             Self::Confused => ["  .----.  ", " ( o  O ) ", "  ' ~  ' ?"],
             Self::Apologetic => ["  .----.  ", " ( >  < ) ", "  ' /\\ ' '"],
-            Self::Cautious => ["  .----.  ", " ( -  - ) ", "  ' -- '  "],
+            Self::Cautious | Self::Focused | Self::Sleepy => {
+                ["  .----.  ", " ( -  - ) ", "  ' -- '  "]
+            }
             Self::Alarmed => ["  .----.  ", " ( O  O ) ", "  ' /\\ '!!"],
             Self::Worried => ["  .----.  ", " ( o  o ) ", "  ' .. '  "],
             Self::Locked => ["  .----.  ", " ( x  x ) ", "  ' -- ' #"],
@@ -87,21 +103,21 @@ impl Mood {
         match self {
             Self::Asleep => Color::DarkGray,
             Self::Idle => Color::Gray,
-            Self::Listening => Color::Cyan,
-            Self::Thinking => Color::LightBlue,
+            Self::Listening | Self::Curious => Color::Cyan,
+            Self::Thinking | Self::Working => Color::LightBlue,
             Self::Speaking => Color::Magenta,
             Self::Happy => Color::Green,
-            Self::Delighted => Color::LightGreen,
+            Self::Delighted | Self::Celebrating => Color::LightGreen,
             Self::Proud => Color::LightCyan,
-            Self::Excited => Color::LightYellow,
+            Self::Excited | Self::Surprised => Color::LightYellow,
             Self::Sad => Color::Blue,
             Self::Concerned => Color::Yellow,
             Self::Confused => Color::LightMagenta,
             Self::Apologetic => Color::LightBlue,
-            Self::Cautious => Color::Yellow,
+            Self::Cautious | Self::Focused => Color::Yellow,
             Self::Alarmed => Color::Red,
             Self::Worried => Color::LightRed,
-            Self::Locked => Color::DarkGray,
+            Self::Locked | Self::Sleepy => Color::DarkGray,
             Self::Waving => Color::LightGreen,
         }
     }
@@ -117,17 +133,18 @@ impl Mood {
             return None;
         }
         Some(match key.as_str() {
-            "asleep" | "sleep" | "sleepy" | "sleeping" => Self::Asleep,
+            "asleep" | "sleep" | "sleeping" => Self::Asleep,
+            "sleepy" | "drowsy" => Self::Sleepy,
             "idle" | "neutral" | "calm" | "ok" => Self::Idle,
             "listening" | "listen" | "alert" | "attentive" => Self::Listening,
             "thinking" | "think" | "pondering" => Self::Thinking,
             "speaking" | "speak" | "talking" | "talk" => Self::Speaking,
             "happy" | "happiness" | "smile" => Self::Happy,
             "delighted" | "joy" | "joyful" | "cheerful" => Self::Delighted,
-            "proud" | "accomplished" => Self::Proud,
+            "proud" | "accomplished" | "success" => Self::Proud,
             "excited" | "excite" | "eager" => Self::Excited,
             "sad" | "down" | "unhappy" => Self::Sad,
-            "concerned" | "concern" | "serious" => Self::Concerned,
+            "concerned" | "concern" | "serious" | "error" => Self::Concerned,
             "confused" | "uncertain" | "puzzled" => Self::Confused,
             "apologetic" | "sorry" | "apology" => Self::Apologetic,
             "cautious" | "careful" | "wary" => Self::Cautious,
@@ -135,6 +152,11 @@ impl Mood {
             "worried" | "worry" | "anxious" => Self::Worried,
             "locked" | "lock" | "private" => Self::Locked,
             "waving" | "wave" | "hi" | "hello" | "greeting" => Self::Waving,
+            "curious" | "curiosity" => Self::Curious,
+            "working" | "work" | "busy" => Self::Working,
+            "focused" | "focus" => Self::Focused,
+            "surprised" | "surprise" => Self::Surprised,
+            "celebrating" | "celebrate" => Self::Celebrating,
             _ => return None,
         })
     }
@@ -160,6 +182,12 @@ impl Mood {
             "worried",
             "locked",
             "waving",
+            "curious",
+            "working",
+            "focused",
+            "surprised",
+            "sleepy",
+            "celebrating",
         ]
     }
 
@@ -171,12 +199,14 @@ impl Mood {
             Mood::Alarmed
         } else if s.mic_error {
             Mood::Worried
-        } else if s.speaking {
-            Mood::Speaking
-        } else if s.thinking {
-            Mood::Thinking
         } else if s.approval {
             Mood::Cautious
+        } else if s.speaking {
+            Mood::Speaking
+        } else if s.working {
+            Mood::Working
+        } else if s.thinking {
+            Mood::Thinking
         } else if s.listening {
             Mood::Listening
         } else if s.active {
@@ -195,6 +225,7 @@ pub struct Snapshot {
     pub mic_error: bool,
     pub speaking: bool,
     pub thinking: bool,
+    pub working: bool,
     pub approval: bool,
     /// A bare wake is open and Accessor is waiting for the request.
     pub listening: bool,
@@ -368,6 +399,10 @@ mod tests {
         assert_eq!(Mood::automatic(&s), Mood::Idle);
         s.active = false;
         assert_eq!(Mood::automatic(&s), Mood::Asleep);
+        s.working = true;
+        assert_eq!(Mood::automatic(&s), Mood::Working);
+        s.approval = true;
+        assert_eq!(Mood::automatic(&s), Mood::Cautious);
     }
 
     #[test]

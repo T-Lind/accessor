@@ -95,8 +95,11 @@ pub enum Input {
     Activity {
         epoch: u64,
     },
-    /// A mood chosen off the hot path (e.g. Jev emotion classification).
-    Mood(mascot::Mood),
+    /// A tone chosen off the hot path, tied to the current reply generation.
+    Mood {
+        mood: mascot::Mood,
+        generation: u64,
+    },
     /// Recoverable audio or background failure; never ends the session.
     Warning(String),
     Error(String),
