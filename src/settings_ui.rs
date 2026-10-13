@@ -386,6 +386,15 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                 Action::Cycle("routing.input-gate", &["local", "jev", "off"]),
             ),
             row(
+                "Request routing",
+                if s.routing.router == "local" && !crate::decider::available() {
+                    "local · model not installed"
+                } else {
+                    &s.routing.router
+                },
+                Action::Cycle("routing.router", &["local", "keywords", "jev", "off"]),
+            ),
+            row(
                 "TypeSafe Jev key",
                 "optional input classifier",
                 Action::Run("/jev key"),

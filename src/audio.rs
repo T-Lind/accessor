@@ -53,7 +53,7 @@ fn onnx_runtime_path() -> PathBuf {
     )
 }
 
-fn prepare_ort() -> Result<()> {
+pub(crate) fn prepare_ort() -> Result<()> {
     static ORT: OnceLock<Result<(), String>> = OnceLock::new();
     match ORT.get_or_init(|| {
         (|| -> Result<()> {

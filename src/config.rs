@@ -149,7 +149,7 @@ impl Default for Routing {
             main: "codex".into(),
             main_model: None,
             plugin_model: None,
-            router: "jev".into(),
+            router: "local".into(),
             announce: true,
             auto_model: true,
             reasoning: "default".into(),
@@ -157,7 +157,7 @@ impl Default for Routing {
             plugin_reasoning: "low".into(),
             compaction_reasoning: "low".into(),
             plugin_use_main: true,
-            input_gate: "jev".into(),
+            input_gate: "local".into(),
             compaction_model: default_compaction_model(),
             compaction_harness: default_compaction_harness(),
             compact_tokens: 4000,
@@ -662,8 +662,8 @@ impl Settings {
             );
         }
         ensure!(
-            ["off", "keywords", "jev"].contains(&self.routing.router.as_str()),
-            "routing.router must be off, keywords, or jev"
+            ["off", "keywords", "local", "jev"].contains(&self.routing.router.as_str()),
+            "routing.router must be off, keywords, local, or jev"
         );
         for effort in [
             &self.routing.reasoning,
@@ -1386,7 +1386,7 @@ mod tests {
         assert!(s.tts.streaming);
         assert_eq!(s.tts.speed, 1.1);
         assert_eq!(s.sounds.think, 1.5);
-        assert_eq!(s.routing.router, "jev");
+        assert_eq!(s.routing.router, "local");
         assert!(s.routing.auto_model);
         assert_eq!(s.routing.reasoning, "default");
         assert_eq!(s.routing.compaction_harness, "codex");

@@ -51,6 +51,12 @@ enum Commands {
     /// Register Accessor MCP for Antigravity (Codex/Claude connect per session).
     McpInstall,
 
+    /// Local decision model for request routing and mascot tone (openJev 151M).
+    Decider {
+        #[command(subcommand)]
+        action: DeciderCommand,
+    },
+
     /// Receive notifications from an existing email automation; no inbox polling.
     Events {
         #[command(subcommand)]
@@ -135,6 +141,15 @@ enum Commands {
         #[command(subcommand)]
         action: JournalCommand,
     },
+}
+#[derive(Subcommand)]
+enum DeciderCommand {
+    /// Show whether the local decision model is installed.
+    Status,
+    /// Download and verify the local decision model (~150 MB).
+    Install,
+    /// Delete the local decision model.
+    Remove,
 }
 #[derive(Subcommand)]
 enum MemoryCommand {
@@ -578,6 +593,41 @@ pub async fn entry() -> Result<()> {
         Commands::McpInstall => {
             crate::mcp::install_antigravity()?;
             println!("Accessor MCP registered for Antigravity. It connects when the harness starts. Codex and Claude connect automatically inside Accessor.");
+            Ok(())
+        }
+        Commands::Decider { action } => {
+            let assets = crate::config::Settings::load()?.assets()?;
+            match action {
+                DeciderCommand::Status => {
+                    if crate::decider::installed(&assets) {
+                        println!(
+                            "Local decision model installed at {}.",
+                            crate::decider::dir(&assets).display()
+                        );
+                    } else {
+                        println!(
+                            "Local decision model not installed. Run `acc decider install` (~{}). Until then, routing falls back to keywords and tone to heuristics.",
+                            crate::decider::size_label()
+                        );
+                    }
+                }
+                DeciderCommand::Install => {
+                    println!(
+                        "Downloading the local decision model (~{})...",
+                        crate::decider::size_label()
+                    );
+                    println!("{}", crate::decider::download(assets).await?);
+                }
+                DeciderCommand::Remove => {
+                    let dir = crate::decider::dir(&assets);
+                    if dir.is_dir() {
+                        std::fs::remove_dir_all(&dir)?;
+                        println!("Removed {}.", dir.display());
+                    } else {
+                        println!("Nothing to remove.");
+                    }
+                }
+            }
             Ok(())
         }
         Commands::Organizer { action } => match action {

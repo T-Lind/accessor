@@ -8,6 +8,7 @@ mod config;
 mod connectors;
 mod control;
 mod dashboard;
+mod decider;
 mod desktop;
 mod echo;
 mod http;

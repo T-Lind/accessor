@@ -235,12 +235,40 @@ async fn classify(
     router: &str,
     jev: bool,
 ) -> &'static str {
+    if router == "local" {
+        if let Some(kind) = local_route(text, history, previous) {
+            return kind;
+        }
+    }
     if router == "jev" && jev {
         if let Ok(kind) = jev_route(text, history, previous).await {
             return kind;
         }
     }
     keyword_route(text, previous)
+}
+
+/// Route options for the local decision model. Short category descriptions work
+/// best with the model; the ids match `choose`'s target kinds.
+const ROUTE_OPTIONS: [(&str, &str); 3] = [
+    ("main", "General conversation, a quick question, or a local control"),
+    ("coding", "A software engineering task: code, debug, git, tests"),
+    ("plugin", "Email, calendar, docs, Slack, or another connected app"),
+];
+
+fn local_route(
+    text: &str,
+    history: &[(String, String)],
+    previous: Option<&'static str>,
+) -> Option<&'static str> {
+    let context = format!(
+        "Utterance: {text}\nConversation:\n{}\nPrevious route: {}",
+        routing_context(history),
+        previous.unwrap_or("none")
+    );
+    let options: Vec<&str> = ROUTE_OPTIONS.iter().map(|(_, d)| *d).collect();
+    let choice = crate::decider::choice("What kind of request is this?", &context, &options)?;
+    Some(ROUTE_OPTIONS[choice.index].0)
 }
 
 pub fn keyword_is_plugin(text: &str) -> bool {
@@ -428,6 +456,9 @@ pub async fn classify_mood(
     reply: &str,
     history: &[(String, String)],
 ) -> Result<Option<crate::mascot::Mood>> {
+    if let Some(mood) = local_mood(reply, history) {
+        return Ok(Some(mood));
+    }
     if !jev_available() {
         return Ok(None);
     }
@@ -471,6 +502,35 @@ pub async fn classify_mood(
         }
     }
     Ok(best.map(|(_, mood)| mood))
+}
+
+const MOOD_OPTIONS: [(&str, crate::mascot::Mood, &str); 7] = [
+    ("happy", crate::mascot::Mood::Happy, "Warm, agreeable, or willing to help"),
+    ("excited", crate::mascot::Mood::Excited, "Enthusiastic or delighted"),
+    ("proud", crate::mascot::Mood::Proud, "A task completed successfully"),
+    ("apologetic", crate::mascot::Mood::Apologetic, "An apology or admission of a mistake"),
+    ("concerned", crate::mascot::Mood::Concerned, "A problem, failure, or bad news"),
+    ("confused", crate::mascot::Mood::Confused, "Uncertainty or ambiguity"),
+    ("cautious", crate::mascot::Mood::Cautious, "A warning or a call to be careful"),
+];
+
+/// Local mascot tone via the decision model, or `None` when it is absent or the
+/// reply has no clear tone. Runs off the hot path.
+fn local_mood(reply: &str, history: &[(String, String)]) -> Option<crate::mascot::Mood> {
+    let context = format!(
+        "Reply: {reply}\nConversation:\n{}",
+        routing_context(history)
+    );
+    let options: Vec<&str> = MOOD_OPTIONS.iter().map(|(_, _, d)| *d).collect();
+    let choice = crate::decider::choice(
+        "What emotional tone does the assistant's reply convey?",
+        &context,
+        &options,
+    )?;
+    if choice.abstain > 0.5 || choice.confidence < 0.5 {
+        return None;
+    }
+    Some(MOOD_OPTIONS[choice.index].1)
 }
 
 fn noul(data: &Value, name: &str) -> Result<f64> {

@@ -6,6 +6,25 @@ GitHub, and full notes are generated there. This file starts at 0.34.3 — see t
 [releases page](https://github.com/T-Lind/accessor/releases) and `git log` for
 earlier history.
 
+## [0.39.0] - 2026-10-13
+
+### Added
+
+- A local decision model (openJev, ModernBERT-151M, Apache-2.0) run through
+  ONNX Runtime, replacing the hosted Jev service for the two decisions it does
+  well: request routing (chat / coding / plugin) and the mascot's reply tone.
+  `routing.router` gains `local` and now defaults to it; `routing.input-gate`
+  defaults to the local filler filter. Both remain selectable in `/settings`.
+- `acc decider status|install|remove` downloads the int8 weights (~150 MB,
+  checksum-verified) on first use; routing falls back to keywords while the model
+  is absent.
+- The shipped harness guide and docs note the local decider.
+
+### Notes
+
+- The relevance gate stays on the local filler filter (or Jev): the 151M model is
+  not reliable zero-shot for yes/no relevance, only for choice over short labels.
+
 ## [0.38.0] - 2026-10-12
 
 ### Added

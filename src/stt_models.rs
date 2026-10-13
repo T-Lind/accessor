@@ -389,7 +389,7 @@ fn sha256_file(path: &Path) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-async fn fetch(url: &str, dest: &Path, sha256: &str) -> Result<()> {
+pub(crate) async fn fetch(url: &str, dest: &Path, sha256: &str) -> Result<()> {
     if dest.is_file() && sha256_file(dest)? == sha256 {
         return Ok(());
     }

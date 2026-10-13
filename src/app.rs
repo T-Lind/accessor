@@ -2530,7 +2530,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                             ui.override_mood(mood, Duration::from_secs(14));
                         } else if let Some(mood) = mascot::sense(&text) {
                             ui.override_mood(mood, Duration::from_secs(10));
-                        } else if crate::route::jev_available() {
+                        } else if crate::route::jev_available() || crate::decider::available() {
                             let reply = text.clone();
                             let history: Vec<_> = transcript.iter().cloned().collect();
                             let tx = input_tx.clone();
