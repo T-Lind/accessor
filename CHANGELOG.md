@@ -6,6 +6,16 @@ GitHub, and full notes are generated there. This file starts at 0.34.3 — see t
 [releases page](https://github.com/T-Lind/accessor/releases) and `git log` for
 earlier history.
 
+## [0.40.1] - 2026-10-13
+
+### Changed
+
+- On first run, when local routing or the local relevance gate is selected and
+  the model is missing, Accessor fetches it in the background (~224 MB,
+  checksum-verified) and reports when it finishes, so a fresh setup needs no
+  manual `acc decider install`. Routing and relevance use their fallbacks until
+  it completes.
+
 ## [0.40.0] - 2026-10-13
 
 ### Added

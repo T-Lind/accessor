@@ -894,6 +894,18 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut wizard: Option<crate::dashboard::Wizard> = None;
     let mut pending_secret: Option<&'static str> = None;
     let mut utility: Option<tokio::task::JoinHandle<Result<String>>> = None;
+    // Fetch the local decision model in the background on first run so the
+    // default local routing and relevance gate work without a manual step.
+    if (settings.routing.router == "local" || settings.routing.input_gate == "local")
+        && !crate::decider::installed(&assets)
+    {
+        ui.message(format!(
+            "Downloading the local decision model (~{}) in the background; routing and relevance use fallbacks until it finishes.",
+            crate::decider::size_label()
+        ));
+        let target = assets.clone();
+        utility = Some(tokio::spawn(async move { crate::decider::download(target).await }));
+    }
     let mut speech_queue = VecDeque::<String>::new();
     let mut wake_listening = false;
     let mut last_display_wake = None;
