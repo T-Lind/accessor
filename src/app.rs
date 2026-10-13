@@ -616,6 +616,7 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut session_pin: Option<(String, Option<String>)> = None;
     let mut pending_stt: Option<String> = None;
     let mut stt_download: Option<tokio::task::JoinHandle<Result<(String, String)>>> = None;
+    let mut decider_download: Option<tokio::task::JoinHandle<Result<String>>> = None;
     let mut echo_guard = crate::echo::TextGuard::new();
     if let Some(provider) = &args.tts {
         settings.tts.provider = provider.clone();
@@ -896,7 +897,9 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut utility: Option<tokio::task::JoinHandle<Result<String>>> = None;
     // Fetch the local decision model in the background on first run so the
     // default local routing and relevance gate work without a manual step.
-    if (settings.routing.router == "local" || settings.routing.input_gate == "local")
+    // Skipped in typed-transcript mode, which is used for testing.
+    if !args.text
+        && (settings.routing.router == "local" || settings.routing.input_gate == "local")
         && !crate::decider::installed(&assets)
     {
         ui.message(format!(
@@ -904,7 +907,7 @@ pub async fn run(mut args: Run) -> Result<()> {
             crate::decider::size_label()
         ));
         let target = assets.clone();
-        utility = Some(tokio::spawn(async move { crate::decider::download(target).await }));
+        decider_download = Some(tokio::spawn(async move { crate::decider::download(target).await }));
     }
     let mut speech_queue = VecDeque::<String>::new();
     let mut wake_listening = false;
@@ -1007,6 +1010,9 @@ pub async fn run(mut args: Run) -> Result<()> {
                 job.abort();
             }
             if let Some(job) = stt_download.take() {
+                job.abort();
+            }
+            if let Some(job) = decider_download.take() {
                 job.abort();
             }
             pending_prompt = None;
@@ -2013,6 +2019,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                             if let Some(live)=agents.get_mut(&active_harness) { live.first=None; }
                             pending_prompt=None;pending_setting=None;pending_stt=None;
                             if let Some(task)=stt_download.take() { task.abort(); }
+                            if let Some(task)=decider_download.take() { task.abort(); }
                             if let Some(tx) = &agent_tx { cancelled_turn=true;cancel_started=Some(Instant::now());let _ = tx.try_send(agent::CommandMessage::Cancel); }
                             if let Some(job) = speaker.take() { job.cancel(); muted.store(panel.is_some() || (speaker.is_some() && !settings.barge_in),Ordering::SeqCst); }
                             epoch.fetch_add(1,Ordering::SeqCst);
@@ -2922,6 +2929,13 @@ pub async fn run(mut args: Run) -> Result<()> {
                 if utility.as_ref().is_some_and(|task|task.is_finished()) {
                     match utility.take().unwrap().await {Ok(Ok(text))=>ui.message(text),Ok(Err(e))=>ui.message(format!("Background job failed: {e:#}")),Err(e)=>ui.message(format!("Background job stopped: {e}"))}
                 }
+                if decider_download.as_ref().is_some_and(|task|task.is_finished()) {
+                    match decider_download.take().unwrap().await {
+                        Ok(Ok(msg)) => ui.message(msg),
+                        Ok(Err(e)) => ui.message(format!("Local decision model download failed: {e:#}. Routing and relevance use fallbacks.")),
+                        Err(e) => ui.message(format!("Local decision model download stopped: {e}")),
+                    }
+                }
                 if stt_download.as_ref().is_some_and(|task|task.is_finished()) {
                     match stt_download.take().unwrap().await {
                         Ok(Ok((id, msg))) => {
@@ -3028,6 +3042,9 @@ pub async fn run(mut args: Run) -> Result<()> {
         task.abort();
     }
     if let Some(task) = stt_download {
+        task.abort();
+    }
+    if let Some(task) = decider_download {
         task.abort();
     }
     if let Some(task) = tts_install {

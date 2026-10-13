@@ -472,6 +472,15 @@ async fn jev_route(
 /// Ask Jev whether a watch finding is worth alerting the user about, given the
 /// watch's own guidelines. Returns the probability, or None when Jev is absent.
 pub async fn watch_relevance(finding: &str, guidelines: &str) -> Result<Option<f32>> {
+    // Local reranker first (query = guidelines, document = finding).
+    if crate::decider::rank_available() {
+        let (g, f) = (guidelines.to_string(), finding.to_string());
+        if let Ok(Some(score)) =
+            tokio::task::spawn_blocking(move || crate::decider::rank(&g, &f)).await
+        {
+            return Ok(Some(score));
+        }
+    }
     if !jev_available() {
         return Ok(None);
     }

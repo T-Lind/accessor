@@ -6,6 +6,21 @@ GitHub, and full notes are generated there. This file starts at 0.34.3 — see t
 [releases page](https://github.com/T-Lind/accessor/releases) and `git log` for
 earlier history.
 
+## [0.41.0] - 2026-10-13
+
+### Added
+
+- A local **reranker** for memory/notes search and watch-finding gating: a 22M
+  cross-encoder distilled from Jev's query→document scores (held-out Pearson
+  0.70, AUC 0.93), ~23 MB int8, ~10 ms per pair. `memory_search` with
+  `rerank=true` prefers it and watch findings are gated locally; Jev remains the
+  fallback when the model is absent.
+- **Model lifecycle**: decision models load lazily and are freed after ten
+  minutes idle, so an idle Accessor holds no decision-model memory while active
+  turns reuse a warm session.
+- `acc decider install` fetches the reranker alongside the router/tone and gate
+  models (~248 MB total).
+
 ## [0.40.1] - 2026-10-13
 
 ### Changed

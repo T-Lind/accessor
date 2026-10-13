@@ -68,7 +68,12 @@ pub async fn call(name: &str, args: &Value, workspace: &Path) -> Result<Value> {
             )?;
             let mut ranking = "local";
             if args["rerank"] == true && !query.trim().is_empty() && !entries.is_empty() {
-                if let Ok(ranked) = rerank(query, &entries).await {
+                if crate::decider::rank_available() {
+                    if let Ok(ranked) = local_rerank(query, &entries).await {
+                        entries = ranked;
+                        ranking = "local reranker";
+                    }
+                } else if let Ok(ranked) = rerank(query, &entries).await {
                     entries = ranked;
                     ranking = "jev";
                 }
@@ -351,6 +356,30 @@ pub async fn call(name: &str, args: &Value, workspace: &Path) -> Result<Value> {
         }
         _ => anyhow::bail!("Unknown tool"),
     }
+}
+
+/// Local reranker: score each candidate with the cross-encoder and sort.
+async fn local_rerank(
+    query: &str,
+    entries: &[crate::memory::Entry],
+) -> Result<Vec<crate::memory::Entry>> {
+    let query = query.to_string();
+    let docs: Vec<String> = entries
+        .iter()
+        .map(|e| format!("{}: {}", e.key, e.text))
+        .collect();
+    let scores = tokio::task::spawn_blocking(move || {
+        docs.iter()
+            .map(|doc| crate::decider::rank(&query, doc))
+            .collect::<Vec<_>>()
+    })
+    .await?;
+    let mut scored = Vec::new();
+    for (entry, score) in entries.iter().zip(scores) {
+        scored.push((score.context("Local reranker unavailable")?, entry.clone()));
+    }
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+    Ok(scored.into_iter().map(|(_, e)| e).collect())
 }
 
 async fn rerank(
