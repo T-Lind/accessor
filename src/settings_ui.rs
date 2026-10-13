@@ -380,6 +380,8 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                 "Input relevance",
                 if s.routing.input_gate == "jev" && !crate::route::jev_available() {
                     "Jev · needs key; local fallback"
+                } else if s.routing.input_gate == "local" && !crate::decider::gate_available() {
+                    "local · model not installed"
                 } else {
                     &s.routing.input_gate
                 },

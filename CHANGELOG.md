@@ -6,6 +6,23 @@ GitHub, and full notes are generated there. This file starts at 0.34.3 — see t
 [releases page](https://github.com/T-Lind/accessor/releases) and `git log` for
 earlier history.
 
+## [0.40.0] - 2026-10-13
+
+### Added
+
+- A **local relevance gate**: a 66M DistilBERT fine-tuned on Jev's own
+  addressed/response labels now makes the input-relevance decision locally when
+  `routing.input-gate = local`. On the held-out split it reproduces Jev's
+  accept/reject rule on 98.3% of utterances (addressed AUC 0.994, response AUC
+  1.000) at ~50 ms and ~67 MB int8. The filler filter still runs first, and the
+  keyword/heuristic path is the fallback when the model is absent.
+- `acc decider install` now fetches the gate alongside the router/tone model.
+
+### Notes
+
+- The gate was distilled from Jev (labels captured while TypeSafe credits were
+  active), so the setup can run fully local.
+
 ## [0.39.1] - 2026-10-13
 
 ### Fixed

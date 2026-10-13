@@ -35,6 +35,37 @@ pub fn meaningful_input(text: &str) -> bool {
         )
 }
 
+/// Local relevance gate using the fine-tuned model. Returns `None` when the
+/// model is not installed. Mirrors Jev's accept rule and the sleep override.
+pub fn local_gate(
+    text: &str,
+    history: &[(String, String)],
+    explicitly_addressed: bool,
+) -> Option<InputDecision> {
+    let conversation = routing_context(history);
+    let input = format!(
+        "wake_addressed: {}\nconversation:\n{}\nutterance: {text}",
+        if explicitly_addressed { "yes" } else { "no" },
+        if conversation.trim().is_empty() {
+            "(none)"
+        } else {
+            conversation.as_str()
+        }
+    );
+    let (addressed, response) = crate::decider::gate(&input)?;
+    let sleep_or_shutdown = talks_about_sleep_or_shutdown(text);
+    let accepted =
+        (explicitly_addressed || addressed >= 0.5) && (response >= 0.5 || sleep_or_shutdown);
+    Some(InputDecision {
+        accepted,
+        reason: format!(
+            "local gate: addressed {:.0}%, actionable {:.0}%",
+            addressed * 100.0,
+            response * 100.0
+        ),
+    })
+}
+
 /// Only the decision and timing enter analytics; transcript text stays in Activity.
 #[derive(Debug, Clone)]
 pub struct InputDecision {

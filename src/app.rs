@@ -2154,6 +2154,17 @@ pub async fn run(mut args: Run) -> Result<()> {
                                     let _=tx.send(Input::GatedVoice{decision,text:raw_voice,epoch:captured_epoch,captured_at:voice_capture.1}).await;
                                 }));continue;
                             }
+                            if settings.routing.input_gate=="local" && crate::decider::gate_available() {
+                                let tx=input_tx.clone();let mut history=transcript.iter().cloned().collect::<Vec<_>>();
+                                history.extend(previous);
+                                let captured_epoch=epoch.load(Ordering::SeqCst);
+                                let addressed=spoken_addressed || wake_listening;
+                                gate_job=Some(tokio::spawn(async move {
+                                    let decision=crate::route::local_gate(&text,&history,addressed)
+                                        .unwrap_or(crate::route::InputDecision{accepted:true,reason:"local gate unavailable".into()});
+                                    let _=tx.send(Input::GatedVoice{decision,text:raw_voice,epoch:captured_epoch,captured_at:voice_capture.1}).await;
+                                }));continue;
+                            }
                         }
                         if replace_worker {worker=None;feedback.clear();worker_approval=false;}
                         if !is_automatic { control_count=0; }
