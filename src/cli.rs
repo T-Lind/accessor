@@ -1405,6 +1405,14 @@ async fn doctor() -> Result<()> {
         }
     );
     println!(
+        "Local decision model: {}",
+        if crate::decider::installed(&assets) {
+            "installed (routing + tone)".to_string()
+        } else {
+            "not installed — run `acc decider install`".to_string()
+        }
+    );
+    println!(
         "Kokoro: {}",
         if speech::local_python(&s)?.is_file() {
             "installed (use acc tts test to verify)"

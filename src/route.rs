@@ -205,7 +205,12 @@ pub async fn choose(
         kind: "main",
     };
     let jev = jev_available();
-    let router = if settings.routing.auto_model && jev {
+    // auto-model upgrades the keyword heuristic to a model router; it never
+    // overrides an explicit choice, so a local (or Jev) selection sticks.
+    let router = if settings.routing.auto_model
+        && jev
+        && settings.routing.router == "keywords"
+    {
         "jev"
     } else {
         settings.routing.router.as_str()
@@ -236,7 +241,12 @@ async fn classify(
     jev: bool,
 ) -> &'static str {
     if router == "local" {
-        if let Some(kind) = local_route(text, history, previous) {
+        // The model is ~150 ms of CPU work; keep it off the async runtime's
+        // threads so the voice/UI loop stays responsive.
+        let (text, history) = (text.to_string(), history.to_vec());
+        if let Ok(Some(kind)) =
+            tokio::task::spawn_blocking(move || local_route(&text, &history, previous)).await
+        {
             return kind;
         }
     }
@@ -268,6 +278,11 @@ fn local_route(
     );
     let options: Vec<&str> = ROUTE_OPTIONS.iter().map(|(_, d)| *d).collect();
     let choice = crate::decider::choice("What kind of request is this?", &context, &options)?;
+    // When the model is unsure, defer to the keyword router, which handles
+    // follow-ups ("do the same for the other file") better than a flat argmax.
+    if choice.confidence < 0.5 || choice.abstain > 0.5 {
+        return None;
+    }
     Some(ROUTE_OPTIONS[choice.index].0)
 }
 
@@ -456,7 +471,10 @@ pub async fn classify_mood(
     reply: &str,
     history: &[(String, String)],
 ) -> Result<Option<crate::mascot::Mood>> {
-    if let Some(mood) = local_mood(reply, history) {
+    let (reply_owned, history_owned) = (reply.to_string(), history.to_vec());
+    if let Ok(Some(mood)) =
+        tokio::task::spawn_blocking(move || local_mood(&reply_owned, &history_owned)).await
+    {
         return Ok(Some(mood));
     }
     if !jev_available() {

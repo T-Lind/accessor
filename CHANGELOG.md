@@ -6,6 +6,21 @@ GitHub, and full notes are generated there. This file starts at 0.34.3 — see t
 [releases page](https://github.com/T-Lind/accessor/releases) and `git log` for
 earlier history.
 
+## [0.39.1] - 2026-10-13
+
+### Fixed
+
+- `routing.auto-model` no longer overrides an explicit `routing.router` choice:
+  it now only upgrades the `keywords` heuristic to a model router, so selecting
+  local routing sticks even if a TypeSafe key is added later.
+- Local routing and tone run on blocking threads, so a ~150 ms decision cannot
+  stall the voice/UI loop, and routing defers to keyword matching when the model
+  is unsure (helping follow-ups like "do the same for the other file").
+
+### Changed
+
+- `acc doctor` reports whether the local decision model is installed.
+
 ## [0.39.0] - 2026-10-13
 
 ### Added
