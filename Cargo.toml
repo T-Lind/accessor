@@ -33,7 +33,7 @@ earshot = "1.2.2"
 # the python experiment in scripts/setup_wakeword.py; links a prebuilt sherpa
 # archive (and its own ONNX Runtime) so no runtime library is needed.
 sherpa-onnx = "1.13.8"
-rubato = "0.16"
+rubato = "5.0"
 transcribe-rs = { version = "=0.3.11", features = ["onnx"] }
 ort = { version = "=2.0.0-rc.12", features = ["load-dynamic"] }
 ndarray = "0.17"
