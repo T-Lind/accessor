@@ -697,6 +697,15 @@ pub async fn run(mut args: Run) -> Result<()> {
         } else if crate::stt_models::speech_ready(&assets, &settings.stt.engine) {
             ui.message("Loading local speech...");
         }
+        if settings.stt.wake_engine == "auto" {
+            ui.message("Preparing the wake-word spotter...");
+            let _ = ui.draw();
+            if let Err(e) = crate::wake_kws::ensure_ready(&assets).await {
+                ui.message(format!(
+                    "Wake-word spotter unavailable ({e:#}); wake detection uses full recognition."
+                ));
+            }
+        }
         if settings.assets_dir.is_none() && std::env::var_os("ACC_ASSETS").is_none() {
             settings.assets_dir = Some(assets.clone());
             if let Err(e) = settings.save() {
@@ -745,6 +754,9 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut voice_epoch = epoch.load(Ordering::SeqCst);
     let mut wake_errors = 0_u64;
     let mut last_wake_probe = String::new();
+    let mut kws_hits = 0_u64;
+    let mut last_kws = None::<Instant>;
+    let mut last_kws_keyword = String::new();
     let awake = Arc::new(AtomicBool::new(false));
     let cloud_stt = Arc::new(AtomicBool::new(settings.stt.conversation == "cartesia"));
     let lazy_stt = Arc::new(AtomicBool::new(settings.stt.lazy));
@@ -756,6 +768,34 @@ pub async fn run(mut args: Run) -> Result<()> {
         settings.stt.noise_floor_db,
         settings.stt.denoise == "highpass",
     ));
+    // Always-on keyword spotting runs beside the Canary wake path. It is built
+    // only when the wake engine allows it and the model is present; otherwise
+    // the existing Canary wake handling is unchanged.
+    let kws_control = (!args.text).then(|| {
+        Arc::new(crate::wake_kws::Control::new(
+            assets.clone(),
+            crate::wake_kws::Params {
+                code: wake_code.clone(),
+                aliases: args.wake_alias.clone(),
+                threshold: settings.stt.wake_threshold,
+                score: crate::wake_kws::DEFAULT_SCORE,
+                enabled: settings.stt.wake_engine != "canary",
+            },
+        ))
+    });
+    macro_rules! apply_kws {
+        () => {
+            if let Some(control) = &kws_control {
+                control.set(crate::wake_kws::Params {
+                    code: settings.wake_code.clone(),
+                    aliases: args.wake_alias.clone(),
+                    threshold: settings.stt.wake_threshold,
+                    score: crate::wake_kws::DEFAULT_SCORE,
+                    enabled: settings.stt.wake_engine != "canary",
+                });
+            }
+        };
+    }
     let (input_tx, mut input_rx) = mpsc::channel(16);
     let control_bridge = crate::control::Bridge::start(input_tx.clone()).await?;
     let found = config::harness_offers(&settings, args.codex_bin.as_ref());
@@ -785,6 +825,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                 lazy: lazy_stt.clone(),
                 engine: stt_engine.clone(),
                 noise: noise_control.clone(),
+                kws: kws_control.clone(),
             },
         )
     });
@@ -1469,6 +1510,21 @@ pub async fn run(mut args: Run) -> Result<()> {
                         };
                         (text,false,true,true,None)
                     }
+                    Input::Kws{keyword,epoch:captured_epoch}=>{
+                        // A keyword-spotter hit opens listening or interrupts
+                        // playback, exactly like a bare rolling Canary wake. The
+                        // request itself is still finalized by local recognition.
+                        // While already awake, idle and silent, a wake is
+                        // redundant, so a stray wake-sounding number cannot cancel
+                        // or restart an open conversation.
+                        if muted.load(Ordering::SeqCst) || captured_epoch!=epoch.load(Ordering::SeqCst) || access.locked() {continue;}
+                        if session.active() && speaker.is_none() && !busy {continue;}
+                        if echo_guard.recent_matches(speaker.is_some(),|spoken|session.wake_in_probe(spoken)) {wake_echoes+=1;continue;}
+                        if last_kws.is_some_and(|at|at.elapsed()<Duration::from_millis(1200)) {continue;}
+                        last_kws=Some(Instant::now());
+                        kws_hits+=1;last_kws_keyword=safe(&keyword).chars().take(40).collect();
+                        (settings.wake_code.clone(),false,true,true,None)
+                    }
                     Input::Voice { text, confidence, epoch: captured_epoch, .. } => {
                         if muted.load(Ordering::SeqCst) || captured_epoch != epoch.load(Ordering::SeqCst) { continue; }
                         if text.trim().is_empty() {if session.active() {ui.ignored(&text,"transcription produced no usable words",confidence_note(confidence));}continue;}
@@ -1585,7 +1641,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                         match w.answer(&text) {
                             Ok(Some(next))=>{
                                 match next.save() {
-                                    Ok(())=>{settings=next;speak=settings.speak;crate::masterlog::init(&settings);display.set_enabled(settings.wake_display);auth_wake=wake::WakeCode::new(&settings.wake_code,&args.wake_alias)?;session=Session::new(wake::WakeCode::new(&settings.wake_code,&args.wake_alias)?,Duration::from_secs(settings.idle_seconds));ui.message("Setup saved. Use /tts test to hear the selected voice; /tts key adds a Cartesia key.");
+                                    Ok(())=>{settings=next;speak=settings.speak;crate::masterlog::init(&settings);display.set_enabled(settings.wake_display);auth_wake=wake::WakeCode::new(&settings.wake_code,&args.wake_alias)?;session=Session::new(wake::WakeCode::new(&settings.wake_code,&args.wake_alias)?,Duration::from_secs(settings.idle_seconds));apply_kws!();ui.message("Setup saved. Use /tts test to hear the selected voice; /tts key adds a Cartesia key.");
                                         if speak && intro_marker.as_ref().is_some_and(|path|!path.exists()) {
                                             speech_queue.push_back(crate::settings_ui::device_intro(&settings));
                                             if let Some(path)=&intro_marker {let _=std::fs::write(path,"1");}
@@ -1726,10 +1782,11 @@ pub async fn run(mut args: Run) -> Result<()> {
                                         if key=="stt.noise-gate" {noise_control.set_enabled(settings.stt.noise_gate);}
                                         if key=="stt.noise-floor-db" {noise_control.set_floor_db(settings.stt.noise_floor_db);}
                                         if key=="stt.denoise" {noise_control.set_highpass(settings.stt.denoise=="highpass");}
+                                        if key=="stt.wake-engine" || key=="stt.wake-threshold" {apply_kws!();}
                                         if key=="speak" {speak=settings.speak;}
                                         if key=="chat" {ui.set_chat(&settings.chat);}
                                         if key=="wake-display" {display.set_enabled(settings.wake_display);}
-                                        if key=="wake-code" || key=="idle-seconds" {if let Ok(w)=wake::WakeCode::new(&settings.wake_code,&args.wake_alias){auth_wake=w;}session=Session::new(wake::WakeCode::new(&settings.wake_code,&args.wake_alias)?,Duration::from_secs(settings.idle_seconds));epoch.fetch_add(1,Ordering::SeqCst);}
+                                        if key=="wake-code" || key=="idle-seconds" {if let Ok(w)=wake::WakeCode::new(&settings.wake_code,&args.wake_alias){auth_wake=w;}session=Session::new(wake::WakeCode::new(&settings.wake_code,&args.wake_alias)?,Duration::from_secs(settings.idle_seconds));epoch.fetch_add(1,Ordering::SeqCst);apply_kws!();}
                                         if key=="speak" && !speak {speech_queue.clear();speaker=None;echo_guard.finish();}
                                         muted.store(panel.is_some() || (speaker.is_some() && !settings.barge_in),Ordering::SeqCst);
                                         ui.message(format!("Saved {key}: {value}."));
@@ -2010,7 +2067,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 Ok(if saved.is_empty(){format!("Extracted {found} candidate(s); nothing new to save.")}else{format!("Saved {} inferred fact(s): {}",saved.len(),saved.iter().map(|entry|entry.key.clone()).collect::<Vec<_>>().join(", "))})
                             }));
                         },
-                        ["/audio"] => ui.message(format!("Local wake checks: {wake_checks}; wake hits: {wake_hits}; speaker echoes rejected: {wake_echoes}; last decode: {wake_decode_ms} ms. Rolling checks active: {}. Local engine: {}. Say {}, pause, then your request. No recordings saved. Noise gate: {} at {:.1} dBFS; denoise: {}.\n{}; {}; capture paused: {}; decoder errors: {wake_errors}; last wake-window recognition (diagnostic only): {}",interrupting.load(Ordering::SeqCst),settings.stt.engine,settings.wake_code,if settings.stt.noise_gate {"on"} else {"off"},noise_control.floor_db(),settings.stt.denoise,audio_diagnostics.summary(),speech_state.summary(),muted.load(Ordering::SeqCst),last_wake_probe)),
+                        ["/audio"] => ui.message(format!("Local wake checks: {wake_checks}; wake hits: {wake_hits}; speaker echoes rejected: {wake_echoes}; last decode: {wake_decode_ms} ms. Keyword spotter: {} hits{}; engine: {}. Rolling checks active: {}. Local engine: {}. Say {}, pause, then your request. No recordings saved. Noise gate: {} at {:.1} dBFS; denoise: {}.\n{}; {}; capture paused: {}; decoder errors: {wake_errors}; last wake-window recognition (diagnostic only): {}",kws_hits,if last_kws_keyword.is_empty() {String::new()} else {format!(" (last \"{last_kws_keyword}\")")},if kws_control.as_ref().is_some_and(|_| settings.stt.wake_engine!="canary") {"spotter+canary"} else {settings.stt.wake_engine.as_str()},interrupting.load(Ordering::SeqCst),settings.stt.engine,settings.wake_code,if settings.stt.noise_gate {"on"} else {"off"},noise_control.floor_db(),settings.stt.denoise,audio_diagnostics.summary(),speech_state.summary(),muted.load(Ordering::SeqCst),last_wake_probe)),
                         ["/limits"] => ui.message(limits.report()),
                         [action @ ("/worker-approve" | "/worker-deny"), number] => {
                             if let (Ok(number),Some(w))=(number.parse(),worker.as_ref()) {

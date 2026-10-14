@@ -6,6 +6,30 @@ GitHub, and full notes are generated there. This file starts at 0.34.3 — see t
 [releases page](https://github.com/T-Lind/accessor/releases) and `git log` for
 earlier history.
 
+## [0.43.0] - 2026-10-14
+
+### Added
+
+- An always-on **wake-word spotter**. A 3M-parameter sherpa-onnx zipformer
+  keyword model runs beside the full Canary wake path, so the wake code wakes
+  and interrupts playback faster and more reliably, at a fraction of a Canary
+  probe's CPU. Local Canary recognition is never removed: it still transcribes
+  every request and remains the path for noisy rooms, and a spotter hit only
+  opens listening or interrupts playback. On the dual-core machine used for
+  testing the small model decoded 3.1 s of audio in ~0.16 s (versus ~1.5 s for
+  Canary) and fired mid-utterance.
+- Settings → Speech → **Wake engine** (`auto`, `kws`, `canary`) and **Wake
+  threshold**. `auto` downloads the ~4 MB model on first run; `kws` uses it only
+  if already present; `canary` keeps the previous behavior. The equivalent
+  settings are `stt.wake-engine` and `stt.wake-threshold`.
+
+### Changed
+
+- The spotter is fed echo-cancelled capture and its hits are ignored while
+  already awake and idle, so a wake-sounding number does not cancel an open
+  conversation. Hits that match recent speaker text are rejected as echo.
+- `/audio` reports keyword-spotter hits and the last matched phrase.
+
 ## [0.42.0] - 2026-10-13
 
 ### Added

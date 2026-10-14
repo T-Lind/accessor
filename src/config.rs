@@ -179,6 +179,19 @@ pub struct Stt {
     pub noise_gate: bool,
     pub noise_floor_db: f32,
     pub denoise: String,
+    /// Wake detection engine: `auto` (keyword spotter when installed, always
+    /// alongside Canary recognition), `kws`, or `canary`.
+    #[serde(default = "default_wake_engine")]
+    pub wake_engine: String,
+    /// Keyword-spotter detection threshold; higher is more conservative.
+    #[serde(default = "default_wake_threshold")]
+    pub wake_threshold: f32,
+}
+fn default_wake_engine() -> String {
+    "auto".into()
+}
+fn default_wake_threshold() -> f32 {
+    crate::wake_kws::DEFAULT_THRESHOLD
 }
 impl Default for Stt {
     fn default() -> Self {
@@ -193,6 +206,8 @@ impl Default for Stt {
             noise_gate: true,
             noise_floor_db: crate::noise::DEFAULT_FLOOR_DB,
             denoise: "highpass".into(),
+            wake_engine: default_wake_engine(),
+            wake_threshold: default_wake_threshold(),
         }
     }
 }
@@ -648,6 +663,14 @@ impl Settings {
             "stt.denoise must be off or highpass"
         );
         ensure!(
+            ["auto", "kws", "canary"].contains(&self.stt.wake_engine.as_str()),
+            "stt.wake-engine must be auto, kws or canary"
+        );
+        ensure!(
+            (0.05..=0.95).contains(&self.stt.wake_threshold),
+            "stt.wake-threshold must be 0.05–0.95"
+        );
+        ensure!(
             (1..=86400).contains(&self.security.lock_seconds),
             "security.lock-seconds must be 1–86400 (absolute time since unlock)"
         );
@@ -990,6 +1013,8 @@ impl Settings {
             "stt.noise-gate" => self.stt.noise_gate = value.parse()?,
             "stt.noise-floor-db" => self.stt.noise_floor_db = value.parse()?,
             "stt.denoise" => self.stt.denoise = value.to_lowercase(),
+            "stt.wake-engine" => self.stt.wake_engine = value.to_lowercase(),
+            "stt.wake-threshold" => self.stt.wake_threshold = value.parse()?,
             "approvals.reviewer" => self.approvals.reviewer = value.to_lowercase(),
             "computer.enabled" => self.computer.enabled = value.parse()?,
             "computer.max-image-dimension" => self.computer.max_image_dimension = value.parse()?,
@@ -1378,6 +1403,8 @@ mod tests {
         assert_eq!(s.stt.conversation, "local");
         assert!(s.stt.streaming);
         assert_eq!(s.stt.denoise, "highpass");
+        assert_eq!(s.stt.wake_engine, "auto");
+        assert_eq!(s.stt.wake_threshold, crate::wake_kws::DEFAULT_THRESHOLD);
         assert_eq!(s.stt.noise_floor_db, crate::noise::DEFAULT_FLOOR_DB);
         assert_eq!(s.tts.provider, "piper");
         assert_eq!(s.tts.piper_voice, "en_GB-alan-medium");

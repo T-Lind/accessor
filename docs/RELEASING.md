@@ -1,8 +1,10 @@
 # Releasing Accessor
 
-Accessor ships as a small prebuilt `acc` binary. The heavy assets (ONNX Runtime,
-the STT model, the Piper engine and voice) are downloaded on first run into the
-per-user assets folder, so release artifacts stay around 20 MB.
+Accessor ships as a prebuilt `acc` binary. The heavy assets (ONNX Runtime,
+the STT model, the Piper engine and voice, and the wake-word keyword model) are
+downloaded on first run into the per-user assets folder. Since the static
+sherpa-onnx link (wake-word spotting) the `acc` binary is roughly 50 MB rather
+than 20 MB.
 
 ## 1. Prepare the change
 

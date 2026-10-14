@@ -38,6 +38,7 @@ mod ui;
 mod updates;
 mod usage;
 mod wake;
+mod wake_kws;
 mod worker;
 #[allow(clippy::large_enum_variant)]
 pub enum Input {
@@ -56,6 +57,12 @@ pub enum Input {
         error: Option<String>,
         epoch: u64,
         decode_ms: u64,
+    },
+    /// A local keyword-spotter hit for the wake phrase. It opens listening or
+    /// interrupts playback; local Canary recognition still finalizes the request.
+    Kws {
+        keyword: String,
+        epoch: u64,
     },
     CloudVoice {
         text: String,

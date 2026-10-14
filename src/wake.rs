@@ -22,6 +22,56 @@ fn tokens(text: &str) -> Vec<(usize, usize, String)> {
     result
 }
 
+/// Spoken word forms for a numeric wake code, so a keyword spotter can be given
+/// a pronunciation rather than digit text. "29" becomes ["two nine", "twenty
+/// nine"]. Codes longer than two digits use digit-by-digit wording only.
+pub fn spoken_forms(code: &str) -> Vec<String> {
+    let digits = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    ];
+    let mut forms: Vec<String> = vec![code
+        .chars()
+        .filter_map(|c| c.to_digit(10))
+        .map(|d| digits[d as usize])
+        .collect::<Vec<_>>()
+        .join(" ")];
+    if code.len() <= 2 && !code.starts_with('0') {
+        if let Ok(n) = code.parse::<usize>() {
+            let teens = [
+                "ten",
+                "eleven",
+                "twelve",
+                "thirteen",
+                "fourteen",
+                "fifteen",
+                "sixteen",
+                "seventeen",
+                "eighteen",
+                "nineteen",
+            ];
+            let tens = [
+                "", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty",
+                "ninety",
+            ];
+            if (10..20).contains(&n) {
+                forms.push(teens[n - 10].to_string());
+            } else if n >= 20 {
+                forms.push(format!(
+                    "{} {}",
+                    tens[n / 10],
+                    if n.is_multiple_of(10) {
+                        ""
+                    } else {
+                        digits[n % 10]
+                    }
+                ));
+            }
+        }
+    }
+    forms.retain(|f| !f.trim().is_empty());
+    forms
+}
+
 impl WakeCode {
     /// Rolling playback checks may contain speaker words before the user's code.
     /// This detection is only allowed to stop output, never to submit a request.
@@ -44,48 +94,8 @@ impl WakeCode {
             !code.is_empty() && code.len() <= 12 && code.bytes().all(|c| c.is_ascii_digit()),
             "wake code must contain 1–12 digits"
         );
-        let digits = [
-            "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
-        ];
-        let mut forms = vec![
-            code.to_owned(),
-            code.bytes()
-                .map(|c| digits[(c - b'0') as usize])
-                .collect::<Vec<_>>()
-                .join(" "),
-        ];
-        if code.len() <= 2 && !code.starts_with('0') {
-            let n: usize = code.parse()?;
-            let teens = [
-                "ten",
-                "eleven",
-                "twelve",
-                "thirteen",
-                "fourteen",
-                "fifteen",
-                "sixteen",
-                "seventeen",
-                "eighteen",
-                "nineteen",
-            ];
-            let tens = [
-                "", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty",
-                "ninety",
-            ];
-            if (10..20).contains(&n) {
-                forms.push(teens[n - 10].into());
-            } else if n >= 20 {
-                forms.push(format!(
-                    "{} {}",
-                    tens[n / 10],
-                    if n.is_multiple_of(10) {
-                        ""
-                    } else {
-                        digits[n % 10]
-                    }
-                ));
-            }
-        }
+        let mut forms = vec![code.to_owned()];
+        forms.extend(spoken_forms(code));
         forms.extend_from_slice(aliases);
         let mut aliases: Vec<Vec<String>> = forms
             .iter()

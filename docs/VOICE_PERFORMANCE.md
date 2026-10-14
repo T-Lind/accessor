@@ -96,54 +96,36 @@ acc config set tts.streaming true
 
 ## Dedicated wake spotting
 
-The research script `scripts/benchmark_keywords.py` tests the official sherpa-onnx
-3M Chinese/English keyword model with “twenty nine,” two chunk sizes and one/two
-threads. It is an experiment, not wired into production. The model accepts new
-keywords through a pronunciation list, avoiding a newly trained classifier for
-every numeric code. Official documentation lists a 4.4 MiB quantized encoder and
-160/320 ms model chunk latency. [Model and customization documentation](https://k2-fsa.github.io/sherpa/onnx/kws/pretrained_models/index.html).
+Accessor now ships an always-on **keyword spotter** (`stt.wake-engine`, default
+`auto`). The official sherpa-onnx 3M Chinese/English keyword model
+(`sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20`) is downloaded on first run and
+runs in-process beside the full Canary path. It accepts new keywords through a
+pronunciation list, so any numeric wake code works without training a model; the
+keyword phones are read from the model's `en.phone` lexicon at startup. Official
+documentation lists a 4.4 MiB quantized encoder and 160/320 ms model chunk
+latency. [Model and customization documentation](https://k2-fsa.github.io/sherpa/onnx/kws/pretrained_models/index.html).
 
-On Linux, install the isolated experiment and its checksum-pinned model, then
-try the live microphone detector:
-
-```sh
-python3 scripts/setup_wakeword.py
-python3 scripts/test_wakeword.py
-```
-
-Use `--seconds 30` for a bounded microphone run, `--device NAME` to select a
-PipeWire input, or `--wav tests/fixtures/voice-benchmark.wav` for a repeatable
-file check. A successful detection prints `DETECTED twenty_nine`. Exit status 2
-means the test completed without a detection. This tool does not change saved
-settings or replace Accessor's production Canary wake path.
-
-To test the production local STT path across a real room, run:
-
-```sh
-python3 scripts/test_room_wake.py
-```
-
-The guided test records three trials at 1, 3 and 5 metres in quiet and ordinary
-background noise, transcribes every clip locally in one model process, prints
-wake recall, and deletes the WAV files afterward. The JSON report retains the
-recognized text. Use `--keep-audio DIR` only when you deliberately want to keep
-the room recordings. If PipeWire exposes an RNNoise or other noise-suppressed
-virtual source, compare it with the physical/default source in the same run:
+Measured on the dual-core i7-3520M test machine (the intended class): the small
+model decoded a 3.11 s clip in ~0.16 s on one thread (RTF ~0.05) and detected
+"twenty nine" at 1.44 s, versus ~1.5 s of Canary inference *after* the utterance
+ended. On synthetic additive noise it stayed reliable to about 15 dB SNR and
+missed at 10 dB, where full Canary recognition still transcribed the phrase.
+Both detectors run together, so the union keeps Canary's noisy-room recall and
+adds the spotter's speed. A keyword hit only opens listening or interrupts
+playback; the request itself is still finalized by local recognition, so a false
+spot cannot submit a request. A hit that matches recent speaker text is rejected
+as echo, and hits while already awake and idle are ignored. Room false-accept and
+miss rates still need a corpus and physical testing before the spotter replaces
+any part of full recognition; `stt.wake-engine canary` is the conservative
+setting. The research scripts remain for benchmarking the model directly:
 
 ```sh
-python3 scripts/test_room_wake.py --device RAW_NODE --denoised-device FILTERED_NODE
+python3 scripts/test_wakeword.py --wav tests/fixtures/voice-benchmark.wav
+python3 scripts/benchmark_keywords.py MODEL FILES --output results/kws.json
 ```
 
-The built-in `stt.denoise=highpass` experiment removes sub-speech rumble on the
-recognizer thread. Compare the same recorded wake clip with
-`acc stt wake room.wav --noise-gate off --denoise off` and
-`acc stt wake room.wav --noise-gate off --denoise highpass`. This filters wake
-probes after capture; it does not alter VAD timing or Cartesia's live streaming
-upload. Keep it off if quiet or distant wake words become less reliable.
-
-List candidate source names with `acc devices` or `wpctl status`. This is a
-positive recall test of full-clip recognition, not the rolling wake-window
-timing or an estimate of false activations per hour.
+`acc stt wake FILE...` still runs the production matcher on recordings, and
+`python3 scripts/test_room_wake.py` still measures Canary recall across a room.
 
 openWakeWord is another credible candidate: it supports ONNX on Windows and
 custom wake models, but “twenty nine” needs a trained and validated model. Review
@@ -164,10 +146,9 @@ technology.
    and median/P95 response. Synthetic noise tests cannot substitute for this.
    Consider a microphone near the user or a tested microphone array only after
    comparing the built-in mic; gain alone also amplifies noise.
-2. **A separately validated small wake engine.** Keep full STT asleep until a
-   confirmed keyword; preserve local password/quick-command recognition. Require
-   an hours-long negative corpus, near-number confusions, and room tests before
-   making it default. Avoid advertising noisy-room reliability from one WAV.
+2. **Validate the shipped wake spotter.** A negative corpus and hours-long
+   room runs are still needed to set the false-accept rate and choose the default
+   threshold. Keep Canary as the recognition path while that data is gathered.
 3. **Visible privacy state and recovery.** Make locked/local-listening/cloud-active
    states obvious; retain hardware mic-off as the reliable capture switch. Add
    microphone unplug/reconnect recovery and a guided setup/level check.

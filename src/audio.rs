@@ -203,6 +203,8 @@ pub struct MicFlags {
     pub lazy: Arc<AtomicBool>,
     pub engine: Arc<Mutex<String>>,
     pub noise: Arc<crate::noise::Control>,
+    /// Optional always-on keyword spotter beside the Canary wake path.
+    pub kws: Option<Arc<crate::wake_kws::Control>>,
 }
 fn transcribe_conditioned(model: &mut CanaryModel, samples: &[f32]) -> Result<String> {
     Ok(model
@@ -985,6 +987,7 @@ pub fn listen(
         lazy,
         engine,
         noise,
+        kws,
     } = flags;
     let warm = Arc::new(AtomicBool::new(false));
     let dsp_noise = noise.clone();
@@ -1053,6 +1056,13 @@ pub fn listen(
     let dsp_awake = awake.clone();
     let dsp_cloud = cloud_stt.clone();
     let reference = crate::echo::connect();
+    // Feed the echo-cancelled 16 kHz frames to a dedicated keyword thread. The
+    // channel is bounded and sampled with try_send, so a stalled spotter can
+    // never block the microphone callback.
+    let (kws_tx, kws_rx) = mpsc::sync_channel::<[f32; 256]>(512);
+    let dsp_kws = kws.as_ref().map(|_| kws_tx);
+    let kws_epoch = epoch.clone();
+    let kws_output = output.clone();
     stream.play()?;
     let dsp_task = std::thread::spawn(move || {
         let result = (|| -> Result<()> {
@@ -1133,6 +1143,9 @@ pub fn listen(
                             *slot = value;
                         }
                         let speech = detector.predict_f32(&frame) >= 0.5;
+                        if let Some(tx) = &dsp_kws {
+                            let _ = tx.try_send(frame);
+                        }
                         let output_active = dsp_interrupting.load(Ordering::SeqCst)
                             || dsp_state.playback.load(Ordering::SeqCst);
                         if output_active != was_output {
@@ -1445,12 +1458,81 @@ pub fn listen(
         }
     });
 
+    let kws_task = kws.map(|control| {
+        let stop = stop.clone();
+        let epoch = kws_epoch;
+        let output = kws_output;
+        std::thread::spawn(move || kws_loop(control, kws_rx, stop, epoch, output))
+    });
+    let mut tasks = vec![dsp_task, asr_task];
+    if let Some(task) = kws_task {
+        tasks.push(task);
+    }
+
     Ok(Capture {
         stream: Some(stream),
         stop,
         failed,
-        tasks: vec![dsp_task, asr_task],
+        tasks,
     })
+}
+
+/// Decode wake keywords off the speech/UI path. The spotter is rebuilt only when
+/// the wake code, threshold or engine changes, and a failed load degrades to the
+/// Canary wake path instead of failing capture.
+fn kws_loop(
+    control: Arc<crate::wake_kws::Control>,
+    rx: std::sync::mpsc::Receiver<[f32; 256]>,
+    stop: Arc<AtomicBool>,
+    epoch: Arc<AtomicU64>,
+    output: tokio::sync::mpsc::Sender<crate::Input>,
+) {
+    let mut spotter: Option<crate::wake_kws::Spotter> = None;
+    let mut loaded = u64::MAX;
+    let mut warned = false;
+    while !stop.load(Ordering::SeqCst) {
+        let generation = control.generation();
+        let params = control.snapshot();
+        if !params.enabled {
+            spotter = None;
+            loaded = generation;
+            std::thread::sleep(Duration::from_millis(50));
+            while rx.try_recv().is_ok() {}
+            continue;
+        }
+        if loaded != generation {
+            spotter = match crate::wake_kws::Spotter::load(control.assets(), &params) {
+                Ok(loaded_spotter) => Some(loaded_spotter),
+                Err(e) => {
+                    if !warned {
+                        warned = true;
+                        let _ = output.try_send(crate::Input::Warning(format!(
+                            "Wake-word spotter unavailable; using full recognition for the wake code ({e:#})"
+                        )));
+                    }
+                    None
+                }
+            };
+            loaded = generation;
+            // Drop audio captured while the spotter was loading so a stale
+            // wake word is not reported against fresh audio.
+            while rx.try_recv().is_ok() {}
+        }
+        let frame = match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(frame) => frame,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(_) => break,
+        };
+        let Some(spotter) = spotter.as_mut() else {
+            continue;
+        };
+        if let Some(keyword) = spotter.feed(&frame) {
+            let _ = output.try_send(crate::Input::Kws {
+                keyword,
+                epoch: epoch.load(Ordering::SeqCst),
+            });
+        }
+    }
 }
 
 fn build_stream<T>(
@@ -2255,6 +2337,7 @@ mod tests {
             lazy: Arc::new(AtomicBool::new(false)),
             engine: engine.clone(),
             noise: Arc::new(crate::noise::Control::new(false, -60.0, false)),
+            kws: None,
         };
         let microphone = Microphone::start(assets.path().into(), None, output, flags);
         let deadline = Instant::now() + Duration::from_secs(3);

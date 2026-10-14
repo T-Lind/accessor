@@ -268,6 +268,20 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                     Action::Cycle("stt.denoise", &["off", "highpass"]),
                 ),
                 row(
+                    "Wake engine",
+                    match s.stt.wake_engine.as_str() {
+                        "canary" => "canary · full recognition only",
+                        "kws" => "spotter · installed model only",
+                        _ => "auto · spotter + full recognition",
+                    },
+                    Action::Cycle("stt.wake-engine", &["auto", "kws", "canary"]),
+                ),
+                row(
+                    "Wake threshold",
+                    &format!("{:.2}", s.stt.wake_threshold),
+                    Action::Edit("stt.wake-threshold"),
+                ),
+                row(
                     "Noise floor",
                     &format!("{:.1} dBFS", s.stt.noise_floor_db),
                     Action::Edit("stt.noise-floor-db"),
@@ -597,6 +611,12 @@ fn hint(action: &Action) -> &'static str {
         }
         Action::Cycle("stt.denoise", _) => {
             "Optional 70 Hz high-pass removes low rumble from wake probes and completed speech before recognition. It does not change capture or voice activity timing. Compare with room recordings before leaving it on."
+        }
+        Action::Cycle("stt.wake-engine", _) => {
+            "A small always-on keyword spotter runs beside full recognition for faster, more reliable wake and barge-in. Canary still transcribes every request and covers noisy rooms. auto installs the 4 MB model on first run; kws uses it only if already present; canary disables it."
+        }
+        Action::Edit("stt.wake-threshold") => {
+            "Keyword-spotter confidence (0.05–0.95). Higher ignores more borderline detections; lower catches quieter wake words at the risk of false wakes."
         }
         Action::Edit("stt.noise-floor-db") => {
             "Ambient floor in dBFS (-100 to -20); lower is quieter. /noise calibrate measures it."
@@ -1053,6 +1073,7 @@ fn current_value<'a>(key: &str, s: &'a Settings) -> &'a str {
         "stt.conversation" => s.stt.conversation.as_str(),
         "stt.engine" => s.stt.engine.as_str(),
         "stt.denoise" => s.stt.denoise.as_str(),
+        "stt.wake-engine" => s.stt.wake_engine.as_str(),
         "stt.streaming" => {
             if s.stt.streaming {
                 "true"

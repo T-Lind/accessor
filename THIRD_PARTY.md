@@ -12,6 +12,8 @@ Accessor uses these projects as dependencies; it is not affiliated with their au
 - [Rubato](https://github.com/HEnquist/rubato), MIT: resampling.
 - [Sonora](https://crates.io/crates/sonora), BSD-3-Clause: pure Rust WebRTC audio processing / AEC3 echo cancellation, including its upstream notices.
 - [Earshot](https://github.com/pykeio/earshot), MIT OR Apache-2.0: voice activity detection.
+- [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx), Apache-2.0: always-on wake-word keyword spotting. The build links the pinned prebuilt sherpa-onnx library, which bundles its own ONNX Runtime.
+- [sherpa-onnx KWS zipformer 3M model](https://k2-fsa.github.io/sherpa/onnx/kws/pretrained_models/index.html), Apache-2.0: the downloaded `sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20` keyword model and its `en.phone` lexicon. Downloaded separately, not committed; keep its upstream notices when redistributing.
 
 Model files and runtime binaries are downloaded separately, not committed. Keep upstream license/attribution notices when redistributing them. Other Rust dependency licenses are recorded in their package metadata.
 

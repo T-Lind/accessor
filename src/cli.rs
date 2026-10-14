@@ -1413,6 +1413,18 @@ async fn doctor() -> Result<()> {
         }
     );
     println!(
+        "Wake spotter: {}",
+        if s.stt.wake_engine == "canary" {
+            "disabled (stt.wake-engine=canary)".to_string()
+        } else if crate::wake_kws::available(&assets) {
+            "installed (keyword spotting beside full recognition)".to_string()
+        } else if s.stt.wake_engine == "auto" {
+            "downloads on next start".to_string()
+        } else {
+            "not installed — set stt.wake-engine auto, or run scripts/setup_wakeword.py".to_string()
+        }
+    );
+    println!(
         "Kokoro: {}",
         if speech::local_python(&s)?.is_file() {
             "installed (use acc tts test to verify)"
