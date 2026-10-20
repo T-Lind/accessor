@@ -11,6 +11,8 @@ use tokio::{
 #[derive(Debug)]
 pub enum CommandMessage {
     Prompt(String),
+    Steer(String),
+    Answer { number: u64, answers: Value },
     Model(Option<String>),
     Cancel,
     Approval { number: u64, allow: bool },
@@ -22,6 +24,11 @@ pub enum Event {
     Started,
     Reply(String),
     Progress(String),
+    Preview(String),
+    Session(String),
+    Steered(String),
+    Question { number: u64, questions: Value },
+    RequestClosed(u64),
     Done,
     Cancelled,
     Failed(String),
@@ -42,6 +49,11 @@ pub struct Options {
     pub auto_review: bool,
     pub reasoning: String,
     pub instructions: String,
+    pub persistent: bool,
+    pub resume: Option<String>,
+}
+pub fn capabilities() -> &'static str {
+    "Harness       Live steer   Saved native resume   Questions   Approvals   Text streaming\ncodex         yes          yes (workers)         human form  yes         preview + commentary\nclaude        no           no (handoff only)     no          yes         commentary\nantigravity   no           no (handoff only)     no          no          commentary\nopencode      no           in-process only       no          no          reply\ncursor        no           in-process only       no          no          reply\n\nUnsupported steering leaves the task running. Cancellation can end a process; it cannot undo files or external actions. Writable Antigravity workers use its accept-edits permission mode when auto review is selected."
 }
 
 pub fn spawn(
@@ -102,6 +114,12 @@ async fn mock_agent(mut rx: mpsc::Receiver<CommandMessage>, tx: mpsc::Sender<Eve
     while let Some(cmd) = rx.recv().await {
         match cmd {
             CommandMessage::Model(_) => {}
+            CommandMessage::Steer(_) | CommandMessage::Answer { .. } => {
+                tx.send(Event::Note(
+                    "Mock harness has no active input request or steerable turn.".into(),
+                ))
+                .await?;
+            }
             CommandMessage::Prompt(text) => {
                 tx.send(Event::Started).await?;
                 tx.send(Event::Reply(format!("Mock agent received: {text}")))
@@ -133,7 +151,7 @@ fn thread_params(options: &Options) -> Value {
     json!({"cwd": options.workspace, "model":options.model, "sandbox": if options.writable {"workspace-write"} else {"read-only"},
         "approvalPolicy":"on-request",
         "approvalsReviewer": if options.auto_review {"auto_review"} else {"user"},
-        "ephemeral":true,
+        "ephemeral":!options.persistent,
         "developerInstructions": options.instructions})
 }
 
@@ -176,6 +194,58 @@ struct Pending {
     id: Value,
     method: String,
     deadline: Instant,
+    questions: Option<Value>,
+}
+
+fn valid_answers(questions: &Value, answers: &Value) -> bool {
+    let (Some(questions), Some(answers)) = (questions.as_array(), answers.as_object()) else {
+        return false;
+    };
+    questions.len() == answers.len()
+        && questions.iter().all(|q| {
+            let Some(id) = q["id"].as_str() else {
+                return false;
+            };
+            answers
+                .get(id)
+                .and_then(|a| a["answers"].as_array())
+                .is_some_and(|values| {
+                    values.len() == 1
+                        && values[0].as_str().is_some_and(|a| {
+                            !a.trim().is_empty()
+                                && a.len() <= 4000
+                                && (q["isOther"] == true
+                                    || q["options"].is_null()
+                                    || q["options"]
+                                        .as_array()
+                                        .is_some_and(|opts| opts.iter().any(|o| o["label"] == a)))
+                        })
+                })
+        })
+}
+fn valid_questions(value: &Value) -> bool {
+    let Some(qs) = value.as_array() else {
+        return false;
+    };
+    let mut ids = std::collections::HashSet::new();
+    !qs.is_empty()
+        && qs.len() <= 3
+        && qs.iter().all(|q| {
+            q["id"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty() && id.len() <= 200 && ids.insert(id))
+                && q["question"].is_string()
+                && q["isSecret"] != true
+                && (q["options"].is_null()
+                    || q["options"].as_array().is_some_and(|opts| {
+                        opts.len() <= 10
+                            && opts.iter().all(|o| {
+                                o["label"]
+                                    .as_str()
+                                    .is_some_and(|s| !s.is_empty() && s.len() <= 200)
+                            })
+                    }))
+        })
 }
 
 async fn codex(
@@ -218,6 +288,9 @@ async fn codex(
     let mut approval_number = 0_u64;
     let mut pending: HashMap<u64, Pending> = HashMap::new();
     let mut requests: HashMap<u64, &'static str> = HashMap::new();
+    let mut steering = HashMap::new();
+    let mut preview = String::new();
+    let mut preview_at = Instant::now();
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     let handshake_deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -238,7 +311,14 @@ async fn codex(
                         if (matches!(method, "item/commandExecution/requestApproval" | "item/fileChange/requestApproval") || (method=="mcpServer/elicitation/request" && confirmation_only(&msg["params"]))) && turn.is_some() {
                             approval_number += 1;
                             events.send(Event::Approval { number: approval_number, detail: serde_json::to_string_pretty(&msg["params"])? }).await?;
-                            pending.insert(approval_number, Pending { id: id.clone(), method: method.into(), deadline: Instant::now()+Duration::from_secs(60) });
+                            pending.insert(approval_number, Pending { id: id.clone(), method: method.into(), deadline: Instant::now()+Duration::from_secs(60), questions: None });
+                        } else if method == "item/tool/requestUserInput" && turn.is_some() && valid_questions(&msg["params"]["questions"]) && msg["params"]["threadId"].as_str()==thread.as_deref() && msg["params"]["turnId"].as_str()==turn.as_deref() && line.len() <= 16_000 {
+                            approval_number += 1;
+                            let questions = msg["params"]["questions"].clone();
+                            events.send(Event::Question { number: approval_number, questions: questions.clone() }).await?;
+                            // The wire format does not distinguish connector consent from
+                            // ordinary questions. All structured answers use the human UI.
+                            pending.insert(approval_number, Pending { id: id.clone(), method: method.into(), deadline: Instant::now()+Duration::from_secs(60), questions: Some(questions) });
                         } else {
                             write(&mut stdin, rejected(id.clone(), method)).await?;
                             events.send(Event::Note(format!("Declined unsupported request: {method}"))).await?;
@@ -246,6 +326,15 @@ async fn codex(
                         continue;
                     }
                     match method {
+                        "item/agentMessage/delta" => {
+                            if let Some(delta) = msg["params"]["delta"].as_str() {
+                                if preview.len() + delta.len() <= 4000 {preview.push_str(delta);}
+                                if preview_at.elapsed() >= Duration::from_millis(250) && !preview.is_empty() {
+                                    events.send(Event::Preview(std::mem::take(&mut preview))).await?;
+                                    preview_at = Instant::now();
+                                }
+                            }
+                        }
                         "account/rateLimits/updated" => crate::quota::observe("codex",&msg["params"]),
                         "mcpServer/startupStatus/updated" => {
                             if msg["params"]["server"]=="accessor" && msg["params"]["status"]=="failed" {
@@ -262,6 +351,7 @@ async fn codex(
                             }
                         }
                         "item/completed" => {
+                            preview.clear();
                             let item = &msg["params"]["item"];
                             if item["type"] == "agentMessage" {
                                 if let Some(text) = item["text"].as_str() {
@@ -274,7 +364,7 @@ async fn codex(
                         }
                         "turn/completed" => {
                             turn = None; turn_starting = false; cancel_requested = false;
-                            for (_, p) in pending.drain() { write(&mut stdin, rejected(p.id, &p.method)).await?; }
+                            for (n, p) in pending.drain() { write(&mut stdin, rejected(p.id, &p.method)).await?; events.send(Event::RequestClosed(n)).await?; }
                             let completed = &msg["params"]["turn"];
                             if completed["status"] == "failed" { events.send(Event::Failed(format!("Task failed: {}", completed["error"]))).await?; }
                             else {
@@ -286,6 +376,7 @@ async fn codex(
                             events.send(Event::Done).await?;
                         }
                         "serverRequest/resolved" => {
+                            for (&n,p) in &pending {if p.id == msg["params"]["requestId"] {events.send(Event::RequestClosed(n)).await?;}}
                             pending.retain(|_,p| p.id != msg["params"]["requestId"]);
                             if pending.is_empty() { events.send(Event::ApprovalClosed).await?; }
                         }
@@ -294,6 +385,7 @@ async fn codex(
                     }
                 } else if let Some(id) = msg["id"].as_u64() {
                     if let Some(error) = msg.get("error") {
+                        if steering.remove(&id).is_some() {events.send(Event::Note(format!("Guidance was not accepted: {error}"))).await?;continue;}
                         if id <= 2 { bail!("Codex setup failed: {error}"); }
                         if id == 4 {
                             events.send(Event::Note(format!("Codex connected-app refresh is unavailable in this CLI version: {error}"))).await?;
@@ -307,10 +399,14 @@ async fn codex(
                     }
                     if id == 1 {
                         write(&mut stdin, json!({"method":"initialized"})).await?;
-                        write(&mut stdin, json!({"id":2,"method":"thread/start","params":thread_params(&options)})).await?;
+                        let mut params = thread_params(&options);
+                        let method = if let Some(id) = &options.resume {params["threadId"] = json!(id); params.as_object_mut().unwrap().remove("ephemeral"); "thread/resume"} else {"thread/start"};
+                        write(&mut stdin, json!({"id":2,"method":method,"params":params})).await?;
                     } else if id == 2 {
                         thread = msg["result"]["thread"]["id"].as_str().map(str::to_owned);
-                        if thread.is_none() { bail!("Codex did not return a thread id"); }
+                        if thread.as_ref().is_none_or(|id|id.is_empty() || id.len()>512) { bail!("Codex did not return a valid thread id"); }
+                        if options.resume.as_ref().is_some_and(|id|Some(id)!=thread.as_ref()) {bail!("Codex resumed a different thread; task was not continued");}
+                        if options.persistent {events.send(Event::Session(thread.clone().unwrap())).await?;}
                         if options.shared_memory {write(&mut stdin,json!({"id":3,"method":"mcpServerStatus/list","params":{"limit":100}})).await?;}
                         write(&mut stdin,json!({"id":4,"method":"app/installed","params":{"threadId":thread,"forceRefresh":true}})).await?;
                     } else if id==3 {
@@ -322,6 +418,8 @@ async fn codex(
                     } else if id==4 {
                         apps_ready = true;
                         events.send(Event::Ready).await?;
+                    } else if let Some(text) = steering.remove(&id) {
+                        events.send(Event::Steered(text)).await?;
                     } else if requests.remove(&id) == Some("turn/start") {
                         turn = msg["result"]["turn"]["id"].as_str().map(str::to_owned);
                         turn_starting = false;
@@ -331,6 +429,21 @@ async fn codex(
             cmd = commands.recv() => {
                 match cmd {
                     Some(CommandMessage::Model(value)) => {model=value;}
+                    Some(CommandMessage::Steer(text)) => {
+                        if let (Some(t),Some(r)) = (&thread,&turn) {
+                            next_id += 1;
+                            write(&mut stdin, json!({"id":next_id,"method":"turn/steer","params":{"threadId":t,"expectedTurnId":r,"input":[{"type":"text","text":text}]}})).await?;
+                            steering.insert(next_id,text);
+                        } else {events.send(Event::Note("No active turn to steer; wait until the task starts or resume it explicitly.".into())).await?;}
+                    }
+                    Some(CommandMessage::Answer { number, answers }) => {
+                        if let Some(p) = pending.get(&number).filter(|p| p.deadline > Instant::now() && p.questions.as_ref().is_some_and(|qs| valid_answers(qs,&answers))) {
+                            write(&mut stdin,json!({"id":p.id,"result":{"answers":answers}})).await?;
+                            pending.remove(&number);
+                            events.send(Event::RequestClosed(number)).await?;
+                            if pending.is_empty() {events.send(Event::ApprovalClosed).await?;}
+                        } else {events.send(Event::Note("Question is expired or answers do not match its fields/options.".into())).await?;}
+                    }
                     None | Some(CommandMessage::Shutdown) => {
                         // Interrupt first. Dropping the connection also invalidates pending approvals.
                         if let (Some(t), Some(r)) = (&thread, &turn) { write(&mut stdin, json!({"id":next_id,"method":"turn/interrupt","params":{"threadId":t,"turnId":r}})).await?; }
@@ -342,6 +455,7 @@ async fn codex(
                         if turn.is_some() || turn_starting { events.send(Event::Note("Agent is working. Cancel or wait before sending another request.".into())).await?; continue; }
                         cancel_requested=false;
                         replies.clear();
+                        preview.clear();
                         let Some(t) = &thread else { events.send(Event::Note("Agent is still connecting; repeat your request when ready.".into())).await?; events.send(Event::Done).await?; continue; };
                         next_id += 1;
                         requests.insert(next_id, "turn/start");
@@ -355,9 +469,11 @@ async fn codex(
                     }
                     Some(CommandMessage::Cancel) => { cancel_requested = true; }
                     Some(CommandMessage::Approval { number, allow }) => {
+                        if pending.get(&number).is_some_and(|p| p.questions.is_some()) {events.send(Event::Note("Use the question form; /approve cannot answer a question.".into())).await?;continue;}
                         if let Some(p) = pending.remove(&number) {
                             let allow = allow && p.deadline > Instant::now();
                             write(&mut stdin, approval_result(p.id,&p.method,allow)).await?;
+                            events.send(Event::RequestClosed(number)).await?;
                             if pending.is_empty() { events.send(Event::ApprovalClosed).await?; }
                         } else { events.send(Event::Note("Approval is absent, expired, or already resolved.".into())).await?; }
                     }
@@ -368,12 +484,12 @@ async fn codex(
                 let expired: Vec<_> = pending.iter().filter(|(_,p)| p.deadline <= Instant::now()).map(|(n,_)| *n).collect();
                 let had_expired = !expired.is_empty();
                 for n in expired {
-                    if let Some(p) = pending.remove(&n) { write(&mut stdin, rejected(p.id, &p.method)).await?; events.send(Event::Note(format!("Approval {n} expired and was declined."))).await?; }
+                    if let Some(p) = pending.remove(&n) { write(&mut stdin, rejected(p.id, &p.method)).await?; events.send(Event::RequestClosed(n)).await?; events.send(Event::Note(format!("Request {n} expired and was declined."))).await?; }
                 }
                 if had_expired && pending.is_empty() { events.send(Event::ApprovalClosed).await?; }
                 if cancel_requested && !turn_starting {
                     cancel_requested = false;
-                    for (_,p) in pending.drain() { write(&mut stdin, rejected(p.id, &p.method)).await?; }
+                    for (n,p) in pending.drain() { write(&mut stdin, rejected(p.id, &p.method)).await?; events.send(Event::RequestClosed(n)).await?; }
                     if let (Some(t), Some(r)) = (&thread, &turn) {
                         next_id += 1;
                         write(&mut stdin, json!({"id":next_id,"method":"turn/interrupt","params":{"threadId":t,"turnId":r}})).await?;
@@ -847,6 +963,7 @@ async fn stdio_agent(
                         return Ok(());
                     }
                     Some(CommandMessage::Model(_)) => {}
+                    Some(CommandMessage::Steer(_)) | Some(CommandMessage::Answer { .. }) => {events.send(Event::Note("This harness does not support live steering or structured questions.".into())).await?;}
                     Some(CommandMessage::Approval { number, allow }) => {
                         if name != "Claude Code" {
                             events.send(Event::Note("This harness does not support interactive approvals.".into())).await?;
@@ -1093,9 +1210,11 @@ async fn oneshot_agent(
         let text = match command {
             CommandMessage::Shutdown => return Ok(()),
             CommandMessage::Prompt(text) => text,
-            CommandMessage::Cancel | CommandMessage::Model(_) | CommandMessage::Approval { .. } => {
-                continue
-            }
+            CommandMessage::Steer(_)
+            | CommandMessage::Answer { .. }
+            | CommandMessage::Cancel
+            | CommandMessage::Model(_)
+            | CommandMessage::Approval { .. } => continue,
         };
         let text = if primed {
             text
@@ -1176,6 +1295,7 @@ async fn oneshot_agent(
                             cancelled = true;
                             break;
                         }
+                        Some(CommandMessage::Steer(_)) | Some(CommandMessage::Answer { .. }) => {events.send(Event::Note("This harness does not support live steering or structured questions.".into())).await?;}
                         Some(_) => {}
                     }
                 }
@@ -1219,6 +1339,20 @@ async fn oneshot_agent(
 mod tests {
     use super::*;
     #[test]
+    fn structured_answers_require_exact_fields_and_options() {
+        let qs =
+            json!([{"id":"direction","question":"Choose","options":[{"label":"A"},{"label":"B"}]}]);
+        assert!(valid_answers(&qs, &json!({"direction":{"answers":["B"]}})));
+        for answers in [
+            json!({}),
+            json!({"wrong":{"answers":["A"]}}),
+            json!({"direction":{"answers":["yes"]}}),
+            json!({"direction":{"answers":["A","B"]}}),
+        ] {
+            assert!(!valid_answers(&qs, &answers));
+        }
+    }
+    #[test]
     fn only_empty_mcp_confirmations_can_be_approved() {
         assert!(confirmation_only(
             &json!({"mode":"form","requestedSchema":{"type":"object","properties":{}}})
@@ -1242,6 +1376,8 @@ mod tests {
     #[test]
     fn defaults_and_unknown_requests_fail_closed() {
         let p = thread_params(&Options {
+            persistent: false,
+            resume: None,
             control: None,
             shared_memory: false,
             executable: "codex".into(),
@@ -1256,6 +1392,8 @@ mod tests {
         assert_eq!(p["approvalsReviewer"], "user");
         assert_eq!(
             thread_params(&Options {
+                persistent: false,
+                resume: None,
                 control: None,
                 shared_memory: false,
                 executable: "codex".into(),
@@ -1362,6 +1500,8 @@ mod tests {
     #[test]
     fn antigravity_args_honor_auto_review_and_mode() {
         let mut opts = Options {
+            persistent: false,
+            resume: None,
             control: None,
             shared_memory: false,
             executable: "agy".into(),
@@ -1385,6 +1525,8 @@ mod tests {
     }
     fn oneshot_options(writable: bool, auto_review: bool) -> Options {
         Options {
+            persistent: false,
+            resume: None,
             control: None,
             shared_memory: false,
             executable: "opencode".into(),

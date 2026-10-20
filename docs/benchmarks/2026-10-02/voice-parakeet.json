@@ -1,0 +1,35 @@
+{
+  "endpoint_ms": 600,
+  "engine": "parakeet",
+  "files": [
+    {
+      "audio_seconds": 3.1115,
+      "confidence": null,
+      "file": "/home/supine/source/repos/accessor/tests/fixtures/voice-benchmark.wav",
+      "first_decode_ms": 1804.044245,
+      "first_text": "Twenty nine. What is on my calendar tomorrow morning?",
+      "median_ms": 1560.320727,
+      "p95_ms": 1608.0544969999999,
+      "real_time_factor": 0.5014689786276716,
+      "texts": [
+        "Twenty nine. What is on my calendar tomorrow morning?",
+        "Twenty nine. What is on my calendar tomorrow morning?",
+        "Twenty nine. What is on my calendar tomorrow morning?",
+        "Twenty nine. What is on my calendar tomorrow morning?",
+        "Twenty nine. What is on my calendar tomorrow morning?"
+      ],
+      "warm_ms": [
+        1608.0544969999999,
+        1551.048405,
+        1571.838966,
+        1553.664911,
+        1560.320727
+      ]
+    }
+  ],
+  "load_ms": 2576.415944,
+  "note": "Inference only, not microphone, endpoint, network, agent or audible response latency. Whisper CLI reloads its model for each decode.",
+  "runs": 5,
+  "spin": false,
+  "threads": 2
+}

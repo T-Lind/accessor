@@ -200,7 +200,9 @@ where
             let mut rendered = reference
                 .as_ref()
                 .map(|_| Vec::with_capacity(output.len() / channels));
-            let paused = state.capture.holding() || state.stop.load(Ordering::SeqCst);
+            let paused = state.capture.holding()
+                || state.capture.output_paused()
+                || state.stop.load(Ordering::SeqCst);
             for frame in output.chunks_mut(channels) {
                 let value = buffer.next(paused).unwrap_or_else(|| {
                     state.done.store(true, Ordering::SeqCst);

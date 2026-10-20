@@ -680,10 +680,18 @@ pub struct Job {
     pub task: tokio::task::JoinHandle<Result<()>>,
     stop: Arc<AtomicBool>,
     playing: Arc<AtomicBool>,
+    cursor: Arc<std::sync::Mutex<(Vec<String>, usize)>>,
 }
 impl Job {
     pub fn is_playing(&self) -> bool {
         self.playing.load(Ordering::SeqCst)
+    }
+    /// Resume from the last fully played synthesis chunk, never from an
+    /// estimated word position. An interrupted chunk is repeated in full.
+    pub fn remaining(&self) -> Option<String> {
+        let cursor = self.cursor.lock().unwrap();
+        let text = cursor.0[cursor.1..].join(" ");
+        (!text.is_empty()).then_some(text)
     }
     pub fn cancel(&self) {
         self.stop.store(true, Ordering::SeqCst);
@@ -712,14 +720,16 @@ impl Drop for Synthesis {
     }
 }
 pub fn start(text: String, settings: Tts, capture: Arc<crate::audio::SpeechState>) -> Job {
+    let parts = speak_chunks_for(&text, &settings.provider);
+    let cursor = Arc::new(std::sync::Mutex::new((parts.clone(), 0)));
+    let position = cursor.clone();
     let stop = Arc::new(AtomicBool::new(false));
-    let paused = Arc::new(AtomicBool::new(false));
+    let paused = capture.playback_pause();
     let pause = paused.clone();
     let flag = stop.clone();
     let playing = Arc::new(AtomicBool::new(false));
     let playback = playing.clone();
     let task = tokio::spawn(async move {
-        let parts = speak_chunks_for(&text, &settings.provider);
         if parts.is_empty() || settings.provider == "off" {
             return Ok(());
         }
@@ -733,27 +743,33 @@ pub fn start(text: String, settings: Tts, capture: Arc<crate::audio::SpeechState
             }
             let capture = capture.clone();
             let pause = pause.clone();
-            let flag = flag.clone();
+            let play_flag = flag.clone();
             let playback = playback.clone();
             let speed = settings.speed;
             let spoken = spoken_text(&text);
             tokio::task::spawn_blocking(move || {
                 capture.playback(true);
                 playback.store(true, Ordering::SeqCst);
-                let result = crate::audio::speak_system_direct(&spoken, speed, &flag, &pause);
+                let result = crate::audio::speak_system_direct(&spoken, speed, &play_flag, &pause);
                 playback.store(false, Ordering::SeqCst);
                 capture.playback(false);
                 result
             })
             .await??;
+            if !flag.load(Ordering::SeqCst) {
+                position.lock().unwrap().1 = parts.len();
+            }
             return Ok(());
         }
         if settings.provider == "cartesia" && settings.streaming {
-            for part in parts {
+            for (index, part) in parts.iter().enumerate() {
                 if flag.load(Ordering::SeqCst) {
                     break;
                 }
-                stream_cartesia(&part, &settings, capture.clone(), playback.clone()).await?;
+                stream_cartesia(part, &settings, capture.clone(), playback.clone()).await?;
+                if !flag.load(Ordering::SeqCst) {
+                    position.lock().unwrap().1 = index + 1;
+                }
             }
             return Ok(());
         }
@@ -782,17 +798,20 @@ pub fn start(text: String, settings: Tts, capture: Arc<crate::audio::SpeechState
             }
             let capture = capture.clone();
             let pause = pause.clone();
-            let flag = flag.clone();
+            let play_flag = flag.clone();
             let playback = playback.clone();
             tokio::task::spawn_blocking(move || {
                 capture.playback(true);
                 playback.store(true, Ordering::SeqCst);
-                let result = crate::audio::play_wav(&wav, &flag, pause, settings.volume);
+                let result = crate::audio::play_wav(&wav, &play_flag, pause, settings.volume);
                 playback.store(false, Ordering::SeqCst);
                 capture.playback(false);
                 result
             })
             .await??;
+            if !flag.load(Ordering::SeqCst) {
+                position.lock().unwrap().1 = i + 1;
+            }
         }
         Ok(())
     });
@@ -800,6 +819,7 @@ pub fn start(text: String, settings: Tts, capture: Arc<crate::audio::SpeechState
         task,
         stop,
         playing,
+        cursor,
     }
 }
 pub fn local_python(s: &config::Settings) -> Result<std::path::PathBuf> {
@@ -998,6 +1018,7 @@ async fn render_uncached(text: &str, settings: &Tts) -> Result<Vec<u8>> {
 struct PiperWorker {
     child: tokio::process::Child,
     stdin: tokio::process::ChildStdin,
+    output: tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
     dir: tempfile::TempDir,
     voice: String,
     length_scale: String,
@@ -1029,9 +1050,16 @@ fn piper_paths(settings: &Tts) -> Result<(std::path::PathBuf, std::path::PathBuf
 }
 
 async fn render_piper(text: &str, settings: &Tts) -> Result<Vec<u8>> {
-    match render_piper_persistent(text, settings).await {
+    let line: String = text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(6000)
+        .collect();
+    match render_piper_persistent(&line, settings).await {
         Ok(bytes) => Ok(bytes),
-        Err(_) => render_piper_oneshot(text, settings).await,
+        Err(_) => render_piper_oneshot(&line, settings).await,
     }
 }
 
@@ -1072,77 +1100,53 @@ async fn render_piper_persistent(text: &str, settings: &Tts) -> Result<Vec<u8>> 
             .arg("-q")
             .current_dir(bin.parent().context("Piper directory missing")?)
             .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
         let mut child = command.spawn().context("Could not start Piper")?;
         let stdin = child.stdin.take().context("Piper stdin missing")?;
+        use tokio::io::AsyncBufReadExt;
+        let output =
+            tokio::io::BufReader::new(child.stdout.take().context("Piper stdout missing")?).lines();
         *guard = Some(PiperWorker {
             child,
             stdin,
+            output,
             dir,
             voice: voice_name,
             length_scale,
         });
     }
-    let before: std::collections::HashSet<std::path::PathBuf> = std::fs::read_dir(
-        guard
-            .as_ref()
-            .context("Piper worker unavailable")?
-            .dir
-            .path(),
-    )?
-    .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-    .collect();
-    let line: String = text.chars().take(6000).collect();
-    let result = piper_synthesize(
-        guard.as_mut().context("Piper worker unavailable")?,
-        &before,
-        &line,
-    )
-    .await;
-    match result {
-        Ok(bytes) => Ok(bytes),
-        Err(error) => {
-            if let Some(worker) = guard.as_mut() {
-                let _ = worker.child.start_kill();
-            }
-            *guard = None;
-            Err(error)
-        }
-    }
+    // Own the worker until its receipt arrives. Cancellation drops and kills it,
+    // so a later request cannot consume the cancelled request's output.
+    let mut worker = guard.take().context("Piper worker unavailable")?;
+    let bytes = piper_synthesize(&mut worker, text).await?;
+    *guard = Some(worker);
+    Ok(bytes)
 }
 
-async fn piper_synthesize(
-    worker: &mut PiperWorker,
-    before: &std::collections::HashSet<std::path::PathBuf>,
-    line: &str,
-) -> Result<Vec<u8>> {
+async fn piper_synthesize(worker: &mut PiperWorker, line: &str) -> Result<Vec<u8>> {
     use tokio::io::AsyncWriteExt;
     worker.stdin.write_all(line.as_bytes()).await?;
     worker.stdin.write_all(b"\n").await?;
     worker.stdin.flush().await?;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        let candidate = std::fs::read_dir(worker.dir.path())?
-            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-            .find(|path| {
-                path.extension().and_then(|s| s.to_str()) == Some("wav")
-                    && !before.contains(path)
-                    && std::fs::metadata(path)
-                        .map(|metadata| metadata.len() > 2000)
-                        .unwrap_or(false)
-            });
-        if let Some(path) = candidate {
-            let bytes = std::fs::read(&path)?;
-            let _ = std::fs::remove_file(&path);
-            return Ok(bytes);
-        }
-        if tokio::time::Instant::now() > deadline {
-            anyhow::bail!("Piper did not produce audio in time");
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
+    // Stock Piper prints the WAV path only after closing the completed file.
+    let receipt = tokio::time::timeout(Duration::from_secs(30), worker.output.next_line())
+        .await
+        .context("Piper did not produce audio in time")??
+        .context("Piper exited before completing audio")?;
+    let path = std::path::PathBuf::from(receipt);
+    ensure!(
+        path.parent() == Some(worker.dir.path()) && path.extension().is_some_and(|s| s == "wav"),
+        "Piper returned an unexpected output path"
+    );
+    ensure!(
+        std::fs::metadata(&path)?.len() <= 32 * 1024 * 1024,
+        "Piper audio exceeded the 32 MiB limit"
+    );
+    let bytes = std::fs::read(&path)?;
+    let _ = std::fs::remove_file(path);
+    Ok(bytes)
 }
 
 /// One-shot fallback: a fresh Piper process per request, used only when the

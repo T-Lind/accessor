@@ -1,0 +1,8 @@
+{
+  "command": "/memory review followed by /status",
+  "held_lock": "memory.lock",
+  "status_received_while_locked": false,
+  "held_ms": 1000.1847720050137,
+  "status_after_unlock": "WHITE: waiting for wake code | idle | M L \u00b7 mock \u00b7 mock-light",
+  "status_total_ms": 1000.3996049999841
+}

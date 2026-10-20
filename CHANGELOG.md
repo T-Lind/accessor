@@ -6,6 +6,17 @@ GitHub, and full notes are generated there. This file starts at 0.34.3 — see t
 [releases page](https://github.com/T-Lind/accessor/releases) and `git log` for
 earlier history.
 
+## [0.44.0] - 2026-10-20
+
+### Added
+
+- Local music playback and ambience controls, including optional Spotify control.
+- Durable task receipts, saved workspace permission profiles, task inspection, and
+  a human response panel for agent questions and approvals.
+- Speech playback pausing, resumable Codex worker sessions, and live worker
+  progress reporting.
+- Voice and wake evaluation fixtures and scripts.
+
 ## [0.43.0] - 2026-10-14
 
 ### Added

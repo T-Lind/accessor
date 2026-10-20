@@ -21,6 +21,16 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
+    /// Open the authenticated human controls for a running session.
+    Approvals {
+        #[arg(long)]
+        url: bool,
+    },
+    /// Inspect persistent task receipts without starting an agent.
+    Jobs {
+        #[command(subcommand)]
+        action: Option<JobsCommand>,
+    },
     /// Configure the local lock using masked terminal prompts (never arguments).
     Password {
         #[arg(value_parser = ["set", "remove", "status"], default_value = "status")]
@@ -51,12 +61,6 @@ enum Commands {
     /// Register Accessor MCP for Antigravity (Codex/Claude connect per session).
     McpInstall,
 
-    /// Local decision model for request routing and mascot tone (openJev 151M).
-    Decider {
-        #[command(subcommand)]
-        action: DeciderCommand,
-    },
-
     /// Receive notifications from an existing email automation; no inbox polling.
     Events {
         #[command(subcommand)]
@@ -83,8 +87,21 @@ enum Commands {
     },
     /// Check local dependencies without opening the microphone.
     Doctor,
+    /// Local decision model for request routing and mascot tone (openJev 151M).
+    Decider {
+        #[command(subcommand)]
+        action: DeciderCommand,
+    },
     /// Print a short list of Accessor commands an agent with shell access can use.
     Guide,
+    /// Control music in a running Accessor session, or export generated ambience.
+    Music {
+        /// Session endpoint file; otherwise use the launching agent's session.
+        #[arg(long)]
+        session: Option<PathBuf>,
+        #[command(subcommand)]
+        action: MusicCommand,
+    },
     /// Check harness CLI versions and apply updates where supported.
     Update {
         /// Print versions only; do not install.
@@ -144,12 +161,40 @@ enum Commands {
 }
 #[derive(Subcommand)]
 enum DeciderCommand {
-    /// Show whether the local decision model is installed.
     Status,
-    /// Download and verify the local decision model (~150 MB).
     Install,
-    /// Delete the local decision model.
     Remove,
+}
+#[derive(Subcommand)]
+enum JobsCommand {
+    List,
+    Show {
+        id: String,
+    },
+    Patch {
+        id: String,
+    },
+    /// Deliberate workspace-scoped launch authorization; never available through speech/MCP.
+    Profile {
+        #[command(subcommand)]
+        action: ProfileCommand,
+    },
+}
+#[derive(Subcommand)]
+enum ProfileCommand {
+    List,
+    Set {
+        name: String,
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        #[arg(long)]
+        write: bool,
+        #[arg(long,value_parser=["user","auto"],default_value="user")]
+        reviewer: String,
+    },
+    Remove {
+        name: String,
+    },
 }
 #[derive(Subcommand)]
 enum MemoryCommand {
@@ -175,6 +220,45 @@ enum MemoryCommand {
         scope: String,
         #[arg(long)]
         revision: u64,
+    },
+}
+#[derive(Subcommand)]
+enum MusicCommand {
+    Status,
+    Play {
+        file: PathBuf,
+        #[arg(long)]
+        repeat: bool,
+        #[arg(long, value_parser=clap::value_parser!(u8).range(0..=100))]
+        volume: Option<u8>,
+    },
+    Ambience {
+        #[arg(value_parser=["brown","rain","white"],default_value="brown")]
+        kind: String,
+        #[arg(long, value_parser=clap::value_parser!(u8).range(0..=100))]
+        volume: Option<u8>,
+    },
+    Pause,
+    Resume,
+    Stop,
+    Volume {
+        #[arg(value_parser=clap::value_parser!(u8).range(0..=100))]
+        percent: u8,
+    },
+    /// Control an installed, paired Spotify Soloist daemon.
+    Spotify {
+        #[arg(value_parser=["status","play","pause","resume","stop","volume","next","previous"])]
+        action: String,
+        source: Option<String>,
+    },
+    /// Write a synthetic noise WAV without playing or opening a session.
+    Render {
+        #[arg(value_parser=["brown","rain","white"])]
+        kind: String,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long,default_value_t=30,value_parser=clap::value_parser!(u32).range(1..=300))]
+        seconds: u32,
     },
 }
 #[derive(Clone, Copy, ValueEnum, PartialEq)]
@@ -210,6 +294,9 @@ pub struct Run {
     pub workspace: PathBuf,
     #[arg(long)]
     pub workspace_write: bool,
+    /// Apply a saved permission profile only when its canonical workspace matches.
+    #[arg(long, conflicts_with = "workspace_write")]
+    pub project_profile: Option<String>,
     #[arg(long)]
     pub codex_bin: Option<PathBuf>,
     #[arg(long, conflicts_with = "no_speak")]
@@ -528,6 +615,104 @@ fn normalized(mut args: Vec<OsString>) -> Vec<OsString> {
 pub async fn entry() -> Result<()> {
     let cli = Cli::parse_from(normalized(std::env::args_os().collect()));
     match cli.command {
+        Commands::Approvals { url } => {
+            let address = crate::human::latest_url()?;
+            if url {
+                println!("{address}");
+            } else {
+                println!("{}", crate::human::open(&address).await?);
+            }
+            Ok(())
+        }
+        Commands::Jobs { action } => {
+            println!(
+                "{}",
+                match action.unwrap_or(JobsCommand::List) {
+                    JobsCommand::List => crate::jobs::report()?,
+                    JobsCommand::Show { id } => crate::jobs::get(&id)?.describe(),
+                    JobsCommand::Patch { id } => crate::jobs::patch(&id)?,
+                    JobsCommand::Profile { action } => match action {
+                        ProfileCommand::Set {
+                            name,
+                            workspace,
+                            write,
+                            reviewer,
+                        } => crate::jobs::set_profile(&name, &workspace, write, &reviewer)?,
+                        ProfileCommand::Remove { name } => crate::jobs::remove_profile(&name)?,
+                        ProfileCommand::List =>
+                            serde_json::to_string_pretty(&crate::jobs::profiles()?)?,
+                    },
+                }
+            );
+            Ok(())
+        }
+        Commands::Music { session, action } => {
+            use crate::music::{Action, Backend, Request};
+            let mut request = Request {
+                backend: Backend::Local,
+                action: Action::Status,
+                source: None,
+                volume: None,
+                repeat: false,
+            };
+            match action {
+                MusicCommand::Render {
+                    kind,
+                    output,
+                    seconds,
+                } => {
+                    crate::music::render_ambience(&kind, &output, seconds)?;
+                    println!("Saved {}", output.display());
+                    return Ok(());
+                }
+                MusicCommand::Status => {}
+                MusicCommand::Play {
+                    file,
+                    repeat,
+                    volume,
+                } => {
+                    request.action = Action::Play;
+                    request.source = Some(
+                        std::fs::canonicalize(file)?
+                            .to_str()
+                            .context("Music path must be UTF-8")?
+                            .into(),
+                    );
+                    request.repeat = repeat;
+                    request.volume = volume;
+                }
+                MusicCommand::Ambience { kind, volume } => {
+                    request.action = Action::Ambience;
+                    request.source = Some(kind);
+                    request.volume = volume;
+                }
+                MusicCommand::Pause => request.action = Action::Pause,
+                MusicCommand::Resume => request.action = Action::Resume,
+                MusicCommand::Stop => request.action = Action::Stop,
+                MusicCommand::Volume { percent } => {
+                    request.action = Action::Volume;
+                    request.volume = Some(percent);
+                }
+                MusicCommand::Spotify { action, source } => {
+                    request = crate::music::parse(&format!(
+                        "/music spotify {action} {}",
+                        source.unwrap_or_default()
+                    ))?;
+                }
+            }
+            request.validate()?;
+            let endpoint = if let Some(path) = session {
+                serde_json::from_slice(&std::fs::read(path)?)?
+            } else {
+                crate::control::from_environment()
+                    .context("Use /music in Accessor, or pass --session with its endpoint file")?
+            };
+            let result =
+                crate::control::call(&endpoint, crate::control::Action::Music(request)).await?;
+            ensure!(result.get("error").is_none(), "{}", result["error"]);
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            Ok(())
+        }
         Commands::Password { action } => crate::auth::cli(&action),
         Commands::Usage {
             json,
@@ -593,41 +778,6 @@ pub async fn entry() -> Result<()> {
         Commands::McpInstall => {
             crate::mcp::install_antigravity()?;
             println!("Accessor MCP registered for Antigravity. It connects when the harness starts. Codex and Claude connect automatically inside Accessor.");
-            Ok(())
-        }
-        Commands::Decider { action } => {
-            let assets = crate::config::Settings::load()?.assets()?;
-            match action {
-                DeciderCommand::Status => {
-                    if crate::decider::installed(&assets) {
-                        println!(
-                            "Local decision model installed at {}.",
-                            crate::decider::dir(&assets).display()
-                        );
-                    } else {
-                        println!(
-                            "Local decision model not installed. Run `acc decider install` (~{}). Until then, routing falls back to keywords and tone to heuristics.",
-                            crate::decider::size_label()
-                        );
-                    }
-                }
-                DeciderCommand::Install => {
-                    println!(
-                        "Downloading the local decision model (~{})...",
-                        crate::decider::size_label()
-                    );
-                    println!("{}", crate::decider::download(assets).await?);
-                }
-                DeciderCommand::Remove => {
-                    let dir = crate::decider::dir(&assets);
-                    if dir.is_dir() {
-                        std::fs::remove_dir_all(&dir)?;
-                        println!("Removed {}.", dir.display());
-                    } else {
-                        println!("Nothing to remove.");
-                    }
-                }
-            }
             Ok(())
         }
         Commands::Organizer { action } => match action {
@@ -833,6 +983,41 @@ pub async fn entry() -> Result<()> {
             }
         },
         Commands::Doctor => doctor().await,
+        Commands::Decider { action } => {
+            let assets = Settings::load()?.assets()?;
+            match action {
+                DeciderCommand::Status => {
+                    println!(
+                        "{}",
+                        if crate::decider::installed(&assets) {
+                            format!(
+                                "Local decision model installed at {}.",
+                                crate::decider::dir(&assets).display()
+                            )
+                        } else {
+                            format!("Local decision model not installed. Run `acc decider install` (~{}).", crate::decider::size_label())
+                        }
+                    )
+                }
+                DeciderCommand::Install => {
+                    println!(
+                        "Downloading the local decision model (~{})...",
+                        crate::decider::size_label()
+                    );
+                    println!("{}", crate::decider::download(assets).await?);
+                }
+                DeciderCommand::Remove => {
+                    let dir = crate::decider::dir(&assets);
+                    if dir.is_dir() {
+                        std::fs::remove_dir_all(&dir)?;
+                        println!("Removed {}.", dir.display());
+                    } else {
+                        println!("Nothing to remove.");
+                    }
+                }
+            }
+            Ok(())
+        }
         Commands::Guide => {
             print!("{}", guide_text());
             Ok(())
@@ -1117,7 +1302,8 @@ async fn wake_test(
     crate::stt_models::ensure_ready(&assets, &engine, |msg| eprintln!("{msg}")).await?;
     let floor_db = floor_db.unwrap_or(s.stt.noise_floor_db);
     let denoise = denoise.unwrap_or(s.stt.denoise);
-    let wake = crate::wake::WakeCode::new(&wake_code, &wake_alias)?;
+    let wake =
+        crate::wake::WakeCode::new(&wake_code, &wake_alias)?.with_attention(s.wake_attention);
     let modes: Vec<(&str, bool)> = match noise_gate.as_str() {
         "on" => vec![("on", true)],
         "off" => vec![("off", false)],
@@ -1395,6 +1581,26 @@ async fn doctor() -> Result<()> {
         };
         println!("  {} ({}): {}", offer.name, offer.id, state);
     }
+    println!(
+        "Local decision model: {}",
+        if crate::decider::installed(&assets) {
+            "installed"
+        } else {
+            "not installed — run `acc decider install`"
+        }
+    );
+    println!(
+        "Wake spotter: {}",
+        if s.stt.wake_engine == "canary" {
+            "disabled (stt.wake-engine=canary)"
+        } else if crate::wake_kws::available(&assets) {
+            "installed (keyword spotting beside full recognition)"
+        } else if s.stt.wake_engine == "auto" {
+            "downloads on next start"
+        } else {
+            "not installed"
+        }
+    );
     let runtime = crate::stt_models::runtime_path(&assets);
     println!(
         "ONNX runtime: {}",
@@ -1402,26 +1608,6 @@ async fn doctor() -> Result<()> {
             "present"
         } else {
             "missing"
-        }
-    );
-    println!(
-        "Local decision model: {}",
-        if crate::decider::installed(&assets) {
-            "router/tone installed; relevance gate installed".to_string()
-        } else {
-            "not installed — run `acc decider install`".to_string()
-        }
-    );
-    println!(
-        "Wake spotter: {}",
-        if s.stt.wake_engine == "canary" {
-            "disabled (stt.wake-engine=canary)".to_string()
-        } else if crate::wake_kws::available(&assets) {
-            "installed (keyword spotting beside full recognition)".to_string()
-        } else if s.stt.wake_engine == "auto" {
-            "downloads on next start".to_string()
-        } else {
-            "not installed — set stt.wake-engine auto, or run scripts/setup_wakeword.py".to_string()
         }
     );
     println!(
@@ -1465,40 +1651,18 @@ async fn doctor() -> Result<()> {
     println!("\n{}", config::locations(&s));
     Ok(())
 }
-/// A short, stable inventory for an agent that reaches Accessor through the
-/// shell instead of MCP. Keep it accurate: ty, opencode and Cursor read it.
-fn guide_text() -> &'static str {
-    "Accessor local guide — commands an agent may run with its shell tool.\n\
-     \n\
-     Memory (durable facts and preferences; search before saving)\n\
-     \x20 acc memory search \"<query>\"\n\
-     \x20 acc memory list\n\
-     \x20 acc memory save <key> \"<text>\" --scope project|global --source \"<where>\" [--revision N]\n\
-     \x20 acc memory forget <key> --scope project|global --revision N\n\
-     \n\
-     Notes (private Markdown files; save one per note)\n\
-     \x20 acc organizer note \"<text>\" --title \"<title>\"\n\
-     \x20 acc organizer status        # notes folder, note titles, alarms, scheduled tasks\n\
-     \n\
-     Alarms and scheduled tasks (run only while Accessor is open)\n\
-     \x20 acc organizer alarm --in-seconds <n> --label \"<label>\"\n\
-     \x20 acc organizer task \"<prompt>\" --in-seconds <n> --harness <h> --model <m> --reasoning low\n\
-     \x20 acc organizer task \"<prompt>\" --local-time HH:MM --every-days 1 --harness <h> --model <m>\n\
-     \n\
-     Notifications\n\
-     \x20 acc notifications list [--unread]\n\
-     \x20 acc notifications read <id> | read-all | dismiss <id>\n\
-     \n\
-     Subscription quota (cached; no model request)\n\
-     \x20 acc usage --cached\n\
-     \n\
-     Settings (validated; same preferences as the settings_update MCP tool)\n\
-     \x20 acc config show\n\
-     \x20 acc config set <key> <value>\n\
-     \n\
-     Everything else: acc --help\n"
+fn guide_text() -> String {
+    format!(
+        "Accessor local guide — use `acc --help` for the full command list.\n\
+     Memory: acc memory search <query> | list | save <key> <text> | forget <key>\n\
+     Tasks: acc jobs list | show <id> | patch <id>\n\
+     Music: acc music status | play <file> | pause | resume | stop\n\
+     Notes and schedules: acc organizer --help\n\
+     Notifications: acc notifications --help\n\
+     Settings: acc config show | set <key> <value>\n\n{}\n",
+        crate::agent::capabilities()
+    )
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1521,13 +1685,5 @@ mod tests {
     #[test]
     fn management_help_stays_root() {
         assert_eq!(normalized(vec!["acc".into(), "--help".into()])[1], "--help");
-    }
-    #[test]
-    fn guide_points_at_notes_and_memory() {
-        let guide = guide_text();
-        assert!(guide.contains("acc organizer note"));
-        assert!(guide.contains("acc organizer status"));
-        assert!(guide.contains("acc memory save"));
-        assert!(guide.contains("acc --help"));
     }
 }

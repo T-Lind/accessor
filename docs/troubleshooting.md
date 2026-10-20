@@ -78,6 +78,19 @@ cannot be reconstructed.
 then `acc stt wake recording.wav` to test the production matcher on a real
 recording. Cloud STT and streaming are disabled while the lock is active.
 
+## Music and Spotify
+
+**Spotify plugin enabled, but Soloist is not connected.** The plugin connection
+and local player pairing are separate. Start Soloist on this Linux machine with
+your personal API key and `--ws 127.0.0.1:0`, then select it in Spotify's device
+picker. `soloist ctl status` checks the daemon; `soloist ctl now --json` checks
+playback. Accessor and Soloist must use the same OS user and data directory.
+See [Music on this machine](music.md) for the complete setup and troubleshooting.
+
+**Music is playing on another device.** Select this computer's Soloist device
+in Spotify. Accessor's `/music spotify` controls target Soloist; they do not
+control a separate Spotify browser or desktop player.
+
 ## Speech models and voices
 
 **Piper is missing.** The pinned build and default voice download on first run.
@@ -128,3 +141,17 @@ rather than orphan existing entries — unlock the credential store and retry.
 
 Enable the master log under Settings → Display. Logs never contain credentials or
 raw audio. `/logs` prints the path and the last lines.
+
+**A task is still running after saying the wake code.** This is intentional: wake
+pauses output and opens listening. Say “task status”, “tell the task …”, or “cancel
+the task”. `/task cancel ID` cancels one worker; `/cancel` cancels active work.
+
+**A saved job says unverified.** The receipt records its last state, not proof of
+a surviving process. Inspect `/task show ID` and the workspace, then explicitly
+`/task resume ID`. External effects and file changes are never undone or replayed
+automatically. Resume in the original project and reselect launch authorization.
+
+**A question or approval cannot be answered by voice.** Open `/approvals` or run
+`acc approvals`; review and answer its authenticated human form. The backend may
+use the same question protocol for connector consent. The form expires after one
+minute; a stopped or locked session invalidates it. See [task controls](tasks.md).

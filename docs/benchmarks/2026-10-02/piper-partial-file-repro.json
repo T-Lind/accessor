@@ -1,0 +1,10 @@
+{
+  "case": "Persistent Piper file becomes visible before writing completes",
+  "expected_audio_seconds": 1.0,
+  "writer_delay_ms": 500,
+  "elapsed_ms": 66.84710700210417,
+  "exit_code": 0,
+  "stdout": "{\n  \"note\": \"No disk/memory audio cache, no playback. First run includes connection/worker startup. First byte is network arrival, not audible playback.\",\n  \"provider\": \"piper\",\n  \"runs\": [\n    {\n      \"audio_seconds\": 0.09287981859410431,\n      \"first_byte_ms\": null,\n      \"real_time_factor\": 0.5455208436767578,\n      \"total_ms\": 50.667877\n    }\n  ]\n}\n",
+  "stderr": "",
+  "fake_piper_source": "#!/usr/bin/python3\nimport sys,time,pathlib,struct\nfolder=pathlib.Path(sys.argv[sys.argv.index('-d')+1])\nfor index,line in enumerate(sys.stdin):\n    data=bytes(22050*2)\n    header=struct.pack('<4sI4s4sIHHIIHH4sI',b'RIFF',36+len(data),b'WAVE',b'fmt ',16,1,1,22050,44100,2,16,b'data',len(data))\n    with (folder/f'{index}.wav').open('wb') as output:\n        output.write(header+data[:4096]); output.flush()\n        time.sleep(0.5)\n        output.write(data[4096:]); output.flush()\n"
+}

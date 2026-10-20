@@ -49,6 +49,7 @@ path and Codex executable changes require a restart.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `wake-code` | `29` | The spoken wake word |
+| `wake-attention` | off | Require “hey”, “hi”, “ok” or “okay” before the code when waking, including during playback |
 | `idle-seconds` | `120` | Seconds of idle before sleep; `0` disables auto-sleep |
 | `barge-in` | on | Allow follow-ups without repeating the wake word |
 | `microphone` | system default | Input device name (`acc devices`) |
@@ -94,6 +95,19 @@ path and Codex executable changes require a restart.
 | `routing.coordinator` | on | Lightweight coordinator owns the conversation |
 | `routing.fast-mode` | off | Best-effort low-latency path |
 | `routing.compaction-model` | — | Model used to compact history and infer memories |
+| `jobs.timeout-seconds` | `3600` | Worker deadline in seconds, `60`–`86400` |
+
+Saved worker receipts live under `ACC_HOME/jobs/`; inspect them with `acc jobs
+list`, `acc jobs show ID` and `acc jobs patch ID`. Resume is explicit from the
+dashboard and requires the original project workspace. Optional worktrees remain
+under `ACC_HOME/worktrees/` until you remove them yourself.
+
+Project permission profiles are separate from ordinary settings. Create one with
+`acc jobs profile set NAME --workspace PATH`, then select it explicitly with
+`acc run --workspace PATH --project-profile NAME`. Profiles default to read-only
+and human review; `--write` and `--reviewer auto` opt into different policies.
+They cannot be changed through agent-editable settings or speech. See
+[Hands-free tasks](tasks.md) for commands and harness differences.
 
 ### Memory, logging, and security
 

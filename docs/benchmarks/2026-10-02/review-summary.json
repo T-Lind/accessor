@@ -1,0 +1,49 @@
+{
+  "offline_checks": {
+    "cargo fmt --check": "passed",
+    "cargo clippy --locked --all-targets -- -D warnings": "passed",
+    "cargo test --locked": "passed: 190 passed, 2 ignored per binary",
+    "cargo build --release --locked --bin acc": "passed",
+    "python3 tests/smoke.py": "passed: 21 tests",
+    "python3 tests/runtime.py": "passed: 36 tests",
+    "python3 tests/security_runtime.py": "passed: 10 tests",
+    "python3 tests/memory_runtime.py": "passed: 7 tests"
+  },
+  "note": "The machine has python3, no python alias. The separate normally ignored real-model wake test failed. No runtime source or user settings were changed.",
+  "findings": [
+    {
+      "priority": "high",
+      "finding": "Persistent Piper accepts incomplete WAV output",
+      "source": "src/speech.rs:1127",
+      "evidence": "piper-partial-file-repro.json",
+      "result": "A 1-second WAV was returned as 0.093 seconds while its writer was paused, with success exit status."
+    },
+    {
+      "priority": "high",
+      "finding": "Interactive memory access blocks the UI on file-lock contention",
+      "source": "src/app.rs:1903",
+      "evidence": "memory-ui-lock-repro.json",
+      "result": "Queued /status was blocked for the entire 1-second lock hold and returned immediately after release."
+    },
+    {
+      "priority": "medium",
+      "finding": "Invalid /memory forget 0 removes the first memory",
+      "source": "src/app.rs:1922",
+      "evidence": "memory-zero-index-repro.json",
+      "result": "A synthetic fact was tombstoned rather than rejecting index zero."
+    },
+    {
+      "priority": "high",
+      "finding": "Normally ignored real-model active-output wake regression fails",
+      "source": "src/audio.rs:2300",
+      "evidence": "real-wake-confirmation.json",
+      "result": "Wake phrase was lost in the active-output pipeline for generated and repository fixtures. Offline synthetic simulation, not a live room test."
+    }
+  ],
+  "media_environment": {
+    "native_accessor_music_tool": false,
+    "playerctl_installed": false,
+    "active_mpris_players": []
+  },
+  "audio_inventory": "No oldaudio path found under /home/supine at depth <= 6. Existing synthetic fixture and legacy TTS-cache WAVs found; benchmarks use synthetic speech only."
+}

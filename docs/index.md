@@ -10,6 +10,7 @@ reuses the agent's tools and account connections.
 ![Speech](https://img.shields.io/badge/speech-local%20by%20default-success)
 
 [Get started](getting-started.md){:.btn} · [Architecture](architecture.md) ·
+[Hands-free tasks](tasks.md) · [Voice experiments](voice-experiments.md) ·
 [Full README](https://github.com/T-Lind/accessor#readme)
 
 ## What it is
@@ -75,6 +76,9 @@ platform prerequisites and a first-run walkthrough.
 | [Architecture](architecture.md) | Pipeline, routing, memory, and security diagrams |
 | [Configuration](configuration.md) | Portable vs device settings, key reference |
 | [Harnesses](harnesses.md) | Supported agents, roles, connectors, and MCP |
+| [Hands-free tasks](tasks.md) | Saved work, steering, drafting, permissions, and a spoken test transcript |
+| [Voice experiments](voice-experiments.md) | Optional measured wake, endpointing, and Piper experiments |
+| [Music](music.md) | Local playback, Spotify Soloist pairing, and Codex music controls |
 | [Troubleshooting](troubleshooting.md) | Common install, audio, and platform problems |
 | [Releases](releases.md) | Versioning, artifacts, and how updates work |
 | [Local access lock](SECURITY.md) | Password boundary, spoken unlock, and recovery |

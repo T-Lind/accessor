@@ -22,12 +22,17 @@ python tests/smoke.py
 python tests/runtime.py
 ```
 
+On a developer machine, also verify that the local `acc --version` matches
+`target/release/acc --version` and `Cargo.toml`. Use the
+[development launcher](getting-started.md#keep-the-local-command-on-your-development-build)
+so every successful local release build becomes the version launched by `acc`.
+
 ## 2. Tag and push
 
 ```sh
-git add -A && git commit -m "Release 0.34.5"
-git tag v0.34.5
-git push origin main v0.34.5
+git add -A && git commit -m "Release 0.37.0"
+git tag v0.37.0
+git push --atomic origin HEAD v0.37.0
 ```
 
 The `Release` workflow (`.github/workflows/release.yml`) runs on any `v*` tag. It
@@ -39,6 +44,12 @@ builds and publishes:
 | `ubuntu-24.04-arm` | `aarch64-unknown-linux-gnu` | `acc-<version>-aarch64-unknown-linux-gnu.tar.gz` |
 | `macos-14` | `aarch64-apple-darwin` | `acc-<version>-aarch64-apple-darwin.tar.gz` |
 | `windows-latest` | `x86_64-pc-windows-msvc` | `acc-<version>-x86_64-pc-windows-msvc.zip` |
+
+Push the reviewed current branch; a version tag can point to that commit without
+merging into `main`. A tag push starts the release builds, but does not prove
+they have completed. Check the workflow and all four release assets before
+reporting downloadable binaries as published. Docs source travels with the
+commit; the Pages website follows its separate deployment workflow.
 
 Each archive contains `acc` (`acc.exe`), `LICENSE`, and `THIRD_PARTY.md`. The
 workflow also publishes a combined `SHA256SUMS`. Both Linux builds use Ubuntu

@@ -1,0 +1,381 @@
+{
+  "reports": [
+    {
+      "denoise": "highpass",
+      "engine": "canary",
+      "floor_db": -60.0,
+      "gate": "compare",
+      "note": "Offline file test using the production wake matcher. Not a room false-accept or far-field accuracy test.",
+      "runs": [
+        {
+          "file": "docs/benchmarks/2026-10-02/wake-variants/wake-only-clean.wav",
+          "results": {
+            "off": {
+              "command": "",
+              "confidence": {
+                "mean": 0.9806638360023499,
+                "min": 0.9045192003250122
+              },
+              "inference_ms": 447.18491900000004,
+              "probe": true,
+              "text": "twenty nine.",
+              "wake": true
+            },
+            "on": {
+              "command": "",
+              "confidence": {
+                "mean": 0.9797418713569641,
+                "min": 0.9032583236694336
+              },
+              "inference_ms": 493.627708,
+              "probe": true,
+              "text": "twenty nine.",
+              "wake": true
+            }
+          },
+          "seconds": 1.2216875
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/wake-variants/wake-only-quiet.wav",
+          "results": {
+            "off": {
+              "command": "",
+              "confidence": {
+                "mean": 0.9696630239486694,
+                "min": 0.8247313499450684
+              },
+              "inference_ms": 394.146312,
+              "probe": true,
+              "text": "twenty nine.",
+              "wake": true
+            },
+            "on": {
+              "command": "",
+              "confidence": {
+                "mean": 0.9627817869186401,
+                "min": 0.7866303324699402
+              },
+              "inference_ms": 365.636951,
+              "probe": true,
+              "text": "twenty nine.",
+              "wake": true
+            }
+          },
+          "seconds": 1.2216875
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/wake-variants/wake-only-noise_10db.wav",
+          "results": {
+            "off": {
+              "command": "",
+              "confidence": {
+                "mean": 0.9679707884788513,
+                "min": 0.9052692651748657
+              },
+              "inference_ms": 376.42954299999997,
+              "probe": true,
+              "text": "twenty nine.",
+              "wake": true
+            },
+            "on": {
+              "command": "",
+              "confidence": {
+                "mean": 0.9679707884788513,
+                "min": 0.9052692651748657
+              },
+              "inference_ms": 447.537017,
+              "probe": true,
+              "text": "twenty nine.",
+              "wake": true
+            }
+          },
+          "seconds": 1.2216875
+        }
+      ],
+      "wake_code": "29"
+    },
+    {
+      "denoise": "highpass",
+      "engine": "canary",
+      "floor_db": -60.0,
+      "gate": "compare",
+      "note": "Offline file test using the production wake matcher. Not a room false-accept or far-field accuracy test.",
+      "runs": [
+        {
+          "file": "docs/benchmarks/2026-10-02/wake-variants/wake-music-clean.wav",
+          "results": {
+            "off": {
+              "command": "Play some music.",
+              "confidence": {
+                "mean": 0.9468064308166504,
+                "min": 0.44238436222076416
+              },
+              "inference_ms": 891.804645,
+              "probe": true,
+              "text": "twenty nine. Play some music.",
+              "wake": true
+            },
+            "on": {
+              "command": "Play some music.",
+              "confidence": {
+                "mean": 0.9509777426719666,
+                "min": 0.5008140206336975
+              },
+              "inference_ms": 906.8052739999999,
+              "probe": true,
+              "text": "twenty nine. Play some music.",
+              "wake": true
+            }
+          },
+          "seconds": 3.0586875
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/wake-variants/wake-music-quiet.wav",
+          "results": {
+            "off": {
+              "command": "Play some music.",
+              "confidence": {
+                "mean": 0.9464946389198303,
+                "min": 0.4990141689777374
+              },
+              "inference_ms": 886.8691269999999,
+              "probe": true,
+              "text": "twenty nine. Play some music.",
+              "wake": true
+            },
+            "on": {
+              "command": "Play some music.",
+              "confidence": {
+                "mean": 0.9438253045082092,
+                "min": 0.47597044706344604
+              },
+              "inference_ms": 967.945696,
+              "probe": true,
+              "text": "twenty nine. Play some music.",
+              "wake": true
+            }
+          },
+          "seconds": 3.0586875
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/wake-variants/wake-music-noise_10db.wav",
+          "results": {
+            "off": {
+              "command": "Play some music.",
+              "confidence": {
+                "mean": 0.9077147245407104,
+                "min": 0.36911457777023315
+              },
+              "inference_ms": 1509.184656,
+              "probe": true,
+              "text": "twenty nine. Play some music.",
+              "wake": true
+            },
+            "on": {
+              "command": "Play some music.",
+              "confidence": {
+                "mean": 0.9077147245407104,
+                "min": 0.36911457777023315
+              },
+              "inference_ms": 1192.403393,
+              "probe": true,
+              "text": "twenty nine. Play some music.",
+              "wake": true
+            }
+          },
+          "seconds": 3.0586875
+        }
+      ],
+      "wake_code": "29"
+    },
+    {
+      "denoise": "highpass",
+      "engine": "canary",
+      "floor_db": -60.0,
+      "gate": "compare",
+      "note": "Offline file test using the production wake matcher. Not a room false-accept or far-field accuracy test.",
+      "runs": [
+        {
+          "file": "docs/benchmarks/2026-10-02/wake-variants/wake-timer-clean.wav",
+          "results": {
+            "off": {
+              "command": "Set a timer for five minutes.",
+              "confidence": {
+                "mean": 0.9190894961357117,
+                "min": 0.3705710172653198
+              },
+              "inference_ms": 1303.74218,
+              "probe": true,
+              "text": "Hey twenty nine. Set a timer for five minutes.",
+              "wake": true
+            },
+            "on": {
+              "command": "Set a timer for five minutes.",
+              "confidence": {
+                "mean": 0.9238314628601074,
+                "min": 0.37903115153312683
+              },
+              "inference_ms": 1741.393528,
+              "probe": true,
+              "text": "Hey, twenty nine. Set a timer for five minutes.",
+              "wake": true
+            }
+          },
+          "seconds": 3.85975
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/wake-variants/wake-timer-quiet.wav",
+          "results": {
+            "off": {
+              "command": "set a timer for five minutes.",
+              "confidence": {
+                "mean": 0.9148977398872375,
+                "min": 0.2668560743331909
+              },
+              "inference_ms": 1284.956375,
+              "probe": true,
+              "text": "Hey twenty nine, set a timer for five minutes.",
+              "wake": true
+            },
+            "on": {
+              "command": null,
+              "confidence": {
+                "mean": 0.9127675890922546,
+                "min": 0.24243323504924774
+              },
+              "inference_ms": 1263.514636,
+              "probe": true,
+              "text": "H twenty nine. Set a timer for five minutes.",
+              "wake": false
+            }
+          },
+          "seconds": 3.85975
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/wake-variants/wake-timer-noise_10db.wav",
+          "results": {
+            "off": {
+              "command": null,
+              "confidence": {
+                "mean": 0.87254798412323,
+                "min": 0.2458876371383667
+              },
+              "inference_ms": 1237.6224300000001,
+              "probe": true,
+              "text": "K twenty nine. Set a time up for five minutes.",
+              "wake": false
+            },
+            "on": {
+              "command": null,
+              "confidence": {
+                "mean": 0.87254798412323,
+                "min": 0.2458876371383667
+              },
+              "inference_ms": 1234.77589,
+              "probe": true,
+              "text": "K twenty nine. Set a time up for five minutes.",
+              "wake": false
+            }
+          },
+          "seconds": 3.85975
+        }
+      ],
+      "wake_code": "29"
+    },
+    {
+      "denoise": "highpass",
+      "engine": "canary",
+      "floor_db": -60.0,
+      "gate": "compare",
+      "note": "Offline file test using the production wake matcher. Not a room false-accept or far-field accuracy test.",
+      "runs": [
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/near-28.wav",
+          "results": {
+            "off": {
+              "command": null,
+              "confidence": {
+                "mean": 0.9709610342979431,
+                "min": 0.8316438794136047
+              },
+              "inference_ms": 373.71059,
+              "probe": false,
+              "text": "twenty eight.",
+              "wake": false
+            },
+            "on": {
+              "command": null,
+              "confidence": {
+                "mean": 0.9728137850761414,
+                "min": 0.8585124015808105
+              },
+              "inference_ms": 357.638707,
+              "probe": false,
+              "text": "twenty eight.",
+              "wake": false
+            }
+          },
+          "seconds": 1.2565
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/near-39.wav",
+          "results": {
+            "off": {
+              "command": null,
+              "confidence": {
+                "mean": 0.9810333251953125,
+                "min": 0.9319291114807129
+              },
+              "inference_ms": 319.775273,
+              "probe": false,
+              "text": "thirty nine.",
+              "wake": false
+            },
+            "on": {
+              "command": null,
+              "confidence": {
+                "mean": 0.9830273985862732,
+                "min": 0.938587486743927
+              },
+              "inference_ms": 357.500137,
+              "probe": false,
+              "text": "thirty nine.",
+              "wake": false
+            }
+          },
+          "seconds": 1.1984375
+        },
+        {
+          "file": "docs/benchmarks/2026-10-02/generated-clips/negative.wav",
+          "results": {
+            "off": {
+              "command": null,
+              "confidence": {
+                "mean": 0.9613040089607239,
+                "min": 0.7341352701187134
+              },
+              "inference_ms": 1198.103286,
+              "probe": false,
+              "text": "The weather is nice today. Please pass the salt.",
+              "wake": false
+            },
+            "on": {
+              "command": null,
+              "confidence": {
+                "mean": 0.9636354446411133,
+                "min": 0.777754008769989
+              },
+              "inference_ms": 1172.907927,
+              "probe": false,
+              "text": "The weather is nice today. Please pass the salt.",
+              "wake": false
+            }
+          },
+          "seconds": 3.7088125
+        }
+      ],
+      "wake_code": "29"
+    }
+  ],
+  "note": "Offline whole-file recognition, not the live rolling wake-window path; synthetic Gaussian noise at 10 dB SNR."
+}

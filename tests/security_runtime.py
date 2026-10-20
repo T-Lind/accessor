@@ -126,6 +126,7 @@ class SecurityTests(unittest.TestCase):
         self.assertIn("locked", call({"settings_update": {"changes": {"speak": True}}})["error"])
         self.assertIn("locked", call("settings_read")["error"])
         self.assertIn("locked", call("sleep")["error"])
+        self.assertIn("locked", call({"music": {"action": "ambience", "source": "brown"}})["error"])
 
     def test_corrupt_password_fails_closed(self):
         (self.home / "password.json").write_text("{broken")

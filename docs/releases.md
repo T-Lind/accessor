@@ -59,6 +59,10 @@ The crate is not published to crates.io: it depends on a vendored fork of
 `[patch.crates-io]` path dependency, which crates.io forbids. Publishing would
 require resolving the fork first.
 
+For repeated local development builds, use the
+[development launcher](getting-started.md#keep-the-local-command-on-your-development-build)
+and verify `acc --version` after each successful release build.
+
 ## Changelog and attribution
 
 - [Changelog](https://github.com/T-Lind/accessor/blob/main/CHANGELOG.md)

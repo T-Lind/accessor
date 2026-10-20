@@ -146,6 +146,7 @@ pub struct SpeechState {
     pending: AtomicUsize,
     processing: AtomicBool,
     playback: AtomicBool,
+    paused: Arc<AtomicBool>,
 }
 impl SpeechState {
     pub fn phase(&self) -> Option<&'static str> {
@@ -170,6 +171,18 @@ impl SpeechState {
     }
     pub fn playback(&self, value: bool) {
         self.playback.store(value, Ordering::SeqCst);
+        if !value {
+            self.paused.store(false, Ordering::SeqCst);
+        }
+    }
+    pub fn playback_pause(&self) -> Arc<AtomicBool> {
+        self.paused.clone()
+    }
+    pub fn output_paused(&self) -> bool {
+        self.paused.load(Ordering::SeqCst)
+    }
+    pub fn is_playing(&self) -> bool {
+        self.playback.load(Ordering::SeqCst)
     }
     pub fn holding(&self) -> bool {
         self.active.load(Ordering::SeqCst)

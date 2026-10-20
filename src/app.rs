@@ -553,6 +553,11 @@ fn banner(state: BannerState, identity: &str) -> String {
 pub async fn run(mut args: Run) -> Result<()> {
     let _instance = crate::auth::Instance::acquire()?;
     let mut settings = config::Settings::load()?;
+    if let Some(name) = &args.project_profile {
+        let profile = crate::jobs::profile(name, &args.workspace)?;
+        args.workspace_write = profile.writable;
+        settings.approvals.reviewer = profile.reviewer;
+    }
     crate::masterlog::init(&settings);
     crate::masterlog::event(
         "startup",
@@ -638,6 +643,8 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut waiting_tasks = VecDeque::<crate::organizer::Task>::new();
     let mut worker: Option<crate::worker::Worker> = None;
     let mut worker_approval = false;
+    let mut draft = crate::conversation::Draft::default();
+    let mut paused_speech: Option<String> = None;
     let mut feedback = VecDeque::<String>::new();
     let mut limits = crate::limits::Limits::load();
     let mut control_count = 0usize;
@@ -798,6 +805,9 @@ pub async fn run(mut args: Run) -> Result<()> {
     }
     let (input_tx, mut input_rx) = mpsc::channel(16);
     let control_bridge = crate::control::Bridge::start(input_tx.clone()).await?;
+    crate::jobs::init(input_tx.clone())?;
+    let human_bridge = crate::human::Bridge::start(input_tx.clone()).await?;
+    let music = crate::music::Service::start(input_tx.clone(), speech_state.clone());
     let found = config::harness_offers(&settings, args.codex_bin.as_ref());
     if found.iter().any(|h| h.id == "antigravity" && h.found) {
         if let Err(e) = crate::mcp::install_antigravity() {
@@ -1340,6 +1350,9 @@ pub async fn run(mut args: Run) -> Result<()> {
                 }
                 if access.locked() {
                     match input {
+                        Input::Human(request) => {
+                            let _ = request.reply.send(serde_json::json!({"error":"Accessor is locked"}));
+                        }
                         Input::Control(request) => {
                             let result = if matches!(request.action, crate::control::Action::Status) { serde_json::json!({"locked":true,"awake":false,"busy":false}) } else { serde_json::json!({"error":"Accessor is locked"}) };
                             let _ = request.reply.send(result);
@@ -1352,6 +1365,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                     }
                     continue;
                 }
+                human_bridge.panel.retain_live(|owner| worker.as_ref().is_some_and(|w| w.id == owner) || agents.values().any(|a| a.tag == owner));
                 if matches!(&input, Input::Voice{..}|Input::Pcm{..}|Input::CloudVoice{..}|Input::GatedVoice{..}) {speech_state.processing(true);}
                 if matches!(&input,Input::Voice{..}|Input::Pcm{..}) && (gate_job.is_some() || cloud_job.is_some()) {
                     if voice_inbox.len()<64 {voice_inbox.push_back(input);} else {ui.message("Speech processing is overloaded; please pause. Some speech could not be queued.");}
@@ -1374,12 +1388,58 @@ pub async fn run(mut args: Run) -> Result<()> {
                 let spoken_setting=matches!(&input,Input::Configure{spoken:true,..});
                 let mut voice_confidence: Option<audio::Confidence> = None;
                 let (mut text, typed, spoken_addressed, captured_during_output, route_override) = match input {
+                    Input::Human(request) => {
+                        let response = request.response;
+                        let result = if let Some(entry) = human_bridge.panel.get(&response.key) {
+                            let tx = worker.as_ref().filter(|w| w.id == entry.owner).map(|w| w.tx.clone())
+                                .or_else(|| agents.values().find(|a| a.tag == entry.owner).map(|a| a.tx.clone()));
+                            if let Some(tx) = tx {
+                                let command = if entry.questions.is_some() {
+                                    response.answers.filter(|_| response.allow.is_none()).map(|answers| agent::CommandMessage::Answer { number: entry.number, answers })
+                                } else {
+                                    response.allow.filter(|_| response.answers.is_none()).map(|allow| agent::CommandMessage::Approval { number: entry.number, allow })
+                                };
+                                match command {
+                                    Some(command) => match tx.try_send(command) {
+                                        Ok(()) => serde_json::json!({"receipt":"Response sent; the backend validates the request and expiry."}),
+                                        Err(_) => serde_json::json!({"error":"Agent control queue is busy; try again"}),
+                                    },
+                                    None => serde_json::json!({"error":"Response does not match this request"}),
+                                }
+                            } else { serde_json::json!({"error":"Task or session has ended"}) }
+                        } else { serde_json::json!({"error":"Request expired or was already resolved"}) };
+                        let _ = request.reply.send(result);
+                        continue;
+                    }
+                    Input::StartJob { job, prompt } => {
+                        if worker.is_some() { ui.message("A task is already running; the prepared job was saved and can be resumed later."); continue; }
+                        let mut job = *job;
+                        if !crate::jobs::same_project(&job, &args.workspace)? { ui.message("Saved task belongs to a different workspace; it was not started."); continue; }
+                        if job.thread.is_none() {
+                            if let Err(e) = crate::jobs::isolate(&mut job) { ui.message(format!("Could not prepare task workspace: {e:#}")); continue; }
+                        }
+                        job.writable &= args.workspace_write;
+                        let harness = job.harness.clone();
+                        let options = agent::Options { persistent: true, resume: job.thread.clone(), control: None, shared_memory: true,
+                            executable: config::harness_bin(&harness, &settings, args.codex_bin.as_ref()), workspace: job.workspace.clone(), writable: job.writable,
+                            model: job.model.clone(), auto_review: settings.approvals.reviewer == "auto", reasoning: job.reasoning.clone(), instructions: String::new() };
+                        match crate::worker::Worker::restore(job, prompt, options, event_tx.clone()) {
+                            Ok(w) => { ui.message(format!("Task {} started: {}.", &w.job.id[..8], safe(&w.job.name))); worker = Some(w); },
+                            Err(e) => ui.message(format!("Could not start task: {e:#}")),
+                        }
+                        continue;
+                    }
                     Input::Control(request)=>{
                         if request.reply.is_closed() {continue;}
+                        if let crate::control::Action::Music(action) = &request.action {
+                            if let Err(e) = music.request(action.clone(), Some(request.reply)) { ui.message(format!("Music: {e:#}")); }
+                            continue;
+                        }
                         let result=match request.action {
+                            crate::control::Action::Music(_) => unreachable!(),
                             crate::control::Action::Sleep=>{
                                 session.close();wake_listening=false;alarm=None;think=None;silence_reply=true;
-                                speech_queue.clear();speaker=None;echo_guard.finish();epoch.fetch_add(1,Ordering::SeqCst);
+                            speech_queue.clear();paused_speech=speaker.as_ref().and_then(|job|job.remaining());speaker=None;echo_guard.finish();epoch.fetch_add(1,Ordering::SeqCst);
                                 if let Some(job)=cloud_job.take() {job.abort();}
                                 muted.store(panel.is_some() || pending_secret.is_some() || wizard.is_some(),Ordering::SeqCst);
                                 ui.message("MCP: asleep. Waiting for wake code.");
@@ -1426,7 +1486,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                     if let Some(message)=limits.blocked(&harness) {anyhow::bail!(message);}
                                     let started=crate::worker::Worker::start(&harness,prompt,agent::Options {control:None, shared_memory: true,
                                         executable:config::harness_bin(&harness,&settings,args.codex_bin.as_ref()),workspace:workspace.clone(),writable:args.workspace_write,
-                                        model:Some(model.clone()),reasoning:reasoning.clone(),auto_review:settings.approvals.reviewer=="auto",instructions:String::new(),
+                                        model:Some(model.clone()),reasoning:reasoning.clone(),auto_review:settings.approvals.reviewer=="auto",instructions:String::new(),persistent:false,resume:None,
                                     },event_tx.clone())?;
                                     let id=started.id.clone();worker=Some(started);
                                     Ok(format!("Started {id}: {harness} / {model} / {reasoning}."))
@@ -1461,7 +1521,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                             executable:config::harness_bin(harness,&settings,args.codex_bin.as_ref()),
                             workspace:workspace.clone(),writable:args.workspace_write,model:task_model,
                             auto_review:settings.approvals.reviewer=="auto",reasoning:task_reasoning,
-                            instructions:if task.watch.is_some() {WATCH_INSTRUCTIONS.into()} else {String::new()},
+                            instructions:if task.watch.is_some() {WATCH_INSTRUCTIONS.into()} else {String::new()},persistent:false,resume:None,
                         },event_tx.clone())?);
                         if let Some(w)=worker.as_mut() {w.schedule_id=Some(task.id.clone());w.watch=task.watch.clone();}
                         ui.message(if task.watch.is_some() {format!("Watch {} started in an isolated {} worker.",task.id,harness)} else {format!("Scheduled task {} started in an isolated {} worker.",task.id,harness)});
@@ -2006,28 +2066,53 @@ pub async fn run(mut args: Run) -> Result<()> {
                         continue;
                     }
                     let parts: Vec<_> = text.split_whitespace().collect();
+                    if !typed {
+                        if let Some(crate::conversation::Control::Steer(note)) = crate::conversation::control(&text) {
+                            if let Some(tx) = agent_tx.as_ref() { let _ = tx.try_send(agent::CommandMessage::Steer(note)); }
+                            else { ui.message("There is no active task to guide."); }
+                            continue;
+                        }
+                    }
+                    if let Some(rest) = text.strip_prefix("/draft begin") {
+                        draft.begin(rest.trim().to_string()); ui.message("Draft started. Use /draft add, /draft undo, /draft send, or /draft discard."); continue;
+                    }
+                    if let Some(rest) = text.strip_prefix("/draft add ") {
+                        if !draft.append(rest.to_string()) { ui.message("Draft limit reached."); } else { ui.message("Added to the draft."); } continue;
+                    }
+                    if text.trim() == "/draft undo" { draft.undo(); ui.message("Removed the last draft part."); continue; }
+                    if text.trim() == "/draft discard" { draft.clear(); ui.message("Draft discarded."); continue; }
+                    if text.trim() == "/draft send" {
+                        if let Some(message) = draft.take() { if let Some(tx) = agent_tx.as_ref() { let _ = tx.try_send(agent::CommandMessage::Steer(message)); } else { ui.message("There is no active task to guide."); } } else { ui.message("The draft is empty."); } continue;
+                    }
+                    if text.starts_with("/music") {
+                        match crate::music::parse(&text) {
+                            Ok(request) => { if let Err(e) = music.request(request, None) { ui.message(format!("Music: {e:#}")); } }
+                            Err(e) => ui.message(format!("Music: {e:#}")),
+                        }
+                        continue;
+                    }
                     match parts.as_slice() {
                         ["/quit"] => break,
                         ["/status"] => ui.message(format!("{} | {} | {} · {} · {}",if mic_unavailable{"MICROPHONE UNAVAILABLE"}else if session.active(){"GREEN: conversation open"}else{"WHITE: waiting for wake code"},if busy{"agent working"}else{"idle"},crate::identity::code(&active_harness, active_model.as_deref()),active_harness,active_model.as_deref().unwrap_or("default"))),
-                        ["/help"] => ui.message("/quit /stop /sleep /cancel /audio /status /memory review /prompt /logs /approve N /deny N"),
+                        ["/help"] => ui.message("/quit /stop /sleep /cancel /audio /status /memory review /music /prompt /logs /approve N /deny N"),
                         ["/disconnect"] | ["/sleep"] => {
                             alarm=None;wake_listening=false;
                             session.close(); epoch.fetch_add(1,Ordering::SeqCst);
-                            think=None;silence_reply=true;speech_queue.clear();speaker=None;echo_guard.finish();
+                            think=None;silence_reply=true;speech_queue.clear();paused_speech=speaker.as_ref().and_then(|job|job.remaining());speaker=None;echo_guard.finish();
                             muted.store(false,Ordering::SeqCst);
                             ui.message("Asleep. Waiting for wake code.");
                             if cues { muted.store(true,Ordering::SeqCst); if let Err(e)=audio::sleep_chime(settings.sounds.sleep) { ui.message(format!("Sleep chime unavailable: {}",safe(&e.to_string()))); } muted.store(false,Ordering::SeqCst); }
                         }
                         ["/mute"] | ["/unmute"] => ui.message("Separate mute mode was removed. Use /sleep; say your wake code to listen again. Use the hardware/OS microphone switch for privacy."),
                         ["/memory"] => {
-                            match crate::memory::Store::open(&workspace).and_then(|store|store.search("",100)) {
+                            match crate::memory::Store::open(&workspace).map(|store|store.nonblocking()).and_then(|store|store.search("",100)) {
                                 Ok(entries) if entries.is_empty()=>ui.message("No shared memories yet. Agents may save stable facts and preferences automatically."),
                                 Ok(entries)=>{for entry in entries {ui.message(format!("{} · {} · revision {}\n{}",if entry.scope=="global" {"Global"} else {"Project"},entry.key,entry.revision,if entry.deleted {"Forgotten".into()} else {safe(&entry.text)}));}},
                                 Err(e)=>ui.message(format!("Could not read memory: {e:#}")),
                             }
                         },
                         ["/memory","review"] => {
-                            match crate::memory::Store::open(&workspace).and_then(|store|store.search("",100)) {
+                            match crate::memory::Store::open(&workspace).map(|store|store.nonblocking()).and_then(|store|store.search("",100)) {
                                 Ok(entries)=>{
                                     let live:Vec<_>=entries.iter().filter(|e|!e.deleted).collect();
                                     if live.is_empty() {ui.message("Nothing remembered yet. Say \"remember ...\" or state a preference and Accessor will capture it.");}
@@ -2044,7 +2129,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                         ["/memory","forget",number] => {
                             let result=(||->anyhow::Result<String>{
                                 let index:usize=number.parse().map_err(|_|anyhow::anyhow!("Use /memory forget N"))?;
-                                let store=crate::memory::Store::open(&workspace)?;
+                                let store=crate::memory::Store::open(&workspace)?.nonblocking();
                                 let live:Vec<_>=store.search("",100)?.into_iter().filter(|e|!e.deleted).collect();
                                 let entry=live.get(index.saturating_sub(1)).ok_or_else(||anyhow::anyhow!("No memory at that number"))?;
                                 let scope=if entry.scope=="global" {"global"} else {"project"};
@@ -2175,6 +2260,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                     Action::Ignore => continue,
                     Action::Open => {
                         wake_listening = true;
+                        if let Some(text) = paused_speech.take() { speech_queue.push_front(text); }
                         think=None;silence_reply=true;event_cancelled=true;
                         // A bare wake does not end an isolated worker; it keeps
                         // running and reports back.
@@ -2314,7 +2400,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                             }
                             else if let Some(queued)=&mut pending_prompt {if queued.len()+text.len()<32_000 {queued.push(' ');queued.push_str(&text);}else{ui.message("Too much pending speech; wait for the follow-up to start.");}}
                             else {pending_prompt=Some(text);if let Some(tx)=&agent_tx {cancelled_turn=true;cancel_started=Some(Instant::now());let _=tx.try_send(agent::CommandMessage::Cancel);}}
-                            ui.message("Interrupting; your follow-up will run next.");continue;
+                            ui.message("Replacing the task explicitly; Interrupting; your new request will run next.");continue;
                         }
                         if is_event {ui.message("Gmail notification received; asking the agent to handle the reply.");}
                         else if is_internal {ui.message("Returning the local result to the main conversation.");}
@@ -2525,7 +2611,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 workspace:workspace.clone(), writable:args.workspace_write, model:target.model.clone(),
                                 auto_review: settings.approvals.reviewer=="auto",
                                 reasoning: if settings.routing.fast_mode || (settings.routing.coordinator && settings.routing.reasoning=="default") { "low".into() } else { settings.routing.reasoning.clone() },
-                                instructions: launch_instructions,
+                                instructions: launch_instructions,persistent:false,resume:None,
                             },event_tx.clone());
                             agent_tx=Some(tx.clone());
                             agents.insert(target.harness, LiveAgent { tag, tx, task, first: Some(outbound), model:target.model,instructions });
@@ -2541,11 +2627,17 @@ pub async fn run(mut args: Run) -> Result<()> {
                     wake_display(settings.wake_display && !args.text,&mut last_display_wake);
                     match event {
                         agent::Event::Ready=>{if let Some(prompt)=w.first.take() {crate::usage::record_harness(&w.harness,crate::usage::approx_tokens(&prompt));let _=w.tx.send(agent::CommandMessage::Prompt(prompt)).await;}},
+                        agent::Event::Session(thread)=>{w.job.thread=Some(thread);w.job.save();},
+                        agent::Event::Preview(text)=>ui.chat(Kind::Progress,format!("{} worker: {}",w.harness,safe(&text))),
+                        agent::Event::Steered(text)=>ui.message(format!("Worker accepted guidance: {}",safe(&text))),
+                        agent::Event::Question{number,questions}=>{human_bridge.panel.add(&harness,number,serde_json::to_string(&questions).unwrap_or_default(),Some(questions));worker_approval=true;ui.message(format!("Worker has a question. Open {} to respond.",human_bridge.url));},
+                        agent::Event::RequestClosed(number)=>human_bridge.panel.remove(&harness,number),
                         agent::Event::Reply(text)=>w.append(&text),
-                        agent::Event::Progress(text)|agent::Event::Tool(text)=>ui.chat(Kind::Tool,format!("{} worker: {}",w.harness,safe(&text))),
+                        agent::Event::Progress(text)=>{w.progress(&text);ui.chat(Kind::Tool,format!("{} worker: {}",w.harness,safe(&text)));},
+                        agent::Event::Tool(text)=>ui.chat(Kind::Tool,format!("{} worker: {}",w.harness,safe(&text))),
                         agent::Event::Note(text)=>{limits.observe(&w.harness,&text);if text.to_lowercase().contains("fail") || limits.blocked(&w.harness).is_some() {w.failed=true;}w.append(&text);ui.message(safe(&text));},
                         agent::Event::Failed(text)=>{limits.observe(&w.harness,&text);w.failed=true;w.append(&text);ui.message(safe(&text));},
-                        agent::Event::Approval {number,detail}=>{worker_approval=true;ui.message(format!("Worker approval {number}: {}. Type /worker-approve {number} or /worker-deny {number}.",safe(&detail)));},
+                        agent::Event::Approval {number,detail}=>{worker_approval=true;human_bridge.panel.add(&harness,number,detail.clone(),None);ui.message(format!("Worker approval {number}: {}. Type /worker-approve {number} or /worker-deny {number}, or respond at {}.",safe(&detail),human_bridge.url));},
                         agent::Event::ApprovalClosed=>worker_approval=false,
                         agent::Event::Done|agent::Event::Cancelled|agent::Event::Error(_)=>{
                             if let agent::Event::Error(error)=event {limits.observe(&w.harness,&error);w.failed=true;w.append(&error);}
@@ -2553,6 +2645,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                             if let Some(id)=&schedule_id {
                                 if let Err(e)=crate::organizer::finish_run(id,if w.failed {"failed; not retried"}else{"completed"}) {ui.message(format!("Could not save task receipt: {e:#}"));}
                             }
+                            human_bridge.panel.clear_owner(&harness);
                             if let Some(watch)=w.watch.take() {
                                 let output=w.output.clone();
                                 let harness_name=w.harness.clone();
@@ -2592,6 +2685,14 @@ pub async fn run(mut args: Run) -> Result<()> {
                             let _=tx.send(agent::CommandMessage::Prompt(text)).await;
                         } else if harness == active_harness { busy=false; think=None; }
                     }
+                    agent::Event::Preview(text) => { if harness == active_harness { ui.chat(Kind::Progress, safe(&text)); } }
+                    agent::Event::Session(_) => {}
+                    agent::Event::Steered(text) => { if harness == active_harness { ui.message(format!("Guidance accepted: {}", safe(&text))); } }
+                    agent::Event::Question { number, questions } => {
+                        human_bridge.panel.add(&harness, number, serde_json::to_string(&questions).unwrap_or_default(), Some(questions));
+                        if harness == active_harness { approval = true; ui.message(format!("Agent has a question. Open {} to respond.", human_bridge.url)); }
+                    }
+                    agent::Event::RequestClosed(number) => human_bridge.panel.remove(&harness, number),
                     agent::Event::Started => {
                         if harness == active_harness {
                             mood_generation = mood_generation.wrapping_add(1);
@@ -2616,7 +2717,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                         let (text,_)=crate::organizer::take_directives(&text);
                         push_trace(&mut turn_trace, &text);
                         if pending_prompt.is_none() {ui.chat(Kind::Progress, &text);}
-                        if speak && settings.speak_progress && !silence_reply && !mic_unavailable {think=None;speech_queue.push_back(text);}
+                        if speak && settings.speak_progress && !silence_reply && !mic_unavailable {think=None;speech_queue.push_back(crate::conversation::spoken_progress(&text));}
                     }
                     agent::Event::Reply(text) => {
                         if harness != active_harness { continue; }
@@ -2664,7 +2765,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                     else {
                                         crate::worker::Worker::start(&harness,prompt,agent::Options {control:None, shared_memory: true,
                                             executable:config::harness_bin(&harness,&settings,args.codex_bin.as_ref()),workspace:workspace.clone(),writable:args.workspace_write,
-                                            model:Some(model.clone()),reasoning:reasoning.clone(),auto_review:settings.approvals.reviewer=="auto",instructions:String::new(),
+                                            model:Some(model.clone()),reasoning:reasoning.clone(),auto_review:settings.approvals.reviewer=="auto",instructions:String::new(),persistent:false,resume:None,
                                         },event_tx.clone()).map(|w|{let id=w.id.clone();worker=Some(w);format!("Started {id}: {harness} / {model} / {reasoning}.")})
                                     }
                                 },
@@ -2820,7 +2921,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                             } else {let _=input_tx.try_send(Input::Text(format!("{} {text}",settings.wake_code)));}
                         }
                     }
-                    agent::Event::Approval { number, detail } => { approval=true; ui.message(format!("Approval {number} (expires in 60 seconds):\n{}\nType /approve {number} or /deny {number}. Approval may allow access beyond the sandbox.",safe(&detail))); }
+                    agent::Event::Approval { number, detail } => { approval=true; human_bridge.panel.add(&harness,number,detail.clone(),None); ui.message(format!("Approval {number} (expires in 60 seconds):\n{}\nType /approve {number} or /deny {number}, or respond at {}. Approval may allow access beyond the sandbox.",safe(&detail),human_bridge.url)); }
                     agent::Event::ApprovalClosed => approval=false,
                     agent::Event::Error(e) => {
                         limits.observe(&active_harness,&e);
@@ -2836,6 +2937,8 @@ pub async fn run(mut args: Run) -> Result<()> {
 
             }
             _ = tick.tick() => {
+                if let Some(worker) = worker.as_mut() { worker.checkpoint(); }
+                if let Some(warning) = crate::jobs::take_warning() { ui.message(warning); }
                 if organizer_poll.as_ref().is_some_and(|poll|poll.task.is_finished()) {
                     let poll=organizer_poll.take().unwrap();
                     match poll.task.await {
