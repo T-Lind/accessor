@@ -72,7 +72,7 @@ the agent to inspect existing files and external effects first. It does not
 restore pending approvals, replay uncertain actions, undo files, or automatically
 retry an interrupted job. A previously read-only task stays read-only on resume.
 
-The default task deadline is **one hour**. Set `jobs.timeout-seconds` to 60–86400:
+The default task deadline is **15 minutes**. Set `jobs.timeout-seconds` to 60–86400:
 
 ```sh
 acc config set jobs.timeout-seconds 10800

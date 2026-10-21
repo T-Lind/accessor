@@ -267,7 +267,7 @@ pub fn pending() -> Result<Vec<Notification>> {
 
 pub fn mark_announced(ids: &[String]) -> Result<()> {
     let _lock = lock_file()?;
-    _lock.try_lock_exclusive()?;
+    _lock.lock_exclusive()?;
     let mut book = load()?;
     let mut changed = false;
     for item in &mut book.items {

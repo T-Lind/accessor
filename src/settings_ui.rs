@@ -320,6 +320,7 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                     Action::Edit("tts.model"),
                 ));
             }
+            list.push(row("Back", "categories", Action::Open(Page::Home)));
             list
         }
         Page::Harnesses => vec![
@@ -431,6 +432,7 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                 "",
                 Action::Run("/connectors setup"),
             ),
+            row("Back", "categories", Action::Open(Page::Home)),
         ],
         Page::Display => vec![
             row("Chat view", chat_mode(s), Action::Cycle("chat", CHATS)),
@@ -460,6 +462,7 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                 Action::Edit("logging.max-mb"),
             ),
             row("Show / tail log", "/logs", Action::Run("/logs")),
+            row("Back", "categories", Action::Open(Page::Home)),
         ],
         Page::Prompt => {
             let extra = if s.prompt_extra.trim().is_empty() {
@@ -505,6 +508,7 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                 "update found harness CLIs",
                 Action::Run("/update"),
             ),
+            row("Back", "categories", Action::Open(Page::Home)),
         ],
         Page::Computer => vec![
             row(
@@ -727,7 +731,7 @@ fn hint(action: &Action) -> &'static str {
             "Show observed provider failures and local retry backoff. These are conservative local delays, not verified quota resets."
         }
         Action::Edit("sounds.alarm") => {
-            "Volume of the repeating alarm cue. 0 silent, 1 default, 1.5 loud. Say “29 stop” or /stop to silence it."
+            "Volume of the repeating alarm cue. 0 silent, 1 default, 1.5 loud. Say your wake code then stop, or use /stop, to silence it."
         }
         Action::Edit("stt.endpoint-ms") => {
             "Silence in milliseconds before a finished phrase is recognized (300–2000). Lower responds faster but can split hesitant speech."
@@ -1067,7 +1071,23 @@ fn current_value<'a>(key: &str, s: &'a Settings) -> &'a str {
             }
         }
         "routing.input-gate" => &s.routing.input_gate,
+        "routing.router" => s.routing.router.as_str(),
         "chat" => s.chat.as_str(),
+        "logging.enabled" => {
+            if s.logging.enabled {
+                "true"
+            } else {
+                "false"
+            }
+        }
+        "logging.level" => s.logging.level.as_str(),
+        "stt.noise-gate" => {
+            if s.stt.noise_gate {
+                "true"
+            } else {
+                "false"
+            }
+        }
         "routing.reasoning" => s.routing.reasoning.as_str(),
         "approvals.reviewer" => s.approvals.reviewer.as_str(),
         "stt.conversation" => s.stt.conversation.as_str(),
@@ -1786,7 +1806,7 @@ impl Panel {
                             h.detail
                         ));
                     }
-                    text.push_str("Wake-word spotting is local. Esc returns.");
+                    text.push_str("Choose a harness. Esc returns.");
                     text
                 }
                 "routing.compaction-harness" => {
@@ -1845,6 +1865,28 @@ impl Panel {
                 }
                 "computer.zoom-dimension" => {
                     "Longest edge in pixels for a zoom region (256–4096). Esc returns.".into()
+                }
+                "security.lock-seconds" => {
+                    "Seconds since unlock before access is revoked (1–86400; default 3600). Esc returns."
+                        .into()
+                }
+                "stt.endpoint-ms" => {
+                    "Silence before an utterance ends, in milliseconds (300–2000). Esc returns."
+                        .into()
+                }
+                "stt.threads" => {
+                    "CPU threads for local recognition (1–8; restart required). Esc returns.".into()
+                }
+                "stt.wake-threshold" => {
+                    "Keyword-spotter confidence (0.05–0.95). Higher is stricter. Esc returns."
+                        .into()
+                }
+                "logging.max-mb" => {
+                    "Log size before rotation, in MB (1–1024). Esc returns.".into()
+                }
+                "prompt.extra" => {
+                    "Additional metaprompt instructions appended after the tone preset. Type clear to remove them. Esc returns."
+                        .into()
                 }
                 "stt.engine" => engine_picker(s),
                 _ => format!("Enter a new value for {key}. Esc returns."),
@@ -2101,6 +2143,7 @@ impl Panel {
                         })?
                     }
                 }
+                "prompt.extra" if value.eq_ignore_ascii_case("clear") => String::new(),
                 _ => value.to_owned(),
             };
             self.field = None;
@@ -2242,6 +2285,7 @@ fn named_harness(value: &str) -> Option<&'static str> {
         "antigravity" | "agy" => Some("antigravity"),
         "opencode" => Some("opencode"),
         "cursor" | "cursor-agent" => Some("cursor"),
+        "ty" => Some("ty"),
         "mock" => Some("mock"),
         _ => None,
     }
@@ -2345,6 +2389,41 @@ pub fn voice_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn every_toggle_and_cycle_reads_its_current_value() {
+        let s = Settings::default();
+        for key in [
+            "barge-in",
+            "computer.enabled",
+            "logging.enabled",
+            "routing.announce",
+            "routing.coordinator",
+            "routing.fast-mode",
+            "security.spoken-unlock",
+            "speak",
+            "speak-progress",
+            "stt.lazy",
+            "stt.noise-gate",
+            "stt.spin",
+            "stt.streaming",
+            "tts.streaming",
+            "wake-display",
+            "approvals.reviewer",
+            "chat",
+            "logging.level",
+            "routing.input-gate",
+            "routing.reasoning",
+            "routing.router",
+            "stt.conversation",
+            "stt.denoise",
+            "stt.wake-engine",
+        ] {
+            assert!(
+                !current_value(key, &s).is_empty(),
+                "{key} would toggle in only one direction"
+            );
+        }
+    }
     #[test]
     fn agent_wizard_is_atomic_and_supports_arrows_and_back() {
         let s = Settings::default();

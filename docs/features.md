@@ -52,6 +52,9 @@ The numeric word reduces accidental activations; it is not authentication. See t
 - `/repeat` replays the last completed answer without another model call. While
   awake, “repeat that” does the same. `/copy` copies the retained answer.
   Retention is bounded to 64,000 characters and clears on lock.
+- **Bramble**, the animated companion, reflects listening, thinking, working,
+  speaking, approval, lock, and sleep. `/mascot NAME` sets a pose, `/mascot auto`
+  returns to the live phase, and `ACC_REDUCED_MOTION=1` freezes the animation.
 - `/jobs` shows the main turn, isolated worker, and waiting tasks/speech.
 - `/memory infer` runs in the background; `/cancel` or locking stops inference.
   Mock mode uses local capture and compaction without a model process.

@@ -147,6 +147,28 @@ async fn write(stdin: &mut ChildStdin, message: Value) -> Result<()> {
     Ok(())
 }
 
+/// Bound a harness reply buffer so a pathological stream cannot grow memory
+/// without limit. The UI keeps only the first 600 entries anyway.
+fn append_bounded(buffer: &mut String, text: &str) {
+    const MAX_REPLY_BYTES: usize = 512 * 1024;
+    let room = MAX_REPLY_BYTES.saturating_sub(buffer.len());
+    if room == 0 {
+        return;
+    }
+    if text.len() <= room {
+        buffer.push_str(text);
+        return;
+    }
+    let mut used = 0;
+    for ch in text.chars() {
+        if used + ch.len_utf8() > room {
+            break;
+        }
+        buffer.push(ch);
+        used += ch.len_utf8();
+    }
+}
+
 fn thread_params(options: &Options) -> Value {
     json!({"cwd": options.workspace, "model":options.model, "sandbox": if options.writable {"workspace-write"} else {"read-only"},
         "approvalPolicy":"on-request",
@@ -888,7 +910,7 @@ async fn stdio_agent(
                     StreamLine::Skip => {}
                     StreamLine::Tool(text) => events.send(Event::Tool(text)).await?,
                     StreamLine::Reply(text) => {
-                        if !reply_buffer.ends_with(&text) { reply_buffer.push_str(&text); reply_buffer.push('\n'); }
+                        if !reply_buffer.ends_with(&text) { append_bounded(&mut reply_buffer, &text); reply_buffer.push('\n'); }
                     },
                     StreamLine::Approval { id, input, detail } => {
                         next_approval += 1;
@@ -1263,7 +1285,7 @@ async fn oneshot_agent(
                                 OneLine::Skip => {}
                                 OneLine::Tool(text) => events.send(Event::Tool(text)).await?,
                                 OneLine::Text(text) => {
-                                    if !reply.ends_with(&text) { reply.push_str(&text); reply.push('\n'); }
+                                    if !reply.ends_with(&text) { append_bounded(&mut reply, &text); reply.push('\n'); }
                                 }
                                 OneLine::Final(text) => final_reply = Some(text),
                                 OneLine::Error(e) => error = Some(e),
@@ -1657,5 +1679,16 @@ mod tests {
         assert!(args.contains(&"--resume".to_string()));
         assert!(args.contains(&"--model".to_string()));
         assert_eq!(args.last().map(String::as_str), Some("-"));
+    }
+    #[test]
+    fn reply_buffers_stay_bounded() {
+        let mut buffer = String::new();
+        append_bounded(&mut buffer, "hello");
+        assert_eq!(buffer, "hello");
+        append_bounded(&mut buffer, &"x".repeat(600 * 1024));
+        assert!(buffer.len() <= 512 * 1024);
+        let before = buffer.len();
+        append_bounded(&mut buffer, "more");
+        assert_eq!(buffer.len(), before);
     }
 }

@@ -95,7 +95,7 @@ path and Codex executable changes require a restart.
 | `routing.coordinator` | on | Lightweight coordinator owns the conversation |
 | `routing.fast-mode` | off | Best-effort low-latency path |
 | `routing.compaction-model` | — | Model used to compact history and infer memories |
-| `jobs.timeout-seconds` | `3600` | Worker deadline in seconds, `60`–`86400` |
+| `jobs.timeout-seconds` | `900` | Worker deadline in seconds, `60`–`86400` |
 
 Saved worker receipts live under `ACC_HOME/jobs/`; inspect them with `acc jobs
 list`, `acc jobs show ID` and `acc jobs patch ID`. Resume is explicit from the

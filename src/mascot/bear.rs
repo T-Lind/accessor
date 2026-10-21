@@ -49,53 +49,68 @@ const MUTED: u8 = 16;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State {
     Idle,
+    Listening,
     Greeting,
     Curious,
     Thinking,
     Working,
     Focused,
+    Speaking,
     Happy,
     Success,
     Surprised,
     Confused,
     Worried,
+    Sad,
     Error,
     Sleepy,
     Sleeping,
+    Locked,
     Celebrating,
 }
 impl State {
     fn from_mood(mood: Mood) -> Self {
         match mood {
-            Mood::Asleep | Mood::Locked => Self::Sleeping,
+            Mood::Asleep => Self::Sleeping,
+            Mood::Locked => Self::Locked,
             Mood::Idle => Self::Idle,
-            Mood::Listening | Mood::Curious => Self::Curious,
+            Mood::Listening => Self::Listening,
+            Mood::Curious => Self::Curious,
             Mood::Thinking => Self::Thinking,
             Mood::Working => Self::Working,
             Mood::Focused | Mood::Cautious => Self::Focused,
-            Mood::Speaking | Mood::Happy => Self::Happy,
+            Mood::Speaking => Self::Speaking,
+            Mood::Happy => Self::Happy,
             Mood::Proud => Self::Success,
-            Mood::Surprised => Self::Surprised,
+            Mood::Surprised | Mood::Alarmed => Self::Surprised,
             Mood::Confused => Self::Confused,
             Mood::Worried => Self::Worried,
-            Mood::Sad | Mood::Concerned | Mood::Apologetic | Mood::Alarmed => Self::Error,
+            // Keep Concerned -> Error: the vendored reference fixture's
+            // "error" frame resolves through the same mood.
+            Mood::Sad | Mood::Apologetic => Self::Sad,
+            Mood::Concerned => Self::Error,
             Mood::Sleepy => Self::Sleepy,
-            Mood::Delighted | Mood::Excited | Mood::Celebrating => Self::Celebrating,
+            Mood::Delighted => Self::Happy,
+            Mood::Excited | Mood::Celebrating => Self::Celebrating,
             Mood::Waving => Self::Greeting,
         }
     }
     fn cycle(self) -> f64 {
         match self {
             Self::Idle => 4000.0,
+            Self::Listening => 3000.0,
             Self::Greeting | Self::Surprised => 1600.0,
             Self::Curious | Self::Thinking => 2400.0,
             Self::Working => 1200.0,
             Self::Focused => 2800.0,
+            Self::Speaking => 900.0,
             Self::Happy | Self::Celebrating => 1800.0,
             Self::Success | Self::Error => 2000.0,
             Self::Confused | Self::Worried => 2200.0,
+            Self::Sad => 2400.0,
             Self::Sleepy => 3200.0,
             Self::Sleeping => 3600.0,
+            Self::Locked => 3600.0,
         }
     }
     fn asleep(self) -> bool {
@@ -123,6 +138,7 @@ pub struct Animator {
     state: State,
     entered: f64,
     transition: Option<Transition>,
+    reduced_motion: bool,
 }
 impl Animator {
     pub fn new(mood: Mood) -> Self {
@@ -130,11 +146,27 @@ impl Animator {
             state: State::from_mood(mood),
             entered: 0.0,
             transition: None,
+            reduced_motion: false,
+        }
+    }
+    /// Freeze the companion in a clean pose. Useful for motion-sensitive
+    /// terminals, remote sessions, and screen recordings.
+    pub fn set_reduced_motion(&mut self, reduced: bool) {
+        self.reduced_motion = reduced;
+        if reduced {
+            self.transition = None;
+            self.entered = 0.0;
         }
     }
     pub fn set_mood(&mut self, mood: Mood, now: f64) {
         let next = State::from_mood(mood);
         if next == self.state {
+            return;
+        }
+        if self.reduced_motion {
+            self.state = next;
+            self.entered = 0.0;
+            self.transition = None;
             return;
         }
         // Interrupt from the pose actually being displayed, including its loop time.
@@ -143,7 +175,7 @@ impl Animator {
             (Change::Doze, 760.0)
         } else if from.asleep() {
             (Change::Wake, 680.0)
-        } else if matches!(next, State::Worried | State::Error) {
+        } else if matches!(next, State::Worried | State::Error | State::Sad) {
             (Change::Reassure, 480.0)
         } else {
             (Change::Blink, 480.0)
@@ -159,6 +191,9 @@ impl Animator {
         });
     }
     fn sample(&mut self, now: f64) -> (State, f64, Option<(Change, f64)>) {
+        if self.reduced_motion {
+            return (self.state, 0.0, None);
+        }
         if let Some(tr) = self.transition {
             let elapsed = (now - tr.start).max(0.0);
             if elapsed < tr.duration {
@@ -242,6 +277,11 @@ fn pose(state: State, time: f64, change: Option<(Change, f64)>) -> Pose {
     };
     match state {
         State::Idle => a.y = if p < 0.5 { 0 } else { -1 },
+        State::Listening => {
+            a.head_x = if wave > 0.7 { 1 } else { 0 };
+            a.head_y = i32::from(p > 0.55);
+            a.mouth = "small";
+        }
         State::Greeting => {
             a.right = if wave > 0.0 { "wave-high" } else { "wave-low" };
             if p > 0.8 {
@@ -273,6 +313,11 @@ fn pose(state: State, time: f64, change: Option<(Change, f64)>) -> Pose {
             a.eyes = "look-down";
             a.head_y = i32::from(wave > 0.7);
             a.mouth = "small";
+        }
+        State::Speaking => {
+            a.mouth = "talk";
+            a.head_y = i32::from(p > 0.5);
+            a.x = if wave > 0.75 { 1 } else { 0 };
         }
         State::Happy => {
             a.eyes = "happy";
@@ -319,6 +364,13 @@ fn pose(state: State, time: f64, change: Option<(Change, f64)>) -> Pose {
             a.right = "tuck";
             a.y = i32::from(p >= 0.5);
         }
+        State::Sad => {
+            a.eyes = "sad";
+            a.mouth = "frown";
+            a.head_y = 1;
+            a.left = "tuck";
+            a.right = "tuck";
+        }
         State::Error => {
             a.head_x = if p < 0.3 {
                 rounded((p / 0.3 * TAU * 2.0).sin())
@@ -342,6 +394,12 @@ fn pose(state: State, time: f64, change: Option<(Change, f64)>) -> Pose {
             a.y = i32::from(p >= 0.5);
             a.mouth = "small";
             a.prop = "zzz";
+        }
+        State::Locked => {
+            a.eyes = "cross";
+            a.mouth = "small";
+            a.head_y = 1;
+            a.prop = "lock";
         }
         State::Celebrating => {
             a.eyes = "happy";
@@ -473,6 +531,7 @@ impl Canvas {
         let ey = hy + 1;
         match p.eyes {
             _ if p.blink || p.eyes == "closed" => self.rect(ex - 1, ey + 1, 3, 1, INK),
+            "cross" => self.stamp(ex - 1, ey, &["# #", " # ", "# #"], INK),
             "happy" => self.stamp(ex - 1, ey, &[" # ", "# #"], INK),
             "sleepy" => {
                 self.rect(ex - 1, ey + 1, 3, 1, INK);
@@ -561,6 +620,13 @@ fn pixels(state: State, time: f64, change: Option<(Change, f64)>) -> Bear {
         "slant" => c.stamp(hx - 2, hy + 6, &["##   ", "  ###"], INK),
         "grin" => c.stamp(hx - 3, hy + 5, &["#     #", " ##### ", "  ###  "], INK),
         "small" => c.rect(hx - 1, hy + 6, 3, 1, INK),
+        "talk" => {
+            if (p.phase * 8.0).floor() as i32 % 2 == 0 {
+                c.stamp(hx - 2, hy + 5, &["#####", " ### "], INK);
+            } else {
+                c.rect(hx - 2, hy + 6, 5, 1, INK);
+            }
+        }
         _ => c.stamp(hx - 2, hy + 5, &["# # #", " ### "], INK),
     }
     if p.prop == "glasses" {
@@ -622,6 +688,7 @@ fn pixels(state: State, time: f64, change: Option<(Change, f64)>) -> Bear {
             }
         }
         "error" => c.stamp(33, 5, &["# #", " # ", "# #"], ROSE),
+        "lock" => c.stamp(31, 3, &[" ### ", "#   #", "#####", "#   #", "#####"], GOLD),
         "zzz" => {
             let dy = (p.phase * 3.0).floor() as i32;
             let z = &["###", "  #", " # ", "#  ", "###"];
@@ -700,5 +767,25 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn native_states_are_distinct_and_reduced_motion_is_static() {
+        // These Rust-only moods used to collapse into unrelated poses.
+        assert_ne!(State::from_mood(Mood::Speaking), State::Happy);
+        assert_ne!(State::from_mood(Mood::Locked), State::Sleeping);
+        assert_ne!(State::from_mood(Mood::Listening), State::Curious);
+        let speaking = hash(Animator::new(Mood::Speaking).frame(300.0));
+        let happy = hash(Animator::new(Mood::Happy).frame(300.0));
+        let locked = hash(Animator::new(Mood::Locked).frame(300.0));
+        let asleep = hash(Animator::new(Mood::Asleep).frame(300.0));
+        assert_ne!(speaking, happy);
+        assert_ne!(locked, asleep);
+
+        let mut animator = Animator::new(Mood::Speaking);
+        animator.set_reduced_motion(true);
+        assert_eq!(hash(animator.frame(100.0)), hash(animator.frame(9_000.0)));
+        animator.set_mood(Mood::Locked, 10_000.0);
+        assert_eq!(hash(animator.frame(10_000.0)), locked);
     }
 }

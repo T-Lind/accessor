@@ -21,6 +21,7 @@ use std::{
     io::{self, IsTerminal},
     time::{Duration, Instant},
 };
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub fn safe(text: &str) -> String {
     text.chars()
@@ -59,21 +60,28 @@ pub struct Ui {
     terminal: Option<Terminal<CrosstermBackend<io::Stdout>>>,
     lines: VecDeque<Entry>,
     input: String,
+    cursor: usize,
     status: String,
     scroll: u16,
     dirty: bool,
     secret: bool,
     menu_index: usize,
+    menu_chosen: bool,
     settings: Option<String>,
     notice: String,
     chat: String,
     history: InputHistory,
-    mood: Mood,
     auto_mood: Mood,
-    mood_until: Option<Instant>,
+    mood_hold: Option<MoodHold>,
     bear: bear::Animator,
     animation_started: Instant,
     last_frame: Instant,
+    reduced_motion: bool,
+}
+struct MoodHold {
+    mood: Mood,
+    hold: Duration,
+    until: Option<Instant>,
 }
 impl Ui {
     pub fn new(plain: bool) -> Result<Self> {
@@ -99,25 +107,35 @@ impl Ui {
         } else {
             None
         };
+        let reduced_motion = std::env::var("ACC_REDUCED_MOTION").is_ok_and(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "" | "0" | "false" | "no" | "off"
+            )
+        });
+        let mut bear = bear::Animator::new(Mood::Asleep);
+        bear.set_reduced_motion(reduced_motion);
         Ok(Self {
             terminal,
             lines: VecDeque::new(),
             input: String::new(),
+            cursor: 0,
             status: String::new(),
             scroll: 0,
             dirty: true,
             secret: false,
             menu_index: 0,
+            menu_chosen: false,
             settings: None,
             notice: String::new(),
             chat: "activity".into(),
             history: InputHistory::default(),
-            mood: Mood::Asleep,
             auto_mood: Mood::Asleep,
-            mood_until: None,
-            bear: bear::Animator::new(Mood::Asleep),
+            mood_hold: None,
+            bear,
             animation_started: Instant::now(),
             last_frame: Instant::now(),
+            reduced_motion,
         })
     }
     /// Update the phase-derived mood. Tone overrides apply between active phases.
@@ -128,23 +146,37 @@ impl Ui {
         }
     }
     /// Hold a specific mood on screen for `hold`, then fall back to the phase.
+    /// The hold starts when the pose is actually visible, so reply tone is not
+    /// consumed while Accessor is still thinking or speaking.
     pub fn override_mood(&mut self, mood: Mood, hold: Duration) {
-        self.mood = mood;
-        self.mood_until = Some(Instant::now() + hold);
+        self.mood_hold = Some(MoodHold {
+            mood,
+            hold,
+            until: None,
+        });
         self.dirty = true;
+    }
+    /// Return to the live phase immediately, e.g. when a new turn starts.
+    pub fn clear_mood_override(&mut self) {
+        if self.mood_hold.take().is_some() {
+            self.dirty = true;
+        }
     }
     /// The mood currently on screen, for status lines and commands.
     pub fn mood_label(&self) -> &'static str {
         self.displayed_mood().label()
     }
+    /// The automatic phase, ignoring any pending or visible tone override.
+    pub fn phase_mood_label(&self) -> &'static str {
+        self.auto_mood.label()
+    }
     fn displayed_mood(&self) -> Mood {
-        if self.mood_until.is_some_and(|until| Instant::now() < until)
-            && matches!(self.auto_mood, Mood::Idle | Mood::Asleep)
-        {
-            self.mood
-        } else {
-            self.auto_mood
+        if let Some(hold) = &self.mood_hold {
+            if matches!(self.auto_mood, Mood::Idle | Mood::Asleep) {
+                return hold.mood;
+            }
         }
+        self.auto_mood
     }
     pub fn set_chat(&mut self, chat: &str) {
         self.chat = chat.to_owned();
@@ -158,6 +190,7 @@ impl Ui {
         self.history.position = None;
         self.history.draft.clear();
         self.input.clear();
+        self.cursor = 0;
         if self.interactive() {
             if enabled {
                 let _ = execute!(io::stdout(), DisableMouseCapture);
@@ -171,11 +204,11 @@ impl Ui {
         self.lines.clear();
         self.history = InputHistory::default();
         self.input.clear();
+        self.cursor = 0;
         self.settings = None;
         self.notice.clear();
         self.scroll = 0;
-        self.mood_until = None;
-        self.mood = Mood::Locked;
+        self.mood_hold = None;
         self.auto_mood = Mood::Locked;
         self.dirty = true;
     }
@@ -237,21 +270,22 @@ impl Ui {
         if crate::masterlog::enabled() {
             crate::masterlog::event("ui", &format!("{}: {text}", kind.label()));
         }
-        if !self.visible(kind) {
-            return;
-        }
         if self.settings.is_some() {
             self.notice = text.lines().take(2).collect::<Vec<_>>().join(" ");
         }
         if self.terminal.is_none() {
-            println!("{}", plain_prefix(kind, &text));
+            if self.visible(kind) {
+                println!("{}", plain_prefix(kind, &text));
+            }
             return;
         }
+        // Keep filtered entries as well: changing the chat view should reveal
+        // or hide earlier lines immediately, in both directions.
         self.lines.push_back(Entry { kind, text });
         while self.lines.len() > 600 {
             self.lines.pop_front();
         }
-        self.scroll = 0;
+        // Reading older output should not be yanked away by the next tool call.
         self.dirty = true;
     }
     pub fn settings(&mut self, text: Option<String>) {
@@ -260,17 +294,25 @@ impl Ui {
                 println!("{}", safe(text));
             }
         }
+        let was_open = self.settings.is_some();
         self.settings = text.map(|t| safe(&t));
-        self.notice.clear();
+        if !was_open || self.settings.is_none() {
+            self.notice.clear();
+        }
         self.scroll = 0;
         self.dirty = true;
     }
     pub fn status(&mut self, line: &str) {
+        // Harness/model names are configuration, not trusted terminal output.
+        let line: String = line
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
         if line != self.status {
             if self.terminal.is_none() {
                 println!("[{line}]");
             }
-            self.status = line.to_owned();
+            self.status = line;
             self.dirty = true;
         }
     }
@@ -285,8 +327,10 @@ impl Ui {
             match event::read()? {
                 Event::Paste(text) => {
                     self.history.position = None;
-                    apply_paste(&mut self.input, &text);
+                    apply_paste(&mut self.input, &text, self.secret);
+                    self.cursor = self.input.chars().count();
                     self.menu_index = 0;
+                    self.menu_chosen = false;
                     self.dirty = true;
                 }
                 Event::Key(k) if k.kind != KeyEventKind::Release => {
@@ -301,16 +345,43 @@ impl Ui {
                         {
                             if let Some(text) = clipboard_text() {
                                 self.history.position = None;
-                                apply_paste(&mut self.input, &text);
+                                apply_paste(&mut self.input, &text, self.secret);
+                                self.cursor = self.input.chars().count();
                                 self.menu_index = 0;
+                                self.menu_chosen = false;
                             }
                         }
                         KeyCode::Insert if k.modifiers.contains(KeyModifiers::SHIFT) => {
                             if let Some(text) = clipboard_text() {
                                 self.history.position = None;
-                                apply_paste(&mut self.input, &text);
+                                apply_paste(&mut self.input, &text, self.secret);
+                                self.cursor = self.input.chars().count();
                                 self.menu_index = 0;
+                                self.menu_chosen = false;
                             }
+                        }
+                        KeyCode::Char('a') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                            self.cursor = 0;
+                        }
+                        KeyCode::Char('e') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                            self.cursor = self.input.chars().count();
+                        }
+                        KeyCode::Char('u') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                            let after: String = self.input.chars().skip(self.cursor).collect();
+                            self.input = after;
+                            self.cursor = 0;
+                            self.history.position = None;
+                            self.menu_index = 0;
+                        }
+                        KeyCode::Char('k') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                            self.input = self.input.chars().take(self.cursor).collect();
+                            self.history.position = None;
+                            self.menu_index = 0;
+                        }
+                        KeyCode::Char('w') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                            self.delete_word_before();
+                            self.history.position = None;
+                            self.menu_index = 0;
                         }
                         KeyCode::Char(_) if k.modifiers.contains(KeyModifiers::CONTROL) => {}
                         KeyCode::Enter => {
@@ -318,13 +389,15 @@ impl Ui {
                                 return Ok(Some("/settings-nav enter".into()));
                             }
                             if !self.secret {
-                                if let Some((name, _)) =
-                                    crate::dashboard::matching(&self.input).get(self.menu_index)
+                                if let Some(name) =
+                                    completion(&self.input, self.menu_index, self.menu_chosen)
                                 {
-                                    self.input = (*name).into();
+                                    self.input = name;
                                 }
                             }
                             self.menu_index = 0;
+                            self.menu_chosen = false;
+                            self.cursor = 0;
                             let text = std::mem::take(&mut self.input);
                             if !self.secret && self.settings.is_none() {
                                 self.history.remember(&text);
@@ -332,12 +405,17 @@ impl Ui {
                             return Ok(Some(text));
                         }
                         KeyCode::Tab if !self.secret => {
-                            if let Some((name, _)) =
-                                crate::dashboard::matching(&self.input).get(self.menu_index)
+                            // Complete only a unique prefix (or a row the user
+                            // explicitly highlighted) so Tab on "/" cannot turn
+                            // into a destructive command by habit.
+                            if let Some(name) =
+                                completion(&self.input, self.menu_index, self.menu_chosen)
                             {
                                 self.input = format!("{name} ");
+                                self.cursor = self.input.chars().count();
                             }
                             self.menu_index = 0;
+                            self.menu_chosen = false;
                         }
                         KeyCode::Down
                             if self.settings.is_some() && self.input.is_empty() && !self.secret =>
@@ -362,6 +440,7 @@ impl Ui {
                             let n = crate::dashboard::matching(&self.input).len();
                             if n > 0 {
                                 self.menu_index = (self.menu_index + 1) % n;
+                                self.menu_chosen = true;
                             }
                         }
                         KeyCode::Up
@@ -370,23 +449,46 @@ impl Ui {
                                 && !crate::dashboard::matching(&self.input).is_empty() =>
                         {
                             self.menu_index = self.menu_index.saturating_sub(1);
+                            self.menu_chosen = true;
                         }
                         KeyCode::Up if !self.secret && self.settings.is_none() => {
                             self.history.navigate(&mut self.input, true);
+                            self.cursor = self.input.chars().count();
                             self.menu_index = 0;
+                            self.menu_chosen = false;
                         }
                         KeyCode::Down if !self.secret && self.settings.is_none() => {
                             self.history.navigate(&mut self.input, false);
+                            self.cursor = self.input.chars().count();
                             self.menu_index = 0;
+                            self.menu_chosen = false;
                         }
                         KeyCode::Backspace => {
                             self.history.position = None;
-                            self.input.pop();
+                            self.delete_before();
                             self.menu_index = 0;
+                            self.menu_chosen = false;
                         }
+                        KeyCode::Delete => {
+                            self.history.position = None;
+                            self.delete_after();
+                            self.menu_index = 0;
+                            self.menu_chosen = false;
+                        }
+                        KeyCode::Left => {
+                            self.cursor = self.cursor.saturating_sub(1);
+                        }
+                        KeyCode::Right => {
+                            self.cursor = (self.cursor + 1).min(self.input.chars().count());
+                        }
+                        KeyCode::Home => self.cursor = 0,
+                        KeyCode::End => self.cursor = self.input.chars().count(),
                         KeyCode::Esc => {
                             self.input.clear();
+                            self.cursor = 0;
                             self.history.position = None;
+                            self.menu_index = 0;
+                            self.menu_chosen = false;
                             if self.settings.is_some() && !self.secret {
                                 return Ok(Some("/settings-nav back".into()));
                             }
@@ -396,8 +498,9 @@ impl Ui {
                         KeyCode::PageDown => self.scroll_lines(-8),
                         KeyCode::Char(c) if !c.is_control() && self.input.len() < 4096 => {
                             self.history.position = None;
-                            self.input.push(c);
+                            self.insert_char(c);
                             self.menu_index = 0;
+                            self.menu_chosen = false;
                         }
                         _ => {}
                     }
@@ -415,6 +518,42 @@ impl Ui {
             }
         }
         Ok(None)
+    }
+    fn insert_char(&mut self, c: char) {
+        let mut chars: Vec<char> = self.input.chars().collect();
+        let at = self.cursor.min(chars.len());
+        chars.insert(at, c);
+        self.input = chars.into_iter().collect();
+        self.cursor = at + 1;
+    }
+    fn delete_before(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let mut chars: Vec<char> = self.input.chars().collect();
+        chars.remove(self.cursor - 1);
+        self.input = chars.into_iter().collect();
+        self.cursor -= 1;
+    }
+    fn delete_after(&mut self) {
+        let mut chars: Vec<char> = self.input.chars().collect();
+        if self.cursor < chars.len() {
+            chars.remove(self.cursor);
+            self.input = chars.into_iter().collect();
+        }
+    }
+    fn delete_word_before(&mut self) {
+        let chars: Vec<char> = self.input.chars().collect();
+        let mut start = self.cursor.min(chars.len());
+        while start > 0 && chars[start - 1].is_whitespace() {
+            start -= 1;
+        }
+        while start > 0 && !chars[start - 1].is_whitespace() {
+            start -= 1;
+        }
+        let rest: String = chars[self.cursor.min(chars.len())..].iter().collect();
+        self.input = chars[..start].iter().collect::<String>() + &rest;
+        self.cursor = start;
     }
     fn scroll_lines(&mut self, delta: i32) {
         if delta > 0 {
@@ -437,16 +576,31 @@ impl Ui {
     /// Resolve the mood to show, retiring an expired override. Marks the frame
     /// dirty when the face changes so an override visibly times out.
     fn effective_mood(&mut self) -> Mood {
-        if self.mood_until.is_some_and(|until| Instant::now() >= until) {
-            self.mood_until = None;
-            self.mood = self.auto_mood;
-            self.dirty = true;
+        let now = Instant::now();
+        if let Some(hold) = &mut self.mood_hold {
+            let visible = matches!(self.auto_mood, Mood::Idle | Mood::Asleep);
+            if !visible {
+                // Pause the countdown while live activity owns the pose.
+                if let Some(until) = hold.until.take() {
+                    hold.hold = until.saturating_duration_since(now);
+                }
+            } else if let Some(until) = hold.until {
+                if now >= until {
+                    self.mood_hold = None;
+                    self.dirty = true;
+                }
+            } else {
+                hold.until = Some(now + hold.hold);
+            }
         }
         self.displayed_mood()
     }
     pub fn draw(&mut self) -> Result<()> {
         let mood = self.effective_mood();
-        if !self.dirty && self.last_frame.elapsed() < Duration::from_millis(bear::FRAME_MS) {
+        if !self.dirty
+            && (self.reduced_motion
+                || self.last_frame.elapsed() < Duration::from_millis(bear::FRAME_MS))
+        {
             return Ok(());
         }
         self.dirty = false;
@@ -464,34 +618,59 @@ impl Ui {
     }
     fn render(&self, f: &mut ratatui::Frame<'_>, mood: Mood, frame: &bear::Bear) {
         let area = f.area();
+        if area.width < 44 || area.height < 12 {
+            let message = vec![
+                Line::from(Span::styled(
+                    format!("{} · {}", crate::mascot::NAME, mood.label()),
+                    Style::default()
+                        .fg(mood.color())
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from("Terminal too small"),
+                Line::from("Need at least 48 × 12"),
+                Line::from("Use --plain for a simple view."),
+            ];
+            f.render_widget(
+                Paragraph::new(message)
+                    .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: true }),
+                area,
+            );
+            return;
+        }
         let layout = view_layout(area, self.settings.is_some());
         let color = status_color(&self.status);
         let border = Style::default().fg(color);
         f.render_widget(
-            Paragraph::new(status_lines(&self.status))
-                .style(Style::default().fg(color))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .border_style(border)
-                        .title(format!(
-                            " ACCESSOR {} · voice & agents ",
-                            env!("CARGO_PKG_VERSION")
-                        )),
-                ),
+            Paragraph::new(status_lines(
+                &self.status,
+                layout.status.width.saturating_sub(2) as usize,
+            ))
+            .style(Style::default().fg(color))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(border)
+                    .title(format!(
+                        " ACCESSOR {} · voice & agents ",
+                        env!("CARGO_PKG_VERSION")
+                    )),
+            ),
             layout.status,
         );
         if let Some(mascot_area) = layout.mascot {
             let tint = Style::default().fg(mood.color());
+            let title = if mascot_area.width < 24 {
+                format!(" {} ", crate::mascot::NAME)
+            } else {
+                format!(" {} · {} ", crate::mascot::NAME, mood.label())
+            };
             let block = Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(tint)
-                .title(Span::styled(
-                    format!(" Bear · {} ", mood.label()),
-                    tint.add_modifier(Modifier::BOLD),
-                ));
+                .title(Span::styled(title, tint.add_modifier(Modifier::BOLD)));
             let inner = block.inner(mascot_area);
             f.render_widget(block, mascot_area);
             if inner.width >= bear::WIDTH && inner.height >= bear::HEIGHT {
@@ -508,7 +687,7 @@ impl Ui {
         let width = layout.activity.width.saturating_sub(2).max(1) as usize;
         let mut visual: Vec<Line> = Vec::new();
         if self.settings.is_some() {
-            let panel = self.settings.clone().unwrap_or_default();
+            let panel = self.settings.as_deref().unwrap_or_default();
             for line in panel.lines() {
                 if let Some(rest) = line.strip_prefix("hint:") {
                     visual.push(Line::from(Span::styled(
@@ -536,7 +715,7 @@ impl Ui {
             }
             visual = crate::markdown::wrap(visual, width);
         } else {
-            for entry in &self.lines {
+            for entry in self.lines.iter().filter(|entry| self.visible(entry.kind)) {
                 visual.extend(styled_entry(entry, width));
             }
         }
@@ -548,7 +727,10 @@ impl Ui {
             let start = settings_scroll(self.scroll as usize, selected, available, visual.len());
             (start, (start + available).min(visual.len()))
         } else {
-            let end = visual.len().saturating_sub(self.scroll as usize);
+            // Clamp stale scroll offsets so paging past the top cannot leave a
+            // blank pane that needs matching PageDown presses to recover.
+            let scroll = (self.scroll as usize).min(visual.len().saturating_sub(available));
+            let end = visual.len().saturating_sub(scroll);
             (end.saturating_sub(available), end)
         };
         let title = if self.settings.is_some() {
@@ -570,25 +752,37 @@ impl Ui {
             ),
             layout.activity,
         );
-        let input_body = if self.secret {
+        let input_full = if self.secret {
             "*".repeat(self.input.chars().count())
         } else {
             self.input.clone()
         };
+        let cursor_chars = self.cursor.min(input_full.chars().count());
+        let before: String = input_full.chars().take(cursor_chars).collect();
+        let before_width = UnicodeWidthStr::width(before.as_str());
+        let input_width = layout.input.width.saturating_sub(4).max(1) as usize;
+        let start_col = before_width.saturating_sub(input_width.saturating_sub(1));
+        let input_body = slice_display(&input_full, start_col, input_width);
+        let cursor_col = before_width.saturating_sub(start_col) as u16;
         let prompt_style = Style::default().fg(color).add_modifier(Modifier::BOLD);
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(if self.secret { "# " } else { "❯ " }, prompt_style),
                 Span::raw(input_body),
             ]))
-            .wrap(Wrap { trim: false })
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
                     .border_style(border)
-                    .title(if self.secret {
+                    .title(if self.secret && layout.input.width >= 60 {
                         " Secret · paste (Ctrl+Shift+V / Shift+Insert) · Enter saves · Esc cancels "
+                    } else if self.secret {
+                        " Secret · Enter saves · Esc cancels "
+                    } else if self.settings.is_some() {
+                        " Settings · value or ↑/↓ · Esc back "
+                    } else if layout.input.width < 60 {
+                        " Message · Enter sends "
                     } else {
                         " Message or / command · Tab completes · Enter sends "
                     }),
@@ -597,7 +791,13 @@ impl Ui {
         );
         f.render_widget(
             Paragraph::new(if self.settings.is_some() {
-                " ↑/↓ choose · Enter select · Esc back · changes save on confirmation "
+                if area.width < 60 {
+                    " ↑/↓ · Enter · Esc back "
+                } else {
+                    " ↑/↓ choose · Enter select · Esc back · changes save on confirmation "
+                }
+            } else if area.width < 60 {
+                " / commands · Esc cancel "
             } else {
                 " ↑/↓ history · / commands · Esc cancel · /repeat · /jobs · /settings "
             })
@@ -643,7 +843,11 @@ impl Ui {
                             .borders(Borders::ALL)
                             .border_type(BorderType::Rounded)
                             .border_style(border)
-                            .title(" Commands · ↑/↓ choose · Enter opens · Tab completes "),
+                            .title(if layout.activity.width < 60 {
+                                " Commands · ↑/↓ · Enter "
+                            } else {
+                                " Commands · ↑/↓ choose · Enter opens · Tab completes "
+                            }),
                     ),
                     popup,
                 );
@@ -651,9 +855,7 @@ impl Ui {
         }
         if layout.input.width > 3 && layout.input.height > 2 {
             f.set_cursor_position((
-                layout.input.x
-                    + 3
-                    + (self.input.chars().count() as u16).min(layout.input.width - 4),
+                layout.input.x + 3 + cursor_col.min(layout.input.width.saturating_sub(4)),
                 layout.input.y + 1,
             ));
         }
@@ -668,40 +870,70 @@ struct ViewLayout {
     footer: Rect,
 }
 fn view_layout(area: Rect, settings: bool) -> ViewLayout {
+    let wide = !settings && area.width >= 76 && area.height >= 24;
+    let tall = !settings && !wide && area.width >= 44 && area.height >= 33;
+    let compact = !settings && !wide && !tall && area.width >= 48 && area.height >= 12;
+    // A full-width status needs four rows above the full-size companion. In a
+    // tight 24-row window, keep the original side-by-side split instead; the
+    // compact status formatter shortens the identity line to fit.
+    if tall || (wide && area.height >= 28) {
+        let rows = Layout::vertical([
+            Constraint::Length(4),
+            Constraint::Length(if tall { bear::HEIGHT + 2 } else { 0 }),
+            Constraint::Min(0),
+            Constraint::Length(3),
+            Constraint::Length(1),
+        ])
+        .split(area);
+        let (activity, mascot) = if wide {
+            let split =
+                Layout::horizontal([Constraint::Min(34), Constraint::Length(bear::WIDTH + 2)])
+                    .split(rows[2]);
+            (split[0], Some(split[1]))
+        } else {
+            (rows[2], Some(rows[1]))
+        };
+        return ViewLayout {
+            status: rows[0],
+            activity,
+            mascot,
+            input: rows[3],
+            footer: rows[4],
+        };
+    }
     let outer = Layout::vertical([
         Constraint::Min(0),
         Constraint::Length(3),
         Constraint::Length(1),
     ])
     .split(area);
-    let wide = !settings && area.width >= 80 && area.height >= 24;
-    let tall = !settings && !wide && area.width >= 44 && area.height >= 33;
-    let compact = !settings && !wide && !tall && area.width >= 48 && area.height >= 12;
-    let (body, mascot) = if wide {
+    if wide {
         let split = Layout::horizontal([Constraint::Min(34), Constraint::Length(bear::WIDTH + 2)])
             .split(outer[0]);
-        (split[0], Some(split[1]))
-    } else {
-        (outer[0], None)
-    };
+        let rows = Layout::vertical([Constraint::Length(4), Constraint::Min(0)]).split(split[0]);
+        return ViewLayout {
+            status: rows[0],
+            activity: rows[1],
+            mascot: Some(split[1]),
+            input: outer[1],
+            footer: outer[2],
+        };
+    }
     let rows = Layout::vertical([
         Constraint::Length(if compact { 5 } else { 4 }),
-        Constraint::Length(if tall { bear::HEIGHT + 2 } else { 0 }),
         Constraint::Min(0),
     ])
-    .split(body);
-    let (status, mascot) = if tall {
-        (rows[0], Some(rows[1]))
-    } else if compact {
+    .split(outer[0]);
+    let (status, mascot) = if compact {
         let split =
             Layout::horizontal([Constraint::Min(24), Constraint::Length(13)]).split(rows[0]);
         (split[0], Some(split[1]))
     } else {
-        (rows[0], mascot)
+        (rows[0], None)
     };
     ViewLayout {
         status,
-        activity: rows[2],
+        activity: rows[1],
         mascot,
         input: outer[1],
         footer: outer[2],
@@ -808,8 +1040,11 @@ fn settings_scroll(
     }
     start
 }
-fn status_lines(status: &str) -> String {
-    let parts: Vec<_> = status.split(" | ").collect();
+fn status_lines(status: &str, width: usize) -> String {
+    if status.trim().is_empty() {
+        return String::new();
+    }
+    let parts: Vec<_> = status.splitn(3, " | ").collect();
     let voice = parts
         .first()
         .copied()
@@ -823,6 +1058,29 @@ fn status_lines(status: &str) -> String {
             "BLUE: waiting for reply",
             "Thinking · listening for your follow-up",
         );
+    let voice = if width < 50 {
+        let short = if voice.starts_with("ALARM") {
+            "Alarm ringing".to_string()
+        } else if voice.starts_with("SETTINGS") {
+            "Settings · microphone paused".to_string()
+        } else if voice.starts_with("SPEAKING") {
+            "Speaking · say wake code".to_string()
+        } else if voice.starts_with("MICROPHONE UNAVAILABLE") {
+            "Microphone unavailable".to_string()
+        } else if voice.starts_with("CONNECTING") {
+            "Connecting microphone".to_string()
+        } else if voice.starts_with("LOCKED") {
+            "Locked · /unlock".to_string()
+        } else {
+            voice
+        };
+        short.replace("Thinking · listening for your follow-up", "Thinking")
+    } else {
+        voice
+    };
+    if parts.len() < 2 {
+        return voice;
+    }
     let identity = parts.get(2).copied().unwrap_or("");
     let task = parts
         .get(1)
@@ -830,7 +1088,20 @@ fn status_lines(status: &str) -> String {
         .unwrap_or("")
         .replace("BLUE: agent working", "Working")
         .replace("AMBER: approval pending", "Approval needed");
-    format!("{voice}  ·  {task}\nMain harness: {identity}")
+    if identity.is_empty() {
+        format!("{voice}  ·  {task}")
+    } else if width < 50 {
+        // The narrow side-by-side layout gets the short identity form so the
+        // harness and model are not clipped away on a standard 80-column screen.
+        let first = if task == "idle" {
+            voice
+        } else {
+            format!("{voice}  ·  {task}")
+        };
+        format!("{first}\n{identity}")
+    } else {
+        format!("{voice}  ·  {task}\nMain harness: {identity}")
+    }
 }
 fn plain_prefix(kind: Kind, text: &str) -> String {
     match kind {
@@ -894,9 +1165,48 @@ impl Drop for Ui {
         }
     }
 }
-fn apply_paste(input: &mut String, pasted: &str) {
-    let chunk = pasted.lines().next().unwrap_or(pasted).trim();
-    for c in chunk.chars() {
+/// Resolve Enter on the command menu. A unique match, an exact command, or an
+/// explicitly highlighted row completes; an ambiguous prefix is sent as typed
+/// so Enter can never turn a bare `/` into `/lock`.
+fn completion(input: &str, menu_index: usize, chosen: bool) -> Option<String> {
+    let matches = crate::dashboard::matching(input);
+    let (name, _) = matches.get(menu_index)?;
+    if matches.len() == 1 || chosen || *name == input {
+        Some((*name).into())
+    } else {
+        None
+    }
+}
+fn slice_display(text: &str, start_col: usize, width: usize) -> String {
+    let mut out = String::new();
+    let mut col = 0;
+    let mut used = 0;
+    for ch in text.chars() {
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        // Start on a character boundary rather than half a wide glyph.
+        if col < start_col {
+            col += w;
+            continue;
+        }
+        if used + w > width {
+            break;
+        }
+        out.push(ch);
+        used += w;
+        col += w;
+    }
+    out
+}
+fn apply_paste(input: &mut String, pasted: &str, secret: bool) {
+    // Credentials are single-line. Ordinary messages keep every pasted line,
+    // collapsed to spaces, instead of silently dropping all but the first.
+    let text = if secret {
+        pasted.lines().next().unwrap_or("").trim()
+    } else {
+        pasted.trim()
+    };
+    for c in text.chars() {
+        let c = if c.is_control() { ' ' } else { c };
         if !c.is_control() && input.len() < 4096 {
             input.push(c);
         }
@@ -937,7 +1247,13 @@ fn clipboard_text() -> Option<String> {
     None
 }
 fn status_color(status: &str) -> Color {
-    if status.contains("SPEAKING") {
+    if status.contains("ALARM") || status.contains("LOCKED") {
+        Color::Red
+    } else if status.contains("MICROPHONE UNAVAILABLE") {
+        Color::LightRed
+    } else if status.contains("CONNECTING") {
+        Color::Cyan
+    } else if status.contains("SPEAKING") {
         Color::Magenta
     } else if status.contains("AMBER") || status.contains("SETTINGS") {
         Color::Yellow
@@ -954,7 +1270,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tone_yields_to_live_phases_and_expires() {
+    fn tone_yields_to_live_phases_and_resumes_its_hold() {
         let mut ui = Ui::new(true).unwrap();
         ui.set_mood(Mood::Idle);
         ui.override_mood(Mood::Proud, Duration::from_secs(10));
@@ -972,9 +1288,10 @@ mod tests {
             ui.set_mood(phase);
             assert_eq!(ui.effective_mood(), phase);
         }
+        // The hold was paused while live activity owned the pose.
         ui.set_mood(Mood::Idle);
         assert_eq!(ui.effective_mood(), Mood::Proud);
-        ui.mood_until = Some(Instant::now() - Duration::from_secs(1));
+        ui.mood_hold.as_mut().unwrap().until = Some(Instant::now() - Duration::from_secs(1));
         assert_eq!(ui.effective_mood(), Mood::Idle);
         ui.override_mood(Mood::Happy, Duration::from_secs(10));
         ui.clear_private();
@@ -982,22 +1299,91 @@ mod tests {
     }
 
     #[test]
+    fn enter_never_turns_an_ambiguous_prefix_into_a_destructive_command() {
+        assert_eq!(completion("/", 0, false), None);
+        assert_eq!(completion("/l", 0, false), None);
+        assert_eq!(completion("/loc", 0, false), Some("/lock".into()));
+        assert_eq!(completion("/", 0, true), Some("/lock".into()));
+        assert_eq!(completion("/help", 0, false), Some("/help".into()));
+    }
+
+    #[test]
+    fn locked_status_is_not_padded_with_an_empty_harness_line() {
+        assert_eq!(
+            status_lines("LOCKED · local unlock only · /unlock", 80),
+            "LOCKED · local unlock only · /unlock"
+        );
+        assert!(status_lines("", 80).is_empty());
+        assert_eq!(
+            status_lines("LOCKED · local unlock only · /unlock", 36),
+            "Locked · /unlock"
+        );
+        assert!(
+            status_lines("GREEN: conversation open | idle | codex · luna", 80)
+                .contains("Main harness: codex · luna")
+        );
+        assert!(
+            status_lines("GREEN: conversation open | idle | codex · luna", 36)
+                .contains("codex · luna")
+        );
+    }
+
+    #[test]
+    fn urgent_statuses_are_not_gray() {
+        assert_eq!(status_color("ALARM: say 29 stop"), Color::Red);
+        assert_eq!(status_color("LOCKED · local unlock only"), Color::Red);
+        assert_eq!(
+            status_color("MICROPHONE UNAVAILABLE: type a request"),
+            Color::LightRed
+        );
+        assert_eq!(
+            status_color("CONNECTING: opening the microphone"),
+            Color::Cyan
+        );
+    }
+
+    #[test]
+    fn chat_mode_filters_existing_and_new_entries() {
+        let mut ui = Ui::new(true).unwrap();
+        ui.lines.push_back(Entry {
+            kind: Kind::Agent,
+            text: "visible in activity".into(),
+        });
+        ui.lines.push_back(Entry {
+            kind: Kind::Progress,
+            text: "hidden in activity".into(),
+        });
+        assert!(ui.visible(Kind::Agent));
+        assert!(!ui.visible(Kind::Progress));
+        ui.set_chat("transcript");
+        assert!(ui.visible(Kind::Progress));
+        ui.set_chat("off");
+        assert!(!ui.visible(Kind::Agent));
+        assert!(ui.visible(Kind::Tool));
+    }
+
+    #[test]
     fn full_size_bear_fits_beside_chat_and_in_tall_terminals() {
         use ratatui::backend::TestBackend;
-        for (width, height) in [(80, 24), (120, 40), (44, 33)] {
+        for (width, height) in [(76, 24), (80, 24), (120, 40), (44, 33)] {
             let layout = view_layout(Rect::new(0, 0, width, height), false);
             let mascot = layout.mascot.unwrap();
             assert!(mascot.width >= bear::WIDTH + 2 && mascot.height >= bear::HEIGHT + 2);
             assert!(layout.activity.width >= 34 && layout.activity.height >= 5);
             assert_eq!(layout.input.width, width);
+            if height >= 28 {
+                assert_eq!(layout.status.width, width);
+            } else {
+                assert!(layout.status.width >= 34);
+            }
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             let mut ui = Ui::new(true).unwrap();
             ui.status = "GREEN: conversation open | idle | codex · luna".into();
             ui.lines.push_back(Entry {
                 kind: Kind::User,
-                text: "Show the bear at its original size.".into(),
+                text: "Show Bramble at its original size.".into(),
             });
-            ui.lines.push_back(Entry { kind: Kind::Agent, text: "The bear follows my live state and reply tone. You can also choose a pose with /mascot NAME.".into() });
+            ui.lines.push_back(Entry { kind: Kind::Agent, text: "Bramble follows my live state and reply tone. You can also choose a pose with /mascot NAME.".into() });
             let frame = bear::Animator::new(Mood::Happy).frame(400.0);
             terminal
                 .draw(|f| ui.render(f, Mood::Happy, &frame))
@@ -1007,7 +1393,11 @@ mod tests {
             ratatui::widgets::Widget::render(&frame, inner, &mut expected);
             for y in inner.y..inner.bottom() {
                 for x in inner.x..inner.right() {
-                    assert_eq!(terminal.backend().buffer()[(x, y)], expected[(x, y)]);
+                    assert_eq!(
+                        terminal.backend().buffer()[(x, y)],
+                        expected[(x, y)],
+                        "{width}x{height} at {x},{y}"
+                    );
                 }
             }
             if let Some(dir) = std::env::var_os("ACC_MASCOT_PREVIEW_DIR") {
@@ -1085,7 +1475,7 @@ mod tests {
         assert_eq!(settings_scroll(0, Some(17), 8, 25), 12);
         assert_eq!(settings_scroll(12, Some(2), 8, 25), 2);
         assert!(
-            status_lines("GREEN: conversation open | idle | codex · luna")
+            status_lines("GREEN: conversation open | idle | codex · luna", 80)
                 .contains("Main harness: codex · luna")
         );
     }
@@ -1100,9 +1490,37 @@ mod tests {
         assert_eq!(status_color("SETTINGS: mic paused"), Color::Yellow);
     }
     #[test]
-    fn paste_takes_one_trimmed_line() {
+    fn paste_keeps_message_lines_and_limits_credentials_to_one() {
         let mut input = String::new();
-        apply_paste(&mut input, "  sk-test-key\nignored\n");
+        apply_paste(&mut input, "  sk-test-key\nignored\n", true);
         assert_eq!(input, "sk-test-key");
+        let mut input = String::new();
+        apply_paste(&mut input, "first line\nsecond line\n", false);
+        assert_eq!(input, "first line second line");
+    }
+
+    #[test]
+    fn typing_edits_at_the_cursor() {
+        let mut ui = Ui::new(true).unwrap();
+        for c in "helo world".chars() {
+            ui.insert_char(c);
+        }
+        assert_eq!(ui.input, "helo world");
+        // Insert the missing l in "hello".
+        ui.cursor = 3;
+        ui.insert_char('l');
+        assert_eq!(ui.input, "hello world");
+        ui.cursor = 0;
+        ui.delete_after();
+        assert_eq!(ui.input, "ello world");
+        ui.cursor = ui.input.chars().count();
+        ui.delete_before();
+        assert_eq!(ui.input, "ello worl");
+        ui.cursor = ui.input.chars().count();
+        ui.delete_word_before();
+        assert_eq!(ui.input, "ello ");
+        ui.cursor = 0;
+        ui.insert_char('W');
+        assert_eq!(ui.input, "Wello ");
     }
 }

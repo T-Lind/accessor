@@ -501,7 +501,7 @@ fn identity_status(harness: &str, model: Option<&str>) -> String {
     )
 }
 
-struct BannerState {
+struct BannerState<'a> {
     active: bool,
     busy: bool,
     alarm: bool,
@@ -510,26 +510,31 @@ struct BannerState {
     settings_open: bool,
     setup: bool,
     mic_unavailable: bool,
+    mic_connecting: bool,
     notices: usize,
+    wake_code: &'a str,
 }
 
-fn banner(state: BannerState, identity: &str) -> String {
+fn banner(state: BannerState<'_>, identity: &str) -> String {
+    let wake = state.wake_code;
     let voice = if state.alarm {
-        "ALARM: say 29 stop the alarm"
+        format!("ALARM: say {wake} stop the alarm")
     } else if state.settings_open {
-        "SETTINGS: mic paused — Esc until Activity, then say 29"
+        format!("SETTINGS: mic paused — Esc until Activity, then say {wake}")
     } else if state.setup {
-        "SETUP: microphone paused"
+        "SETUP: microphone paused".into()
+    } else if state.mic_connecting {
+        "CONNECTING: opening the microphone".into()
     } else if state.mic_unavailable {
-        "MICROPHONE UNAVAILABLE: type a request or check /devices"
+        "MICROPHONE UNAVAILABLE: type a request or check /devices".into()
     } else if state.speaking {
-        "SPEAKING: say 29, pause, then your request"
+        format!("SPEAKING: say {wake}, pause, then your request")
     } else if state.busy {
-        "BLUE: waiting for reply"
+        "BLUE: waiting for reply".into()
     } else if state.active {
-        "GREEN: conversation open"
+        "GREEN: conversation open".into()
     } else {
-        "WHITE: waiting for wake code"
+        "WHITE: waiting for wake code".into()
     };
     let task = if state.approval {
         "AMBER: approval pending"
@@ -547,7 +552,7 @@ fn banner(state: BannerState, identity: &str) -> String {
     } else {
         String::new()
     };
-    format!("{voice} | {task} | {identity}{notices}")
+    format!("{voice} | {task}{notices} | {identity}")
 }
 
 pub async fn run(mut args: Run) -> Result<()> {
@@ -721,8 +726,10 @@ pub async fn run(mut args: Run) -> Result<()> {
         }
     }
     ui.draw()?;
-    let wake = wake::WakeCode::new(&wake_code, &args.wake_alias)?;
-    let mut auth_wake = wake::WakeCode::new(&settings.wake_code, &args.wake_alias)?;
+    let wake =
+        wake::WakeCode::new(&wake_code, &args.wake_alias)?.with_attention(settings.wake_attention);
+    let mut auth_wake = wake::WakeCode::new(&settings.wake_code, &args.wake_alias)?
+        .with_attention(settings.wake_attention);
     let workspace = args
         .workspace
         .canonicalize()
@@ -940,7 +947,10 @@ pub async fn run(mut args: Run) -> Result<()> {
                 settings_open: false,
                 setup: false,
                 mic_unavailable,
+                mic_connecting: microphone.is_some()
+                    && microphone_status == audio::MicrophoneStatus::Connecting,
                 notices: notice_count,
+                wake_code: &settings.wake_code,
             },
             &identity_status(&active_harness, active_model.as_deref()),
         )
@@ -1188,7 +1198,10 @@ pub async fn run(mut args: Run) -> Result<()> {
                 settings_open: panel.is_some(),
                 setup: pending_secret.is_some() || wizard.is_some(),
                 mic_unavailable,
+                mic_connecting: microphone.is_some()
+                    && microphone_status == audio::MicrophoneStatus::Connecting,
                 notices: notice_count,
+                wake_code: &settings.wake_code,
             },
             &identity_status(&active_harness, active_model.as_deref()),
         );
@@ -1211,12 +1224,14 @@ pub async fn run(mut args: Run) -> Result<()> {
         ui.set_mood(mascot::Mood::automatic(&mascot::Snapshot {
             locked: access.locked(),
             alarm: alarm.is_some(),
-            mic_error: mic_unavailable,
+            mic_error: microphone.is_some()
+                && matches!(microphone_status, audio::MicrophoneStatus::Unavailable(_)),
             speaking: speaker.is_some(),
             thinking: busy || worker.is_some(),
             working: worker.is_some(),
             approval: approval || worker_approval,
             listening: wake_listening,
+            processing: gate_job.is_some() || cloud_job.is_some(),
             active: session.active(),
         }));
         ui.draw()?;
@@ -1737,7 +1752,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 panel=Some(crate::settings_ui::Panel::default());
                                 muted.store(true,Ordering::SeqCst);epoch.fetch_add(1,Ordering::SeqCst);
                                 ui.settings(Some(panel.as_ref().unwrap().display(&settings,connected,&models)));
-                                ui.message("Microphone paused while settings are open. Esc until you see Activity, then say 29.");
+                                ui.message(format!("Microphone paused while settings are open. Esc until you see Activity, then say {}.", settings.wake_code));
                                 if model_lookup.is_none() {
                                     let executable=args.codex_bin.clone().unwrap_or_else(||config::codex(&settings));
                                     model_lookup=Some(tokio::spawn(crate::connectors::models(executable)));
@@ -1774,12 +1789,15 @@ pub async fn run(mut args: Run) -> Result<()> {
                             LocalCommand::Mascot(name)=>{
                                 let name=name.trim();
                                 if name.is_empty() {
-                                    ui.message(format!("Companion mood: {}\nAvailable: {}\nUse /mascot NAME, or the agent can emit [[mood:NAME]] in a reply. The local decision model classifies reply tone; Jev is the optional fallback.",ui.mood_label(),mascot::Mood::names().join(", ")));
+                                    ui.message(format!("{} is showing: {}\nLive phase: {}\nAvailable: {}\nUse /mascot NAME, /mascot auto, or let the agent emit [[mood:NAME]] in a reply. The local decision model classifies reply tone; Jev is the optional fallback.",mascot::NAME,ui.mood_label(),ui.phase_mood_label(),mascot::Mood::names().join(", ")));
+                                } else if matches!(name.to_ascii_lowercase().as_str(),"auto"|"reset"|"clear") {
+                                    ui.clear_mood_override();
+                                    ui.message(format!("{} is following the live phase again ({}).",mascot::NAME,ui.phase_mood_label()));
                                 } else if let Some(mood)=mascot::Mood::from_name(name) {
                                     mood_generation = mood_generation.wrapping_add(1);
                                     ui.override_mood(mood,Duration::from_secs(30));
                                 } else {
-                                    ui.message(format!("Unknown mood \"{}\". Available: {}",safe(name),mascot::Mood::names().join(", ")));
+                                    ui.message(format!("Unknown mood \"{}\". Available: {} · or auto",safe(name),mascot::Mood::names().join(", ")));
                                 }
                             }
                             LocalCommand::Logs=>{
@@ -1810,7 +1828,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                             }
                             LocalCommand::Set(key,value)=>{
                                 if key=="session.harness" {
-                                    if !["codex","claude","antigravity","mock"].contains(&value.as_str()) {ui.message("Unknown harness.");continue;}
+                                    if !config::HARNESSES.contains(&value.as_str()) {ui.message("Unknown harness.");continue;}
                                     session_pin=Some((value.clone(),Some(config::light_model(&value).into())));
                                     if !busy {active_harness=value;active_model=session_pin.as_ref().and_then(|p|p.1.clone());}
                                     ui.message("Pinned this conversation to the selected harness. Agent role settings are unchanged.");
@@ -2093,7 +2111,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                     }
                     match parts.as_slice() {
                         ["/quit"] => break,
-                        ["/status"] => ui.message(format!("{} | {} | {} · {} · {}",if mic_unavailable{"MICROPHONE UNAVAILABLE"}else if session.active(){"GREEN: conversation open"}else{"WHITE: waiting for wake code"},if busy{"agent working"}else{"idle"},crate::identity::code(&active_harness, active_model.as_deref()),active_harness,active_model.as_deref().unwrap_or("default"))),
+                        ["/status"] => ui.message(if access.locked() {"LOCKED · local unlock only · /unlock".into()} else {format!("{} | {} | {} · {} · {}",if mic_unavailable{"MICROPHONE UNAVAILABLE"}else if session.active(){"GREEN: conversation open"}else{"WHITE: waiting for wake code"},if busy{"agent working"}else{"idle"},crate::identity::code(&active_harness, active_model.as_deref()),active_harness,active_model.as_deref().unwrap_or("default"))}),
                         ["/help"] => ui.message("/quit /stop /sleep /cancel /audio /status /memory review /music /prompt /logs /approve N /deny N"),
                         ["/disconnect"] | ["/sleep"] => {
                             alarm=None;wake_listening=false;
@@ -2350,7 +2368,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                         let wake_followup = wake_listening;
                         wake_listening = false;
                         if !typed && !is_automatic && !spoken_addressed && !wake_followup && !was_active && spoken_word_count(&text) < 2 {
-                            ui.ignored(&text,"one-word transcript outside an established follow-up; say 29 first",confidence_note(voice_confidence));
+                            ui.ignored(&text,&format!("one-word transcript outside an established follow-up; say {} first",settings.wake_code),confidence_note(voice_confidence));
                             note_ignored(&mut pending_fragment,&text);
                             continue;
                         }
@@ -2583,6 +2601,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                         }
                         seen_history.insert(target.harness.clone(), transcript.len());
                         mood_generation = mood_generation.wrapping_add(1);
+                        ui.clear_mood_override();
                         busy=true;
                         crate::usage::record_harness(&target.harness, crate::usage::approx_tokens(&outbound));
                         let model_mismatch=agents.get(&target.harness).is_some_and(|live|live.model!=target.model);
@@ -2949,7 +2968,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                                     wake_display(settings.wake_display && !args.text,&mut last_display_wake);
                                     alarm=None;
                                     match audio::alarm(settings.sounds.alarm) {
-                                        Ok(cue)=>{alarm=Some(cue);ui.message(format!("[ALARM {}: {}] Say 29 stop the alarm.",item.id,item.label));}
+                                        Ok(cue)=>{alarm=Some(cue);ui.message(format!("[ALARM {}: {}] Say {} stop the alarm.",item.id,item.label,settings.wake_code));}
                                         Err(e)=>ui.message(format!("Alarm {} could not play: {e:#}",item.id)),
                                     }
                                 }
@@ -3024,8 +3043,10 @@ pub async fn run(mut args: Run) -> Result<()> {
                     ui.message("Stopped an unresponsive harness. Its next request will reconnect.");
                     if let Some(text)=pending_prompt.take() {let _=input_tx.try_send(Input::Text(format!("{} {text}",settings.wake_code)));}
                 }
-                if worker.as_ref().is_some_and(|w|w.started.elapsed()>Duration::from_secs(900)) {
-                    worker=None;feedback.push_back("Worker timed out after 15 minutes and was stopped. Its actions may be incomplete; do not retry automatically.".into());
+                let worker_timeout = Duration::from_secs(settings.jobs.timeout_seconds);
+                if worker.as_ref().is_some_and(|w|w.started.elapsed()>worker_timeout) {
+                    let minutes = settings.jobs.timeout_seconds / 60;
+                    worker=None;feedback.push_back(format!("Worker timed out after {minutes} minutes and was stopped. Its actions may be incomplete; do not retry automatically."));
                 }
                 if !wake_listening && !busy && worker.is_none() && speaker.is_none() && speech_queue.is_empty() {
                     if let Some(mut message)=feedback.pop_front() {
@@ -3532,7 +3553,9 @@ mod tests {
                 settings_open: false,
                 setup: false,
                 mic_unavailable: false,
+                mic_connecting: false,
                 notices: 0,
+                wake_code: "29",
             },
             "A D · antigravity · default",
         );

@@ -4,6 +4,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
+use unicode_width::UnicodeWidthChar;
 
 pub fn render(markdown: &str) -> Vec<Line<'static>> {
     let mut lines: Vec<Vec<Span<'static>>> = vec![Vec::new()];
@@ -118,29 +119,54 @@ pub fn wrap(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
             out.push(Line::default());
             continue;
         }
-        let mut row: Vec<Span<'static>> = Vec::new();
-        let mut col = 0;
+        let mut row: Vec<(char, Style)> = Vec::new();
+        let mut col = 0usize;
         for span in line.spans {
             let style = span.style;
             for ch in span.content.chars() {
-                if col >= width {
-                    out.push(Line::from(std::mem::take(&mut row)));
-                    col = 0;
-                }
-                if let Some(last) = row.last_mut() {
-                    if last.style == style {
-                        last.content.to_mut().push(ch);
-                        col += 1;
-                        continue;
+                let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+                if col + ch_width > width && col > 0 {
+                    // Break at the last space that fits, so prose stays word
+                    // wrapped, and hard-break only words wider than the line.
+                    let split = row
+                        .iter()
+                        .rposition(|(c, _)| *c == ' ')
+                        .map_or(row.len(), |index| index + 1);
+                    let tail = row.split_off(split);
+                    while row.last().is_some_and(|(c, _)| *c == ' ') {
+                        row.pop();
                     }
+                    out.push(row_to_line(std::mem::take(&mut row)));
+                    row = tail;
+                    while row.first().is_some_and(|(c, _)| *c == ' ') {
+                        row.remove(0);
+                    }
+                    col = row
+                        .iter()
+                        .map(|(c, _)| UnicodeWidthChar::width(*c).unwrap_or(0))
+                        .sum();
                 }
-                row.push(Span::styled(ch.to_string(), style));
-                col += 1;
+                row.push((ch, style));
+                col += ch_width;
             }
         }
-        out.push(Line::from(row));
+        out.push(row_to_line(row));
     }
     out
+}
+
+fn row_to_line(row: Vec<(char, Style)>) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (ch, style) in row {
+        if let Some(last) = spans.last_mut() {
+            if last.style == style {
+                last.content.to_mut().push(ch);
+                continue;
+            }
+        }
+        spans.push(Span::styled(ch.to_string(), style));
+    }
+    Line::from(spans)
 }
 
 #[cfg(test)]
@@ -171,5 +197,25 @@ mod tests {
         let wrapped = wrap(render("abcdef"), 3);
         assert_eq!(plain(&wrapped).replace('\n', ""), "abcdef");
         assert_eq!(wrapped.len(), 2);
+    }
+    #[test]
+    fn wrap_breaks_between_words_and_counts_display_width() {
+        let wrapped = wrap(render("The quick brown fox"), 10);
+        assert_eq!(plain(&wrapped), "The quick\nbrown fox");
+        let wrapped = wrap(render("你好世界你好世界"), 4);
+        assert_eq!(plain(&wrapped), "你好\n世界\n你好\n世界");
+        for line in &wrapped {
+            let width: usize = line
+                .spans
+                .iter()
+                .map(|span| {
+                    span.content
+                        .chars()
+                        .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
+                        .sum::<usize>()
+                })
+                .sum();
+            assert!(width <= 4);
+        }
     }
 }

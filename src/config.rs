@@ -53,7 +53,7 @@ pub struct Jobs {
 impl Default for Jobs {
     fn default() -> Self {
         Self {
-            timeout_seconds: 3600,
+            timeout_seconds: 900,
         }
     }
 }

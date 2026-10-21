@@ -6,6 +6,56 @@ GitHub, and full notes are generated there. This file starts at 0.34.3 — see t
 [releases page](https://github.com/T-Lind/accessor/releases) and `git log` for
 earlier history.
 
+## [0.45.0] - 2026-10-20
+
+### Added
+
+- **Bramble**, the honey-bear companion, now has a proper name in the mascot
+  panel, `/mascot` help, and the README. Bramble has distinct attentive,
+  speaking, locked, and sad poses instead of reusing curious, happy, sleeping,
+  and error expressions.
+- `ACC_REDUCED_MOTION=1` freezes Bramble in a clean pose for motion-sensitive
+  users, remote terminals, and screen recordings.
+- `/mascot auto` clears a manual or reply-tone override and returns to the live
+  phase.
+
+### Changed
+
+- Reply-tone holds pause while listening, thinking, working, speaking, or
+  approval owns the pose, so the requested expression is actually visible for
+  its full duration. A new turn clears a stale tone.
+- The status bar uses the full terminal width when height allows, and the narrow
+  side-by-side layout uses a shortened identity line so the harness and model
+  are not clipped at 76–80 columns. Alarms, locks, microphone failures, and
+  connection progress each get their own color.
+- The message field supports cursor movement and editing: Left/Right,
+  Home/End, Delete, Ctrl+A/E/U/W/K. Long input scrolls horizontally instead of
+  hiding text behind the right border. Multi-line pastes are preserved as one
+  message; secret entry still keeps only the first line.
+- Markdown wrapping breaks at spaces and accounts for Unicode display width
+  instead of splitting words and wide characters.
+- Changing the chat view now shows or hides existing lines immediately. Scrolling
+  up is no longer reset by every new tool call, and stale scroll offsets clamp.
+- Settings gained Back rows on every page and preserve save notices while the
+  panel is open.
+
+### Fixed
+
+- Pressing Enter on an ambiguous command prefix such as `/` no longer executes
+  the first match (`/lock`); only a unique match, an exact command, or an
+  explicitly highlighted row completes.
+- Settings toggles for the room-noise gate, master log, log level, and request
+  routing could only change in one direction because their current value was
+  not read.
+- Wake-code instructions in alarms, settings, and one-word transcript warnings
+  now use the configured code instead of always saying “29”.
+- The microphone shows “connecting” while it opens rather than claiming it is
+  unavailable.
+- `wake-attention`, `jobs.timeout-seconds`, and the full harness list
+  (`opencode`, `cursor`, `ty`) are now honored by the live session.
+- Harness reply buffers are bounded, and notification receipts no longer fail
+  spuriously under a transient lock.
+
 ## [0.44.0] - 2026-10-20
 
 ### Added

@@ -19,7 +19,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     ("/noise", "Room-noise gate: /noise calibrate|on|off|reset"),
     ("/jev", "Save a TypeSafe API key for Jev: /jev key"),
-    ("/mascot", "Set or show the companion's expression"),
+    ("/mascot", "Set or show Bramble's expression"),
     ("/computer", "Desktop control: /computer test|on|off"),
     ("/dictate", "Local-only private dictation: /dictate on|off"),
     ("/journal", "Show the private dictation journal"),
@@ -344,7 +344,11 @@ pub fn utility(args: Vec<String>) -> tokio::task::JoinHandle<Result<String>> {
             tokio::time::timeout(std::time::Duration::from_secs(120), command.output()).await??;
         let text = String::from_utf8_lossy(&output.stdout);
         let error = String::from_utf8_lossy(&output.stderr);
-        Ok(format!("{text}{error}"))
+        let mut result = format!("{text}{error}");
+        if !output.status.success() && result.trim().is_empty() {
+            result = format!("Command failed ({}).", output.status);
+        }
+        Ok(result)
     })
 }
 #[cfg(test)]

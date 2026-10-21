@@ -1,6 +1,6 @@
 [package]
 name = "accessor"
-version = "0.44.0"
+version = "0.45.0"
 edition = "2021"
 description = "Local voice gateway for command-line agents"
 license = "MIT"
@@ -47,6 +47,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 uuid = { version = "1", features = ["v4"] }
 fs2 = "0.4"
 pulldown-cmark = "0.13"
+unicode-width = "0.2"
 sonora = "=0.2.0"
 tempfile = "3"
 sha2 = "0.10"

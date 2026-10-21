@@ -38,7 +38,7 @@ acc config set model gpt-5.6-sol
 The metaprompt tells the main agent to delegate coding, research and other long
 or difficult work; plugin delegation depends on the selected role and task.
 A worker gets a separate process, its own model and reasoning level, a
-configurable one-hour deadline (`jobs.timeout-seconds`), and returns a **bounded**
+configurable deadline (`jobs.timeout-seconds`, 15 minutes by default), and returns a **bounded**
 result to the main conversation. Only one worker runs at a time, and worker
 controls cannot recursively delegate. Workers normally share the project
 workspace; `/task new --isolated` creates a detached Git worktree from committed

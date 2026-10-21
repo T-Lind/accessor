@@ -84,20 +84,25 @@ Codex uses its existing login; Accessor does not call the OpenAI API directly. W
 
 ## A CLI for main use
 
-The animated honey bear appears at its original **40 columns × 18 rows** beside
-the conversation in an **80 × 24** or larger terminal. A tall **44 × 33** terminal
-stacks it above the conversation; smaller terminals show a compact expression.
-The bear breathes, blinks, waves, types, and changes expressions as Accessor
-listens, works, speaks, waits for approval, or sleeps. Settings use the full width.
+The animated honey bear **Bramble** appears at its original **40 columns × 18
+rows** beside the conversation in a **76 × 24** or larger terminal. A tall
+**44 × 33** terminal stacks Bramble above the conversation; terminals of at
+least **48 × 12** show a compact expression, and smaller ones show a size hint
+(use `--plain` for a simple view). Bramble breathes, blinks, waves, types, talks,
+and changes expressions as Accessor listens, works, speaks, waits for approval,
+or sleeps. Settings use the full width.
 
-Reply tone uses the local openJev decision model, independently of playback:
-`acc decider install` installs it, and `acc decider status` checks it. While it is
-absent, live phases and a lightweight tone heuristic still animate the bear;
-hosted Jev is an optional fallback when its credential is configured. An
-uncertain local decision keeps the current phase. Live activity takes priority
-over tone. `/mascot happy`, `/mascot working`, `/mascot greeting`, or
-`/mascot celebrating` selects a pose between active phases; `/mascot` lists all
-names. Agents can also request a pose with `[[mood:NAME]]` in a reply.
+Bramble's expression follows the live phase, including distinct attentive,
+speaking, thinking, working, locked, and sleeping poses. Set `ACC_REDUCED_MOTION=1`
+to freeze the animation for a calmer or remote terminal. Reply tone uses the
+local openJev decision model, independently of playback: `acc decider install`
+installs it, and `acc decider status` checks it. While it is absent, live phases
+and a lightweight tone heuristic still animate Bramble; hosted Jev is an optional
+fallback when its credential is configured. An uncertain local decision keeps the
+current phase. Live activity takes priority over tone. `/mascot happy`,
+`/mascot working`, `/mascot greeting`, or `/mascot celebrating` selects a pose
+between active phases; `/mascot auto` returns to the live phase and `/mascot`
+lists all names. Agents can also request a pose with `[[mood:NAME]]` in a reply.
 
 ```sh
 acc setup
@@ -129,7 +134,7 @@ acc config import portable.json
 
 Settings are split so preferences can move between machines without dragging device details. `config.json` holds portable preferences (wake, harnesses, TTS, routing, volumes); `device.json` holds this machine's microphone, `assets-dir`/`codex-bin` paths, CPU tuning (`stt.threads`/`spin`/`lazy`/`engine`) and the calibrated `stt.noise_floor_db`. `acc config export FILE` writes only the portable subset and `acc config import FILE` merges it into the current profile, keeping the target's device settings. Copying the whole folder also works but carries device.json with it; delete it on the new machine or import instead.
 
-Interactive terminals use a fixed dashboard with status, a bounded conversation area, and a command field. Status changes update in place. Type `/` to open the command menu, filter by typing, use arrows to choose, and press Enter or Tab. You can type ordinary messages directly to the agent without a voice wake code (except in `--text` transcript simulation mode).
+Interactive terminals use a fixed dashboard with status, a bounded conversation area, and a command field. Status changes update in place. Type `/` to open the command menu, filter by typing, use arrows to choose, and press Enter or Tab; ambiguous prefixes never auto-run a command, and Tab completes only a unique match or the row you highlighted. You can type ordinary messages directly to the agent without a voice wake code (except in `--text` transcript simulation mode).
 
 Everything needed day to day is available inside the screen:
 
@@ -161,7 +166,7 @@ Everything needed day to day is available inside the screen:
 | `/config locations` | Show the settings folder to copy to another machine |
 | `/events` | Inspect the local event queue |
 
-Wake, timeout, speech, and voice changes take effect immediately. Microphone changes reconnect in the background; device failures retry automatically with a bounded backoff. Asset path and Codex executable changes require restart. If speech/model initialization fails, the dashboard remains open for typed messages and setup. Page Up/Down scroll the conversation; Escape cancels a task. Outside the command menu and settings, Up/Down recall the last 50 typed inputs and restore your unfinished draft. History stays in memory, excludes masked entry, and clears on lock. Use `--plain` for ordinary terminal output; pipes automatically use plain mode. Plain status lines print only when status changes. The dashboard is not saved as a transcript log.
+Wake, timeout, speech, and voice changes take effect immediately. Microphone changes reconnect in the background; device failures retry automatically with a bounded backoff. Asset path and Codex executable changes require restart. If speech/model initialization fails, the dashboard remains open for typed messages and setup. Page Up/Down scroll the conversation; Escape cancels a task. Outside the command menu and settings, Left/Right/Home/End and Ctrl+A/E/U/W/K edit the message, and Up/Down recall the last 50 typed inputs and restore your unfinished draft. Multi-line pastes are kept as one message; secret entry uses only the first line. History stays in memory, excludes masked entry, and clears on lock. Use `--plain` for ordinary terminal output; pipes automatically use plain mode. Plain status lines print only when status changes. The dashboard is not saved as a transcript log.
 
 ## Settings and spoken switching
 
