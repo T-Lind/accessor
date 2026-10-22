@@ -130,7 +130,7 @@ Everything day to day is available in the screen:
 
 | In-screen command | Behavior |
 | --- | --- |
-| `/settings` | Category menu: Voice, Speech, Harnesses, Display, Metaprompt, Tests, Security, Computer |
+| `/settings` | Category menu: Voice, Speech, Harnesses, Display, Metaprompt, Tests, Security, Computer, Presence |
 | `/setup` | Five-step setup wizard; Enter keeps defaults, Escape cancels |
 | `/config`, `/config set KEY VALUE` | Inspect and save settings |
 | `/tts`, `/tts provider piper`, `/tts voice en_GB-alan-medium` | Configure spoken replies (system, kokoro, piper, cartesia, off) |

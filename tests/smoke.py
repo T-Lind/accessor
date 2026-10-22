@@ -406,5 +406,31 @@ class SmokeTests(unittest.TestCase):
         app.send("/cancel")
         app.expect("| idle")
 
+    def test_presence_brief_is_local_and_cooldown_guarded(self):
+        def config(key, value):
+            result = subprocess.run(
+                [str(BINARY), "config", "set", key, value],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+        config("presence.enabled", "true")
+        config("presence.quiet", "false")
+        self.addCleanup(config, "presence.enabled", "false")
+        self.addCleanup(config, "presence.quiet", "true")
+        app = self.app("--agent", "mock", "--speak", "--tts", "off")
+        command = [str(BINARY), "presence", "emit", "--source", "manual", "--confidence", "1.0"]
+        subprocess.run(command, cwd=ROOT, check=True, capture_output=True, timeout=5)
+        line = app.expect("Arrival ·", timeout=15)
+        self.assertIn("Welcome back", line)
+        # A second arrival inside the default 30-minute cooldown is discarded.
+        subprocess.run(command, cwd=ROOT, check=True, capture_output=True, timeout=5)
+        time.sleep(2.5)
+        self.assertEqual("".join(app.seen).count("Arrival ·"), 1)
+        app.send("/quit")
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -145,6 +145,11 @@ pub fn clear() -> Result<()> {
     Ok(())
 }
 
+/// Number of journal entries, without exposing their text.
+pub fn count() -> Result<usize> {
+    Ok(read_entries()?.len())
+}
+
 fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

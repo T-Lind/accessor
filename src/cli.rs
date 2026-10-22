@@ -76,6 +76,11 @@ enum Commands {
         #[command(subcommand)]
         action: NotificationCommand,
     },
+    /// Queue or inspect local presence arrivals (camera, PIR, session, manual).
+    Presence {
+        #[command(subcommand)]
+        action: PresenceCommand,
+    },
     /// Start the voice gateway (also the default when no command is given).
     Run(Run),
     /// Save wake, voice, and speech-file settings interactively.
@@ -479,6 +484,23 @@ enum EventCommand {
 }
 
 #[derive(Subcommand)]
+enum PresenceCommand {
+    /// Queue a local arrival event. The running session decides whether to speak.
+    Emit {
+        #[arg(long, default_value = "manual")]
+        source: String,
+        #[arg(long, default_value_t = 1.0)]
+        confidence: f32,
+    },
+    /// Show presence settings, queued arrivals, and the last brief.
+    Status,
+    /// Enable presence briefs for the next Accessor session.
+    Enable,
+    /// Disable presence briefs for the next Accessor session.
+    Disable,
+}
+
+#[derive(Subcommand)]
 enum NotificationCommand {
     /// List notifications, newest first.
     List {
@@ -567,6 +589,17 @@ enum OrganizerCommand {
     },
     /// Cancel a pending item by its 8-character ID, or use "all".
     Cancel { id: String },
+}
+
+fn set_presence_enabled(enabled: bool) -> Result<()> {
+    let mut settings = Settings::load()?;
+    settings.presence.enabled = enabled;
+    settings.save()?;
+    println!(
+        "Presence briefs {}. Restart Accessor to apply this change.\nStart a sensor with:\n  monovision presence --acc-bin acc",
+        if enabled { "enabled" } else { "disabled" }
+    );
+    Ok(())
 }
 
 fn normalized(mut args: Vec<OsString>) -> Vec<OsString> {
@@ -939,6 +972,17 @@ pub async fn entry() -> Result<()> {
                 Ok(())
             }
             EventCommand::Status => crate::triggers::status(),
+        },
+        Commands::Presence { action } => match action {
+            PresenceCommand::Emit { source, confidence } => {
+                let source = crate::presence::Source::parse(&source)?;
+                crate::presence::emit(source, confidence)?;
+                println!("Presence event queued. A running Accessor session will decide whether to speak.");
+                Ok(())
+            }
+            PresenceCommand::Status => crate::presence::status(),
+            PresenceCommand::Enable => set_presence_enabled(true),
+            PresenceCommand::Disable => set_presence_enabled(false),
         },
         Commands::Run(args) => app::run(args).await,
         Commands::Devices => audio::devices(),

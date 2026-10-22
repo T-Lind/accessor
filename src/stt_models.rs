@@ -375,6 +375,16 @@ fn part_file(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
+}
+
 fn sha256_file(path: &Path) -> Result<String> {
     let mut hasher = Sha256::new();
     let mut file = std::fs::File::open(path)?;
@@ -386,7 +396,7 @@ fn sha256_file(path: &Path) -> Result<String> {
         }
         hasher.update(&buf[..n]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex(&hasher.finalize()))
 }
 
 pub(crate) async fn fetch(url: &str, dest: &Path, sha256: &str) -> Result<()> {
@@ -411,7 +421,7 @@ pub(crate) async fn fetch(url: &str, dest: &Path, sha256: &str) -> Result<()> {
     }
     out.flush()?;
     ensure!(
-        format!("{:x}", hasher.finalize()) == sha256,
+        hex(&hasher.finalize()) == sha256,
         "Checksum mismatch for {}",
         dest.display()
     );

@@ -14,6 +14,20 @@ pub struct Endpoint {
     address: SocketAddr,
     token: String,
 }
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationAction {
+    Status,
+    Compact,
+    Clear,
+}
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptionAction {
+    Start,
+    Stop,
+    Status,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
@@ -31,6 +45,12 @@ pub enum Action {
         harness: String,
         model: String,
         reasoning: String,
+    },
+    Conversation {
+        action: ConversationAction,
+    },
+    Transcription {
+        action: TranscriptionAction,
     },
 }
 pub struct Request {

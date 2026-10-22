@@ -52,9 +52,29 @@ The numeric word reduces accidental activations; it is not authentication. See t
 - `/repeat` replays the last completed answer without another model call. While
   awake, “repeat that” does the same. `/copy` copies the retained answer.
   Retention is bounded to 64,000 characters and clears on lock.
+- **Presence briefs** speak a short local summary of unread notifications,
+  scheduled tasks, and alarms when a trusted local sensor reports an arrival.
+  The camera is optional; `acc presence emit` accepts metadata only, and a
+  cooldown, quiet hours, the lock, and busy/idle state all gate speech. See
+  [presence briefs](presence.md).
+- **Conversation controls** via the live `conversation` MCP tool: inspect turn
+  count/tokens, compact Accessor-owned history asynchronously, or clear the
+  conversation. Clear also restarts native harness sessions but keeps shared
+  memory, notes, notifications, alarms/tasks, and the private journal. Actions
+  requested during a reply are queued until it finishes. `/compact` remains the
+  console shortcut.
+- **Local-only transcription** can be started with “enter transcription” or the
+  live MCP `transcription` tool. It keeps the session awake across pauses,
+  forces local STT, and appends each utterance to the encrypted private journal;
+  the agent never receives the text. “exit transcription” or `transcription
+  stop` ends it.
 - **Bramble**, the animated companion, reflects listening, thinking, working,
   speaking, approval, lock, and sleep. `/mascot NAME` sets a pose, `/mascot auto`
-  returns to the live phase, and `ACC_REDUCED_MOTION=1` freezes the animation.
+  returns to the live phase, `ACC_REDUCED_MOTION=1` freezes the animation, and
+  `NO_COLOR=1` keeps the shape with the terminal's default foreground.
+- `/settings find TERM` searches every page; `/settings KEY` shows a value and
+  its default; `/config get|list|reset` gives scriptable access. Booleans accept
+  `on`/`off`, and scalar settings accept `default`/`reset`.
 - `/jobs` shows the main turn, isolated worker, and waiting tasks/speech.
 - `/memory infer` runs in the background; `/cancel` or locking stops inference.
   Mock mode uses local capture and compaction without a model process.

@@ -104,8 +104,11 @@ See [Local access lock](SECURITY.md) for the threat model and recovery steps.
 
 ## Incoming events
 
-The only supported event source is the local `acc events emit` handoff. Accessor
-opens no HTTP listener and stores no provider credentials.
+There are two local handoffs. Neither opens an HTTP listener or stores provider
+credentials.
+
+**Email replies** use the local `acc events emit` handoff. A trusted automation
+passes validated Gmail API IDs, and an idle consumer starts a bounded agent turn.
 
 ```mermaid
 sequenceDiagram
@@ -119,6 +122,13 @@ sequenceDiagram
   A-->>Q: receipt on completion
   Note over A: replies through the agent's own<br/>Gmail connector, not Accessor
 ```
+
+**Presence arrivals** use `acc presence emit`. The event carries only a source,
+confidence, and timestamp. Accessor applies a cooldown, quiet hours, the local
+lock, and busy/idle gating, then speaks a short local brief and raises no agent
+turn. The optional camera sensor lives outside Accessor and writes the same
+validated event; no frame or free-form text crosses the boundary. See
+[presence briefs](presence.md).
 
 ## Watches and notifications
 

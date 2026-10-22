@@ -1,4 +1,5 @@
 """Offline coordinator, organizer, and all-harness regression tests."""
+import base64
 import json
 import os
 from pathlib import Path
@@ -234,6 +235,72 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("accessor", registry["mcpServers"])
         app.close()
         self.assertFalse(sessions[0].exists())
+
+    def test_mcp_conversation_and_transcription_controls(self):
+        self.env["JOURNAL_KEY"] = base64.b64encode(b"0" * 32).decode()
+        self.config("routing.compaction-harness", "mock")
+        self.config("routing.compaction-model", "mock-compact")
+        app = self.app()
+        app.send("29 hello")
+        app.expect("fixture: hello")
+        app.expect("| idle")
+        sessions = list((self.home / "settings" / "sessions").glob("*.json"))
+        self.assertEqual(len(sessions), 1)
+        attached = dict(self.env, ACC_CONTROL_ENDPOINT=sessions[0].read_text(encoding="utf-8"))
+
+        def mcp(tool, arguments):
+            frames = [
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25"}},
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": tool, "arguments": arguments}},
+            ]
+            result = subprocess.run(
+                [str(BINARY), "mcp"],
+                input="".join(json.dumps(frame) + "\n" for frame in frames),
+                cwd=ROOT,
+                env=attached,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            reply = json.loads(result.stdout.splitlines()[-1])["result"]
+            self.assertFalse(reply["isError"], reply)
+            return json.loads(reply["content"][0]["text"])
+
+        status = mcp("conversation", {"action": "status"})
+        self.assertGreaterEqual(status["turns"], 2)
+        compacted = mcp("conversation", {"action": "compact"})
+        self.assertIn("ompact", compacted["receipt"])
+        app.expect("Compacted Accessor-owned history", timeout=20)
+        cleared = mcp("conversation", {"action": "clear"})
+        self.assertIn("cleared", cleared["receipt"].lower())
+        app.expect("Conversation cleared")
+        self.assertEqual(mcp("conversation", {"action": "status"})["turns"], 0)
+
+        started = mcp("transcription", {"action": "start"})
+        self.assertTrue(started["active"])
+        app.expect("Local-only transcription ON")
+        app.send("this is a test journal entry")
+        app.expect("Journaled locally")
+        status = mcp("transcription", {"action": "status"})
+        self.assertTrue(status["active"])
+        self.assertGreaterEqual(status["entries"], 1)
+        stopped = mcp("transcription", {"action": "stop"})
+        self.assertTrue(stopped["stopped"])
+        app.expect("Local-only transcription OFF")
+
+        # A clear requested while the agent is working is deferred, not allowed
+        # to cut the current reply off.
+        app.send("29 hold")
+        app.expect("▸ hold")
+        queued = mcp("conversation", {"action": "clear"})
+        self.assertTrue(queued["queued"])
+        app.send("/cancel")
+        app.expect("Conversation cleared", timeout=10)
+        self.assertEqual(mcp("conversation", {"action": "status"})["turns"], 0)
+        app.close()
 
     def test_bare_wake_interrupts_worker_then_waits_without_a_reply(self):
         app = self.app()

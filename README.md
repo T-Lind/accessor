@@ -33,6 +33,8 @@ See [local password locking](docs/SECURITY.md) and [voice performance, benchmark
 - [Notes, alarms, sleep, and scheduled tasks](#notes-alarms-sleep-and-scheduled-tasks)
 - [Notifications and watches](#notifications-and-watches)
 - [Incoming replies through an event trigger](#incoming-replies-through-an-event-trigger)
+- [Presence briefs](#presence-briefs)
+- [Conversation reset and compaction](#conversation-reset-and-compaction)
 - [Desktop control (computer use)](#desktop-control-computer-use)
 - [Local-only dictation](#local-only-dictation)
 - [Agent permissions and scope](#agent-permissions-and-scope)
@@ -94,7 +96,8 @@ or sleeps. Settings use the full width.
 
 Bramble's expression follows the live phase, including distinct attentive,
 speaking, thinking, working, locked, and sleeping poses. Set `ACC_REDUCED_MOTION=1`
-to freeze the animation for a calmer or remote terminal. Reply tone uses the
+to freeze the animation for a calmer or remote terminal, or `NO_COLOR=1` to keep
+Bramble's shape while using the terminal's default foreground. Reply tone uses the
 local openJev decision model, independently of playback: `acc decider install`
 installs it, and `acc decider status` checks it. While it is absent, live phases
 and a lightweight tone heuristic still animate Bramble; hosted Jev is an optional
@@ -140,9 +143,13 @@ Everything needed day to day is available inside the screen:
 
 | In-screen command | Behavior |
 | --- | --- |
-| `/settings` | Category menu: Voice, Speech, Harnesses, Display, Metaprompt, Tests, Security, Computer. ↑/↓, Enter, Esc |
+| `/settings` | Category menu: Voice, Speech, Harnesses, Display, Metaprompt, Tests, Security, Computer, Presence. ↑/↓, Enter, Esc |
+| `/settings find TERM` | Search every settings page by label or value |
+| `/settings KEY` | Show one setting's current value and default |
 | `/setup` | Five-step setup wizard; Enter keeps defaults, Escape cancels |
 | `/config`, `/config set KEY VALUE` | Inspect and save settings |
+| `/config get KEY`, `/config list [PREFIX]` | Read one value or list editable keys |
+| `/config reset KEY` | Restore one setting's default |
 | `/tts`, `/tts provider piper`, `/tts voice en_GB-alan-medium` | Configure spoken replies (system, kokoro, piper, cartesia, off) |
 | `/tts test`, `/tts voices [search]` | Audition or list/search voices; the current one is marked |
 | `/tts key` | Masked Cartesia key entry; saved in the OS credential store |
@@ -170,7 +177,7 @@ Wake, timeout, speech, and voice changes take effect immediately. Microphone cha
 
 ## Settings and spoken switching
 
-Open `/settings` for a category menu (Voice, Speech, Harnesses, Display, Metaprompt, Tests, Security, Computer). **↑/↓** moves, **Enter** opens or toggles, **Esc** goes up one level. Typed `/settings KEY VALUE` still works for scripts. Changes persist and apply immediately. The status bar always shows the live **harness · model** and a short identity code (`X S` Codex Sol, `C F` Claude Fable, `A F` Antigravity Flash).
+Open `/settings` for a category menu (Voice, Speech, Harnesses, Display, Metaprompt, Tests, Security, Computer, Presence). **↑/↓** moves, **Enter** opens or toggles, **Esc** goes up one level. Typed `/settings KEY VALUE` still works for scripts, `/settings KEY` shows the current value and default, and `/settings find TERM` searches every page. `/config get|list|reset` gives the same access without opening the panel. Changes persist and apply immediately. The status bar always shows the live **harness · model** and a short identity code (`X S` Codex Sol, `C F` Claude Fable, `A F` Antigravity Flash).
 
 **Harnesses:** **Main** is the persistent main conversation, with a lightweight model by default (Codex Luna, Claude Haiku, Antigravity Flash). **Coding** and **Plugin** select separate worker roles and independent models. The metaprompt tells the main agent to delegate coding, difficult analysis, and plugin work, even when all roles use the same CLI. A worker has a fresh process, its own model and low/medium/high reasoning, a 15-minute deadline, and a bounded result returned to the main conversation. Only one worker runs at a time. Accessor worker controls cannot recursively delegate. Existing native tools still enforce their own policies.
 
@@ -186,7 +193,9 @@ Model discovery reads the selected Codex installation's account catalog without 
 
 Once activated, say "switch to Codex" or "switch agent to Codex". Say "switch model to Astra" using a name from your available list. A running harness can emit `ACCESSOR_SWITCH harness=codex` (or JSON `accessor_switch`) to pin this conversation to another CLI without rewriting the plugin/coding/main slots. These local controls obey the same wake-code and barge-in settings as ordinary speech.
 
-Direct equivalents: `/settings barge-in true`, `/settings idle-seconds 120`, `/settings speak-progress false`, `/settings chat activity`, `/settings tts.speed 1.1`, `/settings model MODEL_ID`. The numbered model picker and spoken commands use the discovered list; an exact ID can also be set manually for a newly available model. The backend makes the final availability check.
+Direct equivalents: `/settings barge-in true`, `/settings idle-seconds 120`, `/settings speak-progress false`, `/settings chat activity`, `/settings tts.speed 1.1`, `/settings model MODEL_ID`. Boolean values also accept `on`/`off`, `yes`/`no`, and `1`/`0`; scalar values accept `default` or `reset`. The numbered model picker and spoken commands use the discovered list; an exact ID can also be set manually for a newly available model. The backend makes the final availability check.
+
+**Presence.** Settings → Presence controls arrival briefs from `acc presence emit` and the optional camera sensor: enable/disable, cooldown, minimum confidence, quiet hours, and whether an empty room still gets a short welcome. The sensor sends only a source, confidence, and timestamp; Accessor composes the brief locally without a model call. See [presence briefs](docs/presence.md).
 
 ## Conversation behavior
 
@@ -380,6 +389,52 @@ Duplicate message IDs are suppressed across restarts. A receipt is written befor
 
 **Future:** broader event triggers — authenticated new-email notifications, incoming webhooks, and other validated, appropriately scoped sources — may be added natively or as capability guidance in the agent metaprompt. Today the only supported source is the local `acc events emit` handoff above.
 
+## Conversation reset and compaction
+
+Ask Accessor to clear or compact the conversation in ordinary speech; the agent
+uses the live `conversation` MCP tool:
+
+- `status` returns Accessor's turn count, approximate tokens, attached native
+  sessions, and whether a clear/compaction is already queued.
+- `compact` summarizes Accessor-owned handoff history now. Native harness
+  context is not rewritten. `/compact` does the same from the console.
+- `clear` resets Accessor's handoff history **and restarts the native harness
+  sessions**, so old native context cannot leak into the next turn. It keeps
+  shared memory, notes, notifications, alarms/tasks, and the private journal.
+
+If the request arrives during a reply or playback, it is queued and applied when
+that turn finishes. The MCP receipt says so; the agent should not claim it is
+already complete. `clear` never deletes notes, memory, or the journal.
+
+## Presence briefs
+
+Accessor can speak a short local brief when you arrive: unread notifications,
+scheduled tasks, alarms, and the newest notification title. It is **not an agent
+turn** and makes no model or email request.
+
+The camera is optional. A local sensor emits a metadata-only arrival event:
+
+```sh
+acc presence enable                 # restart Accessor after changing this
+acc presence status
+acc presence emit --source manual   # simulate an arrival
+```
+
+The companion `monovision` camera sensor uses motion plus a small local SSD
+person detector; it does not use depth, record video, or store frames:
+
+```sh
+cd ~/source/repos/monovision
+.venv/bin/monovision presence --acc-bin "$(command -v acc)"
+```
+
+Accessor gates the brief on lock, idle/busy state, a cooldown (30 minutes by
+default), local quiet hours, and a minimum confidence. The event file contains
+only `source`, `confidence`, and a timestamp, so the sensor cannot inject text
+or instructions. No HTTP listener is opened. Tune it with `presence.*` settings;
+see [presence briefs](docs/presence.md) for PIR/manual alternatives, systemd,
+thresholds, and the read-only email watch pattern.
+
 ## Desktop control (computer use)
 
 Accessor can give a connected agent control of this computer's screen, mouse, and keyboard through an MCP `computer` tool. It is **off by default** because it drives the real machine.
@@ -400,7 +455,9 @@ This is not a sandbox. Only the agent's own sandbox and permissions limit what t
 
 ## Local-only dictation
 
-Accessor can keep private speech entirely on this machine. While awake, say “start dictation” (or type `/dictate on`). Recognized speech is then transcribed locally and appended to an encrypted journal; it is never sent to an agent, a cloud service, or the conversation history. Unlike normal after-wake transcription, dictation forces local STT even if Cartesia is configured. Say “stop dictation”, type `/dictate off`, or let the conversation sleep to end it.
+Accessor can keep private speech entirely on this machine. While awake, say “start dictation” or “enter transcription” (or type `/dictate on`). Recognized speech is then transcribed locally and appended to an encrypted journal; it is never sent to an agent, a cloud service, or the conversation history. Unlike normal after-wake transcription, dictation forces local STT even if Cartesia is configured. Say “exit transcription”, type `/dictate off`, or lock Accessor to end it; transcription keeps the session awake across pauses so it can handle long sessions.
+
+The live MCP `transcription` tool exposes `start`, `stop`, and `status`. Starting from MCP may be queued until the current reply/playback finishes. Status reports whether it is active and the entry count, never journal text. An agent cannot read the journal through this tool.
 
 ```sh
 acc journal show                 # decrypt and print entries for this session
@@ -467,7 +524,7 @@ Use `/memory` in the console to inspect shared facts, `/memory review` to list l
 
 Memory search first filters global/current-project entries and ranks keyword matches locally. `acc memory search "query" --rerank` or MCP `rerank:true` optionally sends the query and at most 20 candidates to Jev using the configured TypeSafe credential. It has a three-second timeout and falls back to local ranking. Reranking orders candidates; it cannot grant permissions or change scope. It is not embedding-based semantic retrieval, so a keyword-free paraphrase can still miss a fact.
 
-`session_control` MCP applies sleep and ringing-alarm stop through an authenticated loopback bridge to the launching Accessor session, and exposes live status. `delegate_task` starts an isolated coding/analysis worker through the same bridge and returns a start receipt; the worker result reaches the main conversation asynchronously. `organizer_control` also accepts sleep/stop_alarm and `list_schedules` for pending-work inspection. A receipt is returned after the UI applies the action. Session capabilities are supplied to main sessions, not isolated workers or compaction jobs; standalone memory MCP connections report that no live session is attached. Native tool permissions still apply. The old reply directives remain compatibility fallbacks. A successful MCP action must not also be emitted as a duplicate directive. Shared memory persists independently of CLI compaction and Accessor's handoff summaries.
+`session_control` MCP applies sleep and ringing-alarm stop through an authenticated loopback bridge to the launching Accessor session, and exposes live status. `conversation` exposes live status, asynchronous compaction, and a full conversation reset (Accessor history plus native harness sessions; memory, notes, notifications, and the journal are kept). `transcription` starts/stops local-only dictation into the encrypted journal and reports entry count without exposing its text. `delegate_task` starts an isolated coding/analysis worker through the same bridge and returns a start receipt; the worker result reaches the main conversation asynchronously. `organizer_control` also accepts sleep/stop_alarm and `list_schedules` for pending-work inspection. A receipt is returned after the UI applies the action. Session capabilities are supplied to main sessions, not isolated workers or compaction jobs; standalone memory MCP connections report that no live session is attached. Native tool permissions still apply. The old reply directives remain compatibility fallbacks. A successful MCP action must not also be emitted as a duplicate directive. Shared memory persists independently of CLI compaction and Accessor's handoff summaries.
 
 ## Speech decisions, streaming, and latency
 

@@ -77,6 +77,8 @@ pub struct Ui {
     animation_started: Instant,
     last_frame: Instant,
     reduced_motion: bool,
+    color: bool,
+    clipboard: Option<std::sync::mpsc::Receiver<Option<String>>>,
 }
 struct MoodHold {
     mood: Mood,
@@ -113,8 +115,10 @@ impl Ui {
                 "" | "0" | "false" | "no" | "off"
             )
         });
+        let color = std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty());
         let mut bear = bear::Animator::new(Mood::Asleep);
         bear.set_reduced_motion(reduced_motion);
+        bear.set_color(color);
         Ok(Self {
             terminal,
             lines: VecDeque::new(),
@@ -136,6 +140,8 @@ impl Ui {
             animation_started: Instant::now(),
             last_frame: Instant::now(),
             reduced_motion,
+            color,
+            clipboard: None,
         })
     }
     /// Update the phase-derived mood. Tone overrides apply between active phases.
@@ -343,22 +349,10 @@ impl Ui {
                             if k.modifiers
                                 .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER) =>
                         {
-                            if let Some(text) = clipboard_text() {
-                                self.history.position = None;
-                                apply_paste(&mut self.input, &text, self.secret);
-                                self.cursor = self.input.chars().count();
-                                self.menu_index = 0;
-                                self.menu_chosen = false;
-                            }
+                            self.request_clipboard();
                         }
                         KeyCode::Insert if k.modifiers.contains(KeyModifiers::SHIFT) => {
-                            if let Some(text) = clipboard_text() {
-                                self.history.position = None;
-                                apply_paste(&mut self.input, &text, self.secret);
-                                self.cursor = self.input.chars().count();
-                                self.menu_index = 0;
-                                self.menu_chosen = false;
-                            }
+                            self.request_clipboard();
                         }
                         KeyCode::Char('a') if k.modifiers.contains(KeyModifiers::CONTROL) => {
                             self.cursor = 0;
@@ -517,7 +511,46 @@ impl Ui {
                 _ => {}
             }
         }
+        self.poll_clipboard();
         Ok(None)
+    }
+    /// Read the clipboard on a worker thread. Clipboard helpers can block on a
+    /// desktop portal or a missing selection owner; the input loop must keep
+    /// drawing and handling keys while that happens.
+    fn request_clipboard(&mut self) {
+        if self.clipboard.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(clipboard_text());
+        });
+        self.clipboard = Some(rx);
+        self.dirty = true;
+    }
+    fn poll_clipboard(&mut self) {
+        let Some(result) = self
+            .clipboard
+            .as_ref()
+            .map(std::sync::mpsc::Receiver::try_recv)
+        else {
+            return;
+        };
+        match result {
+            Ok(Some(text)) => {
+                self.clipboard = None;
+                self.history.position = None;
+                apply_paste(&mut self.input, &text, self.secret);
+                self.cursor = self.input.chars().count();
+                self.menu_index = 0;
+                self.menu_chosen = false;
+                self.dirty = true;
+            }
+            Ok(None) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.clipboard = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
     }
     fn insert_char(&mut self, c: char) {
         let mut chars: Vec<char> = self.input.chars().collect();
@@ -623,7 +656,7 @@ impl Ui {
                 Line::from(Span::styled(
                     format!("{} · {}", crate::mascot::NAME, mood.label()),
                     Style::default()
-                        .fg(mood.color())
+                        .fg(paint(self.color, mood.color()))
                         .add_modifier(Modifier::BOLD),
                 )),
                 Line::from("Terminal too small"),
@@ -639,7 +672,7 @@ impl Ui {
             return;
         }
         let layout = view_layout(area, self.settings.is_some());
-        let color = status_color(&self.status);
+        let color = paint(self.color, status_color(&self.status));
         let border = Style::default().fg(color);
         f.render_widget(
             Paragraph::new(status_lines(
@@ -660,7 +693,7 @@ impl Ui {
             layout.status,
         );
         if let Some(mascot_area) = layout.mascot {
-            let tint = Style::default().fg(mood.color());
+            let tint = Style::default().fg(paint(self.color, mood.color()));
             let title = if mascot_area.width < 24 {
                 format!(" {} ", crate::mascot::NAME)
             } else {
@@ -692,31 +725,24 @@ impl Ui {
                 if let Some(rest) = line.strip_prefix("hint:") {
                     visual.push(Line::from(Span::styled(
                         rest.to_string(),
-                        Style::default().fg(Color::Cyan),
+                        Style::default().fg(paint(self.color, Color::Cyan)),
                     )));
                 } else if line.starts_with("› ") {
                     visual.push(Line::from(Span::styled(
                         line.to_string(),
                         Style::default()
-                            .fg(Color::White)
-                            .bg(Color::Rgb(35, 62, 79))
+                            .fg(paint(self.color, Color::White))
+                            .bg(paint(self.color, Color::Rgb(35, 62, 79)))
                             .add_modifier(Modifier::BOLD),
                     )));
                 } else {
                     visual.push(Line::from(line.to_string()));
                 }
             }
-            if !self.notice.is_empty() {
-                visual.push(Line::default());
-                visual.push(Line::from(Span::styled(
-                    self.notice.clone(),
-                    Style::default().fg(Color::Yellow),
-                )));
-            }
             visual = crate::markdown::wrap(visual, width);
         } else {
             for entry in self.lines.iter().filter(|entry| self.visible(entry.kind)) {
-                visual.extend(styled_entry(entry, width));
+                visual.extend(styled_entry(entry, width, self.color));
             }
         }
         let available = layout.activity.height.saturating_sub(2) as usize;
@@ -789,19 +815,26 @@ impl Ui {
             ),
             layout.input,
         );
-        f.render_widget(
-            Paragraph::new(if self.settings.is_some() {
-                if area.width < 60 {
-                    " ↑/↓ · Enter · Esc back "
-                } else {
-                    " ↑/↓ choose · Enter select · Esc back · changes save on confirmation "
-                }
+        let footer_text = if self.settings.is_some() {
+            if !self.notice.is_empty() {
+                self.notice.lines().next().unwrap_or("").to_string()
             } else if area.width < 60 {
-                " / commands · Esc cancel "
+                " ↑/↓ · Enter · Esc back ".into()
             } else {
-                " ↑/↓ history · / commands · Esc cancel · /repeat · /jobs · /settings "
-            })
-            .style(Style::default().fg(color)),
+                " ↑/↓ choose · Enter select · Esc back · changes apply when chosen ".into()
+            }
+        } else if area.width < 60 {
+            " / commands · Esc cancel ".into()
+        } else {
+            " ↑/↓ history · / commands · Esc cancel · /repeat · /jobs · /settings ".into()
+        };
+        let footer_style = if self.settings.is_some() && !self.notice.is_empty() {
+            Style::default().fg(paint(self.color, Color::Yellow))
+        } else {
+            Style::default().fg(color)
+        };
+        f.render_widget(
+            Paragraph::new(footer_text).style(footer_style),
             layout.footer,
         );
         if !self.secret {
@@ -820,14 +853,16 @@ impl Ui {
                     .map(|(i, (name, desc))| {
                         let selected = i == self.menu_index;
                         let lead = if selected {
-                            Style::default().fg(Color::Black).bg(Color::Cyan)
+                            Style::default()
+                                .fg(paint(self.color, Color::Black))
+                                .bg(paint(self.color, Color::Cyan))
                         } else {
-                            Style::default().fg(Color::Cyan)
+                            Style::default().fg(paint(self.color, Color::Cyan))
                         };
                         let desc_style = if selected {
                             lead.add_modifier(Modifier::BOLD)
                         } else {
-                            Style::default().fg(Color::DarkGray)
+                            Style::default().fg(paint(self.color, Color::DarkGray))
                         };
                         Line::from(vec![
                             Span::styled(if selected { "› " } else { "  " }, lead),
@@ -1113,7 +1148,15 @@ fn plain_prefix(kind: Kind, text: &str) -> String {
         Kind::System => text.to_string(),
     }
 }
-fn styled_entry(entry: &Entry, width: usize) -> Vec<Line<'static>> {
+fn paint(enabled: bool, color: Color) -> Color {
+    if enabled {
+        color
+    } else {
+        Color::Reset
+    }
+}
+
+fn styled_entry(entry: &Entry, width: usize, color_enabled: bool) -> Vec<Line<'static>> {
     let (label, color) = match entry.kind {
         Kind::User => ("You", Color::Green),
         Kind::Agent => ("Agent", Color::Cyan),
@@ -1122,6 +1165,7 @@ fn styled_entry(entry: &Entry, width: usize) -> Vec<Line<'static>> {
         Kind::Notice => ("Notice", Color::Magenta),
         Kind::System => ("", Color::Gray),
     };
+    let color = paint(color_enabled, color);
     let body = if entry.kind == Kind::Agent {
         crate::markdown::render(&entry.text)
     } else {
@@ -1469,6 +1513,26 @@ mod tests {
         assert!(ui.input.is_empty());
         ui.clear_private();
         assert!(ui.history.entries.is_empty());
+    }
+    #[test]
+    fn no_color_disables_styles_and_settings_notices_stay_visible() {
+        use ratatui::backend::TestBackend;
+        assert_eq!(paint(false, Color::Red), Color::Reset);
+        assert_eq!(paint(true, Color::Red), Color::Red);
+        let mut ui = Ui::new(true).unwrap();
+        ui.settings = Some("SETTINGS\nrow".into());
+        ui.notice = "Could not save: bad value".into();
+        let frame = bear::Animator::new(Mood::Idle).frame(0.0);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| ui.render(f, Mood::Idle, &frame)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("Could not save"));
     }
     #[test]
     fn settings_selection_stays_visible_in_short_terminals() {

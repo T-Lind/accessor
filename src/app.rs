@@ -1,4 +1,5 @@
 use crate::cli::{Backend, Run};
+use crate::control::{ConversationAction, TranscriptionAction};
 use crate::session::{Action, Session};
 use crate::ui::{safe, Kind, Ui};
 use crate::{agent, audio, config, mascot, speech, wake, Input};
@@ -63,6 +64,10 @@ struct NotificationPoll {
     generation: u64,
     task: tokio::task::JoinHandle<Result<(usize, Vec<crate::notifications::Notification>)>>,
 }
+struct PresencePoll {
+    generation: u64,
+    task: tokio::task::JoinHandle<Result<Option<String>>>,
+}
 
 struct LiveAgent {
     tag: String,
@@ -83,6 +88,39 @@ fn wake_display(enabled: bool, last: &mut Option<Instant>) {
 
 /// Loose spoken-phrase match: case, punctuation and a leading wake code are
 /// ignored, so "29, start dictation" still matches "start dictation".
+const START_TRANSCRIPTION: &[&str] = &[
+    "start dictation",
+    "begin dictation",
+    "dictation mode",
+    "start journaling",
+    "begin journaling",
+    "start journal",
+    "private journal",
+    "enter transcription",
+    "start transcription",
+    "begin transcription",
+    "transcription mode",
+];
+const STOP_TRANSCRIPTION: &[&str] = &[
+    "stop dictation",
+    "end dictation",
+    "stop journaling",
+    "finish dictation",
+    "stop journal",
+    "exit transcription",
+    "stop transcription",
+    "end transcription",
+    "finish transcription",
+];
+
+fn canonical_setting_key(key: &str) -> &str {
+    match key {
+        "routing.routine" => "routing.main",
+        "routing.routine-model" => "routing.main-model",
+        other => other,
+    }
+}
+
 fn says(text: &str, phrases: &[&str]) -> bool {
     let normalized: String = text
         .to_lowercase()
@@ -626,6 +664,7 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut session_pin: Option<(String, Option<String>)> = None;
     let mut pending_stt: Option<String> = None;
     let mut stt_download: Option<tokio::task::JoinHandle<Result<(String, String)>>> = None;
+    let mut stt_download_id: Option<String> = None;
     let mut decider_download: Option<tokio::task::JoinHandle<Result<String>>> = None;
     let mut echo_guard = crate::echo::TextGuard::new();
     if let Some(provider) = &args.tts {
@@ -663,6 +702,7 @@ pub async fn run(mut args: Run) -> Result<()> {
         .unwrap_or_else(Instant::now);
     let mut last_organizer_poll = Instant::now();
     let mut last_notify_poll = Instant::now();
+    let mut last_presence_poll = Instant::now();
     let mut notice_count = crate::notifications::unread_count().unwrap_or(0);
     let mut organizer_error_warned = false;
     let mut notification_error_warned = false;
@@ -670,6 +710,8 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut poll_generation = 0_u64;
     let mut organizer_poll: Option<OrganizerPoll> = None;
     let mut notification_poll: Option<NotificationPoll> = None;
+    let mut presence_poll: Option<PresencePoll> = None;
+    let mut presence_error_warned = false;
     let mut notification_ack: Option<tokio::task::JoinHandle<Result<()>>> = None;
     let mut notification_cue: Option<tokio::task::JoinHandle<Result<()>>> = None;
     let wake_code = args
@@ -893,6 +935,8 @@ pub async fn run(mut args: Run) -> Result<()> {
     let mut last_reply: Option<String> = None;
     let mut busy = false;
     let mut approval = false;
+    let mut clear_pending = false;
+    let mut compact_pending = false;
     let mut mic_unavailable = !args.text;
     muted.store(false, Ordering::SeqCst);
     let mut eof = false;
@@ -982,7 +1026,265 @@ pub async fn run(mut args: Run) -> Result<()> {
     // Local-only dictation: transcribed on this machine and written to the
     // encrypted private journal, never sent to an agent or cloud.
     let mut dictation = false;
+    let mut dictation_pending = false;
     let mut dictation_cloud = (false, false);
+    macro_rules! reset_conversation {
+        () => {{
+            if let Some(job) = compaction.take() {
+                job.task.abort();
+            }
+            for (_, live) in agents.drain() {
+                let _ = live.tx.try_send(agent::CommandMessage::Shutdown);
+                live.task.abort();
+            }
+            agent_tx = None;
+            connected = false;
+            transcript.clear();
+            seen_history.clear();
+            last_route = None;
+            last_reply = None;
+            paused_speech = None;
+            turn_trace.clear();
+            interrupted_reply = None;
+            pending_prompt = None;
+            pending_fragment = None;
+            feedback.clear();
+            echo_guard.finish();
+            compact_pending = false;
+            clear_pending = false;
+        }};
+    }
+    macro_rules! start_compaction {
+        () => {{
+            if transcript.is_empty() {
+                Err(anyhow::anyhow!("No conversation to compact."))
+            } else if compaction.is_some() {
+                Err(anyhow::anyhow!("Compaction is already running."))
+            } else {
+                compaction = Some(CompactionJob::start(
+                    transcript.iter().cloned().collect(),
+                    &settings,
+                    args.codex_bin.as_ref(),
+                ));
+                Ok(if settings.routing.main == "mock" {
+                    "Compacting mock history locally.".to_string()
+                } else {
+                    format!(
+                        "Compacting with {} · {} · {}. Voice controls remain available.",
+                        settings.routing.compaction_harness,
+                        settings.routing.compaction_model,
+                        settings.routing.compaction_reasoning
+                    )
+                })
+            }
+        }};
+    }
+    macro_rules! start_dictation {
+        () => {{
+            if dictation {
+                Ok(false)
+            } else if busy || speaker.is_some() || !speech_queue.is_empty() {
+                Err(anyhow::anyhow!(
+                    "Finish or cancel the current work/playback before transcription."
+                ))
+            } else {
+                dictation_cloud = (
+                    cloud_stt.load(Ordering::SeqCst),
+                    streaming_stt.load(Ordering::SeqCst),
+                );
+                cloud_stt.store(false, Ordering::SeqCst);
+                streaming_stt.store(false, Ordering::SeqCst);
+                dictation = true;
+                dictation_pending = false;
+                session.open();
+                ui.message("Local-only transcription ON. Speech stays on this computer and is appended to the encrypted private journal; it is never sent to an agent or cloud. Say \"exit transcription\" or /dictate off to end.");
+                Ok(true)
+            }
+        }};
+    }
+    macro_rules! stop_dictation {
+        () => {{
+            dictation_pending = false;
+            if dictation {
+                cloud_stt.store(dictation_cloud.0, Ordering::SeqCst);
+                streaming_stt.store(dictation_cloud.1, Ordering::SeqCst);
+                dictation = false;
+                ui.message("Local-only transcription OFF.");
+                true
+            } else {
+                false
+            }
+        }};
+    }
+    // One live-apply path for `/config set`, the settings panel, the setup
+    // wizard, MCP settings updates, and direct settings writers. Callers still
+    // own their validation, preflight, and user-facing messages.
+    macro_rules! apply_settings {
+        ($next:expr, $keys:expr) => {{
+            let next: config::Settings = $next;
+            let keys: Vec<String> = $keys.iter().map(ToString::to_string).collect();
+            let changed = |key: &str| keys.iter().any(|item| item == key);
+            settings = next;
+
+            if changed("logging.enabled")
+                || changed("logging.level")
+                || changed("logging.max-mb")
+                || changed("logging.path")
+            {
+                crate::masterlog::init(&settings);
+            }
+
+            // Local-only transcription deliberately forces both cloud paths off.
+            // Remember the configured values so leaving dictation restores them,
+            // and never re-enable cloud STT while dictation is active.
+            if dictation {
+                dictation_cloud = (
+                    settings.stt.conversation == "cartesia",
+                    settings.stt.streaming,
+                );
+            } else {
+                cloud_stt.store(settings.stt.conversation == "cartesia", Ordering::SeqCst);
+                streaming_stt.store(settings.stt.streaming, Ordering::SeqCst);
+            }
+            lazy_stt.store(settings.stt.lazy, Ordering::SeqCst);
+            endpoint_ms.store(settings.stt.endpoint_ms, Ordering::Relaxed);
+            noise_control.set_enabled(settings.stt.noise_gate);
+            noise_control.set_highpass(settings.stt.denoise == "highpass");
+            noise_control.set_floor_db(settings.stt.noise_floor_db);
+            if changed("stt.engine") {
+                if let Ok(mut engine) = stt_engine.lock() {
+                    *engine = settings.stt.engine.clone();
+                }
+            }
+
+            if changed("wake-code") {
+                let wake = |attention| {
+                    wake::WakeCode::new(&settings.wake_code, &args.wake_alias)
+                        .map(|code| code.with_attention(attention))
+                };
+                if let (Ok(session_wake), Ok(auth)) =
+                    (wake(settings.wake_attention), wake(settings.wake_attention))
+                {
+                    session =
+                        Session::new(session_wake, Duration::from_secs(settings.idle_seconds));
+                    auth_wake = auth;
+                    epoch.fetch_add(1, Ordering::SeqCst);
+                }
+            } else if changed("idle-seconds") {
+                session.set_timeout(Duration::from_secs(settings.idle_seconds));
+            }
+            if changed("wake-code")
+                || changed("stt.wake-engine")
+                || changed("stt.wake-threshold")
+            {
+                apply_kws!();
+            }
+
+            speak = settings.speak;
+            if changed("speak") && !speak {
+                speech_queue.clear();
+                speaker = None;
+                echo_guard.finish();
+            }
+            if changed("sounds.think") {
+                think = None;
+            }
+            if changed("chat") {
+                ui.set_chat(&settings.chat);
+            }
+            if changed("wake-display") {
+                display.set_enabled(settings.wake_display);
+            }
+            if changed("routing.main") || changed("routing.main-model") {
+                session_pin = None;
+                if !busy {
+                    active_harness = settings.routing.main.clone();
+                    active_model = Some(
+                        settings
+                            .routing
+                            .main_model
+                            .clone()
+                            .unwrap_or_else(|| config::light_model(&active_harness).into()),
+                    );
+                }
+            }
+            if changed("microphone") {
+                microphone_name = settings.microphone.clone();
+                configured_microphone = settings.microphone.clone();
+                if let Some(mic) = &microphone {
+                    mic.reconnect(microphone_name.clone());
+                    ui.message("Switching microphone in the background...");
+                }
+            }
+
+            if changed("tts.provider")
+                || changed("tts.local-voice")
+                || changed("tts.piper-voice")
+                || changed("tts.voice")
+                || changed("tts.model")
+            {
+                if settings.tts.provider == "kokoro"
+                    && !crate::speech::kokoro_ready(&settings)
+                    && tts_install.is_none()
+                {
+                    ui.message("Kokoro isn't installed yet. Downloading the local runtime and voice model now; this is a one-time install.");
+                    tts_install = Some(crate::speech::install_kokoro(&settings, &workspace));
+                } else if settings.tts.provider == "kokoro"
+                    && crate::speech::kokoro_ready(&settings)
+                {
+                    let tts = settings.tts.clone();
+                    tokio::spawn(async move {
+                        let _ = crate::speech::warm_local(&tts).await;
+                    });
+                }
+                if settings.tts.provider == "piper"
+                    && !crate::speech::piper_ready(&settings)
+                    && tts_install.is_none()
+                {
+                    ui.message("Piper isn't installed yet. Downloading the fast local engine and voice now; this is a one-time install.");
+                    tts_install = Some(crate::speech::install_piper(&settings, &workspace));
+                }
+                if settings.tts.provider == "cartesia"
+                    && voice_lookup.is_none()
+                    && config::optional_secret("cartesia", "CARTESIA_API_KEY").is_some()
+                {
+                    voice_lookup = Some(tokio::spawn(crate::speech::fetch_voices()));
+                    ui.message("Refreshing available Cartesia voices...");
+                }
+            }
+
+            if let Some(menu) = &panel {
+                ui.settings(Some(menu.display(&settings, connected, &models)));
+            }
+            muted.store(
+                panel.is_some()
+                    || pending_secret.is_some()
+                    || wizard.is_some()
+                    || (speaker.is_some() && !settings.barge_in),
+                Ordering::SeqCst,
+            );
+            if ["assets-dir", "codex-bin", "stt.threads", "stt.spin"]
+                .iter()
+                .any(|key| changed(key))
+            {
+                ui.message("Restart Accessor to apply this device/runtime change.");
+            }
+        }};
+    }
+    // Cue playback is blocking (~0.5 s). Keep it off the event loop and restore
+    // the capture gate when the cue actually finishes.
+    macro_rules! sleep_cue {
+        ($restore:expr) => {{
+            let restore = $restore;
+            let gate = muted.clone();
+            let volume = settings.sounds.sleep;
+            gate.store(true, Ordering::SeqCst);
+            tokio::task::spawn_blocking(move || {
+                let _ = audio::sleep_chime(volume);
+                gate.store(restore, Ordering::SeqCst);
+            });
+        }};
+    }
     loop {
         if configured_microphone != settings.microphone {
             configured_microphone = settings.microphone.clone();
@@ -1029,6 +1331,40 @@ pub async fn run(mut args: Run) -> Result<()> {
             streaming_stt.store(dictation_cloud.1, Ordering::SeqCst);
             dictation = false;
             ui.message("Local-only dictation OFF (conversation closed).");
+        }
+        if clear_pending
+            && !access.locked()
+            && !busy
+            && worker.is_none()
+            && speaker.is_none()
+            && speech_queue.is_empty()
+        {
+            reset_conversation!();
+            ui.message("Conversation cleared. Accessor history and native harness sessions reset; memory, notes, notifications, and journal kept.");
+        }
+        if compact_pending && !access.locked() && !busy && worker.is_none() && compaction.is_none()
+        {
+            compact_pending = false;
+            match start_compaction!() {
+                Ok(message) => ui.message(message),
+                Err(error) => ui.message(format!("Compaction not started: {error}")),
+            }
+        }
+        if dictation_pending
+            && !access.locked()
+            && !busy
+            && worker.is_none()
+            && speaker.is_none()
+            && speech_queue.is_empty()
+        {
+            match start_dictation!() {
+                Ok(true) => {}
+                Ok(false) => dictation_pending = false,
+                Err(error) => {
+                    dictation_pending = false;
+                    ui.message(format!("Transcription not started: {error}"));
+                }
+            }
         }
         if lock_requested || access.expired(settings.security.lock_seconds, Instant::now()) {
             let discard_pending = epoch.load(Ordering::SeqCst) != 0;
@@ -1081,6 +1417,7 @@ pub async fn run(mut args: Run) -> Result<()> {
             if let Some(job) = stt_download.take() {
                 job.abort();
             }
+            stt_download_id = None;
             if let Some(job) = decider_download.take() {
                 job.abort();
             }
@@ -1088,6 +1425,9 @@ pub async fn run(mut args: Run) -> Result<()> {
             pending_setting = None;
             pending_handoff = None;
             pending_stt = None;
+            clear_pending = false;
+            compact_pending = false;
+            dictation_pending = false;
             feedback.clear();
             panel = None;
             wizard = None;
@@ -1140,7 +1480,10 @@ pub async fn run(mut args: Run) -> Result<()> {
             ui.clear_private();
             ui.secret(false);
             if cues {
-                let _ = audio::sleep_chime(settings.sounds.sleep);
+                let volume = settings.sounds.sleep;
+                tokio::task::spawn_blocking(move || {
+                    let _ = audio::sleep_chime(volume);
+                });
             }
             muted.store(!settings.security.spoken_unlock, Ordering::SeqCst);
             ui.message("Locked. Work and playback stopped; scheduled tasks and events wait. Use /unlock, say your wake code then 'unlock [passphrase]', or say both in one utterance. Prior external actions cannot be undone.");
@@ -1469,22 +1812,9 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 match crate::settings_api::save(&settings,&changes) {
                                     Err(e)=>serde_json::json!({"error":format!("{e:#}")}),
                                     Ok(next)=>{
-                                        settings=next;
-                                        crate::masterlog::init(&settings);
-                                        speak=settings.speak;
-                                        cloud_stt.store(settings.stt.conversation=="cartesia",Ordering::SeqCst);
-                                        streaming_stt.store(settings.stt.streaming,Ordering::SeqCst);
-                                        noise_control.set_enabled(settings.stt.noise_gate);
-                                        noise_control.set_highpass(settings.stt.denoise=="highpass");
-                                        ui.set_chat(&settings.chat);
-                                        if !speak {speech_queue.clear();speaker=None;echo_guard.finish();}
-                                        if changes.get("sounds.think").is_some() {think=None;}
-                                        if changes.get("idle-seconds").is_some() {session.set_timeout(Duration::from_secs(settings.idle_seconds));}
-                                        if changes.get("wake-display").is_some() {display.set_enabled(settings.wake_display);}
-                                        if changes.get("wake-code").is_some() || changes.get("idle-seconds").is_some() {if let Ok(w)=wake::WakeCode::new(&settings.wake_code,&args.wake_alias){auth_wake=w;}}
-                                        if changes.get("routing.main").is_some() || changes.get("routing.main-model").is_some() {session_pin=None;}
-                                        muted.store(panel.is_some() || pending_secret.is_some() || wizard.is_some() || (speaker.is_some() && !settings.barge_in),Ordering::SeqCst);
-                                        let keys=changes.as_object().unwrap().keys().cloned().collect::<Vec<_>>().join(", ");
+                                        let keys=changes.as_object().map(|object| object.keys().cloned().collect::<Vec<_>>()).unwrap_or_default();
+                                        apply_settings!(next, &keys);
+                                        let keys=keys.join(", ");
                                         ui.message(format!("MCP: settings saved ({keys}). Voice changes apply to next playback; agent changes to the next turn."));
                                         serde_json::json!({"receipt":"Saved and applied to this Accessor session. Voice changes affect next playback; harness/model/reasoning changes affect next turn. Running work is unchanged.","settings":crate::settings_api::read(&settings)})
                                     }
@@ -1510,6 +1840,70 @@ pub async fn run(mut args: Run) -> Result<()> {
                                     Ok(message)=>{ui.message(format!("MCP: {message}"));serde_json::json!({"receipt":message,"harness":harness,"model":model,"reasoning":reasoning})},
                                     Err(e)=>serde_json::json!({"error":format!("{e:#}")}),
                                 }
+                            },
+                            crate::control::Action::Conversation{action}=>match action {
+                                ConversationAction::Status=>{
+                                    let tokens=crate::usage::approx_tokens(&crate::route::transcript_text(transcript.make_contiguous()));
+                                    serde_json::json!({
+                                        "turns":transcript.len(),
+                                        "approx_tokens":tokens,
+                                        "compacting":compaction.is_some(),
+                                        "compaction_queued":compact_pending,
+                                        "clear_queued":clear_pending,
+                                        "busy":busy || worker.is_some(),
+                                        "native_sessions":agents.keys().cloned().collect::<Vec<_>>(),
+                                        "note":"Counts Accessor's handoff history only. Native harness context is separate; clear restarts those sessions."
+                                    })
+                                }
+                                ConversationAction::Compact=>{
+                                    if compaction.is_some(){
+                                        serde_json::json!({"error":"Compaction is already running."})
+                                    } else if busy || worker.is_some() {
+                                        compact_pending=true;
+                                        serde_json::json!({"receipt":"Compaction queued; it will start after the current turn finishes.","queued":true})
+                                    } else {
+                                        match start_compaction!() {
+                                            Ok(receipt)=>serde_json::json!({"receipt":receipt,"queued":false}),
+                                            Err(error)=>serde_json::json!({"error":format!("{error}")}),
+                                        }
+                                    }
+                                }
+                                ConversationAction::Clear=>{
+                                    if busy || worker.is_some() || speaker.is_some() || !speech_queue.is_empty() {
+                                        clear_pending=true;
+                                        serde_json::json!({"receipt":"Clear queued; it will run after the current turn and playback finish.","queued":true})
+                                    } else {
+                                        reset_conversation!();
+                                        ui.message("Conversation cleared. Accessor history and native harness sessions reset; memory, notes, notifications, and journal kept.");
+                                        serde_json::json!({"receipt":"Conversation cleared. Accessor history and native harness sessions reset; memory, notes, notifications, and journal kept.","queued":false})
+                                    }
+                                }
+                            },
+                            crate::control::Action::Transcription{action}=>match action {
+                                TranscriptionAction::Start=>{
+                                    if dictation {
+                                        serde_json::json!({"receipt":"Local-only transcription is already on.","active":true})
+                                    } else if busy || speaker.is_some() || !speech_queue.is_empty() {
+                                        dictation_pending=true;
+                                        serde_json::json!({"receipt":"Transcription will start after the current reply/playback finishes.","pending":true})
+                                    } else {
+                                        match start_dictation!() {
+                                            Ok(_)=>serde_json::json!({"receipt":"Local-only transcription on. Speech is written to the encrypted private journal and never sent to an agent or cloud.","active":true,"target":"encrypted journal"}),
+                                            Err(error)=>serde_json::json!({"error":format!("{error}")}),
+                                        }
+                                    }
+                                }
+                                TranscriptionAction::Stop=>{
+                                    let stopped=stop_dictation!();
+                                    serde_json::json!({"stopped":stopped,"active":false,"receipt":"Local-only transcription off."})
+                                }
+                                TranscriptionAction::Status=>serde_json::json!({
+                                    "active":dictation,
+                                    "pending":dictation_pending,
+                                    "entries":crate::journal::count().ok(),
+                                    "target":"encrypted private journal",
+                                    "cloud":false
+                                }),
                             },
                             crate::control::Action::Status=>serde_json::json!({"awake":session.active(),"busy":busy || worker.is_some(),"speaking":speaker.is_some(),"alarm_ringing":alarm.is_some(),"barge_in":settings.barge_in,"wake_checks":wake_checks,"wake_hits":wake_hits,"wake_echoes":wake_echoes,"wake_decode_ms":wake_decode_ms,"audio":audio_diagnostics.summary(),"speech":speech_state.summary(),"capture_paused":muted.load(Ordering::SeqCst),"wake_errors":wake_errors}),
                         };
@@ -1652,8 +2046,9 @@ pub async fn run(mut args: Run) -> Result<()> {
                     Input::IgnoredVoice{text,reason,epoch:e,confidence}=>{if e==epoch.load(Ordering::SeqCst) && session.active() {ui.ignored(&text,&reason,confidence_note(confidence));}continue;},
                     Input::NoiseCalibrated{floor_db,epoch:e}=>{
                         if e==epoch.load(Ordering::SeqCst) {
-                            match settings.set("stt.noise-floor-db",&format!("{floor_db:.1}")) {
-                                Ok(())=>{noise_control.set_floor_db(settings.stt.noise_floor_db);ui.message(format!("Room noise calibrated: floor {:.1} dBFS. Steady noise below this is gated before transcription.",settings.stt.noise_floor_db));}
+                            let mut next=settings.clone();
+                            match next.set("stt.noise-floor-db",&format!("{floor_db:.1}")) {
+                                Ok(())=>{apply_settings!(next,&["stt.noise-floor-db"]);ui.message(format!("Room noise calibrated: floor {:.1} dBFS. Steady noise below this is gated before transcription.",settings.stt.noise_floor_db));}
                                 Err(err)=>ui.message(format!("Measured {floor_db:.1} dBFS but could not save it: {err:#}")),
                             }
                         }
@@ -1669,8 +2064,9 @@ pub async fn run(mut args: Run) -> Result<()> {
                 if pending_stt.is_some() && !text.starts_with('/') {
                     match stt_confirm(&text) {
                         Some(true) => {
+                            let target=pending_stt.clone();
                             match start_stt_download(&settings, &mut pending_stt, &mut stt_download) {
-                                Ok(msg) => ui.message(msg),
+                                Ok(msg) => {stt_download_id=target;ui.message(msg);},
                                 Err(e) => ui.message(format!("{e:#}")),
                             }
                             continue;
@@ -1712,21 +2108,24 @@ pub async fn run(mut args: Run) -> Result<()> {
                         match config::save_secret(name,text.trim()) {Ok(())=>ui.message(saved.0),Err(e)=>ui.message(format!("Could not save {} key: {e:#}", saved.1))}
                         pending_secret=None;ui.secret(false);muted.store(panel.is_some() || (speaker.is_some() && !settings.barge_in),Ordering::SeqCst);epoch.fetch_add(1,Ordering::SeqCst);continue;
                     }
-                    if let Some(w)=&mut wizard {
+                    if let Some(mut w)=wizard.take() {
                         match w.answer(&text) {
                             Ok(Some(next))=>{
                                 match next.save() {
-                                    Ok(())=>{settings=next;speak=settings.speak;crate::masterlog::init(&settings);display.set_enabled(settings.wake_display);auth_wake=wake::WakeCode::new(&settings.wake_code,&args.wake_alias)?;session=Session::new(wake::WakeCode::new(&settings.wake_code,&args.wake_alias)?,Duration::from_secs(settings.idle_seconds));apply_kws!();ui.message("Setup saved. Use /tts test to hear the selected voice; /tts key adds a Cartesia key.");
+                                    Ok(())=>{
+                                        apply_settings!(next, &["wake-code","idle-seconds","tts.provider","speak","computer.enabled"]);
+                                        ui.message("Setup saved. Use /tts test to hear the selected voice; /tts key adds a Cartesia key.");
                                         if speak && intro_marker.as_ref().is_some_and(|path|!path.exists()) {
                                             speech_queue.push_back(crate::settings_ui::device_intro(&settings));
                                             if let Some(path)=&intro_marker {let _=std::fs::write(path,"1");}
-                                        }},
+                                        }
+                                    }
                                     Err(e)=>ui.message(format!("Could not save settings: {e:#}")),
                                 }
-                                wizard=None;muted.store(panel.is_some() || (speaker.is_some() && !settings.barge_in),Ordering::SeqCst);epoch.fetch_add(1,Ordering::SeqCst);
+                                muted.store(panel.is_some() || (speaker.is_some() && !settings.barge_in),Ordering::SeqCst);epoch.fetch_add(1,Ordering::SeqCst);
                             }
-                            Ok(None)=>ui.message(w.question()),
-                            Err(e)=>ui.message(format!("{e:#}\n{}",w.question())),
+                            Ok(None)=>{ui.message(w.question());wizard=Some(w);}
+                            Err(e)=>{ui.message(format!("{e:#}\n{}",w.question()));wizard=Some(w);}
                         }
                     }
                     continue;
@@ -1735,18 +2134,29 @@ pub async fn run(mut args: Run) -> Result<()> {
                     let parts: Vec<_>=text.split_whitespace().collect();
                     if let [_, role, harness, model, reasoning]=parts.as_slice() {
                         match crate::settings_ui::apply_agent(&mut settings,role,harness,model,reasoning) {
-                            Ok(())=>{if *role=="main" {session_pin=None;if !busy {active_harness=settings.routing.main.clone();active_model=settings.routing.main_model.clone().or_else(||Some(config::light_model(&active_harness).into()));}}ui.message(format!("Saved {role} agent: {harness} · {model} · {reasoning}."));},
+                            Ok(())=>{
+                                let keys=match *role {
+                                    "main"=>vec!["routing.main".to_string(),"routing.main-model".to_string(),"routing.reasoning".to_string(),"routing.coordinator".to_string()],
+                                    "coding"=>vec!["routing.coding".to_string(),"model".to_string(),"routing.coding-reasoning".to_string()],
+                                    "plugin"=>vec!["routing.plugin-use-main".to_string(),"agent".to_string(),"routing.plugin-model".to_string(),"routing.plugin-reasoning".to_string()],
+                                    "compaction"=>vec!["routing.compaction-harness".to_string(),"routing.compaction-model".to_string(),"routing.compaction-reasoning".to_string()],
+                                    _=>Vec::new(),
+                                };
+                                apply_settings!(settings.clone(), &keys);
+                                ui.message(format!("Saved {role} agent: {harness} · {model} · {reasoning}."));
+                            }
                             Err(e)=>ui.message(format!("Agent settings unchanged: {e:#}")),
                         }
+                    } else {
+                        ui.message("Usage: /agent-settings ROLE HARNESS MODEL REASONING");
                     }
-                    if let Some(menu)=&panel {ui.settings(Some(menu.display(&settings,connected,&models)));}
                     continue;
                 }
                 if typed && text.starts_with('/') {
                     let local=match crate::dashboard::parse(&text,&settings) {Ok(command)=>command,Err(e)=>{ui.message(format!("{e:#}"));continue;}};
                     if let Some(command)=local {
                         use crate::dashboard::LocalCommand;
-                        if !matches!(&command,LocalCommand::Settings|LocalCommand::SettingsNav(_)|LocalCommand::Set(..)|LocalCommand::Persona(..)) {panel=None;ui.settings(None);muted.store(speaker.is_some() && !settings.barge_in,Ordering::SeqCst);}
+                        if !matches!(&command,LocalCommand::Settings|LocalCommand::SettingsNav(_)|LocalCommand::SettingsFind(_)|LocalCommand::Setting(_)|LocalCommand::Set(..)|LocalCommand::ConfigGet(_)|LocalCommand::ConfigList(_)|LocalCommand::ConfigReset(_)|LocalCommand::Persona(..)) {panel=None;ui.settings(None);muted.store(speaker.is_some() && !settings.barge_in,Ordering::SeqCst);}
                         match command {
                             LocalCommand::Settings=>{
                                 panel=Some(crate::settings_ui::Panel::default());
@@ -1781,7 +2191,22 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 }
                             }
                             LocalCommand::Help=>ui.message(crate::dashboard::help()),
+                            LocalCommand::SettingsFind(term)=>ui.message(crate::settings_ui::search(&settings,&term)),
+                            LocalCommand::Setting(key)=>ui.message(crate::settings_ui::describe(&settings,&key)),
                             LocalCommand::Config=>ui.message(crate::dashboard::summary(&settings)),
+                            LocalCommand::ConfigGet(key)=>ui.message(crate::settings_ui::describe(&settings,&key)),
+                            LocalCommand::ConfigList(prefix)=>{
+                                let prefix=prefix.to_lowercase();
+                                let keys=settings.keys().into_iter().filter(|key|prefix.is_empty()||key.to_lowercase().starts_with(&prefix)).collect::<Vec<_>>();
+                                ui.message(if keys.is_empty() {"No settings match that prefix.".into()} else {format!("Settings ({}):\n{}",keys.len(),keys.join("\n"))});
+                            }
+                            LocalCommand::ConfigReset(key)=>{
+                                let mut candidate=settings.clone();
+                                match candidate.set(&key,"default") {
+                                    Ok(())=>{let canonical=canonical_setting_key(&key);apply_settings!(candidate,&[canonical.to_string()]);ui.message(format!("Reset {key} to its default."));}
+                                    Err(e)=>ui.message(format!("Setting not reset: {e:#}")),
+                                }
+                            }
                             LocalCommand::Locations=>ui.message(crate::config::locations(&settings)),
                             LocalCommand::Tts=>ui.message(crate::dashboard::tts_help(&settings)),
                             LocalCommand::Watch(rest)=>match watch_command(&rest,&settings){Ok(message)=>ui.message(message),Err(e)=>ui.message(format!("{e:#}"))},
@@ -1837,6 +2262,8 @@ pub async fn run(mut args: Run) -> Result<()> {
 
                                 if key=="stt.engine" {
                                     pending_stt=None;
+                                    if let Some(task)=stt_download.take() { task.abort(); }
+                                    stt_download_id=None;
                                     if let Some(id)=crate::stt_models::resolve(&value) {
                                         match settings.assets().and_then(|assets| crate::stt_models::confirm_text(&assets, id)) {
                                             Ok(msg) if !msg.is_empty() => {
@@ -1852,26 +2279,9 @@ pub async fn run(mut args: Run) -> Result<()> {
                                 let mut candidate=settings.clone();
                                 match candidate.set(&key,&value) {
                                     Ok(())=>{
-                                        settings=candidate;
-                                        crate::masterlog::init(&settings);
-                                        cloud_stt.store(settings.stt.conversation=="cartesia", Ordering::SeqCst);
-                                        lazy_stt.store(settings.stt.lazy, Ordering::SeqCst);
-                                        streaming_stt.store(settings.stt.streaming, Ordering::SeqCst);
-                                        if key=="stt.noise-gate" {noise_control.set_enabled(settings.stt.noise_gate);}
-                                        if key=="stt.noise-floor-db" {noise_control.set_floor_db(settings.stt.noise_floor_db);}
-                                        if key=="stt.denoise" {noise_control.set_highpass(settings.stt.denoise=="highpass");}
-                                        if key=="stt.wake-engine" || key=="stt.wake-threshold" {apply_kws!();}
-                                        if key=="speak" {speak=settings.speak;}
-                                        if key=="chat" {ui.set_chat(&settings.chat);}
-                                        if key=="wake-display" {display.set_enabled(settings.wake_display);}
-                                        if key=="wake-code" || key=="idle-seconds" {if let Ok(w)=wake::WakeCode::new(&settings.wake_code,&args.wake_alias){auth_wake=w;}session=Session::new(wake::WakeCode::new(&settings.wake_code,&args.wake_alias)?,Duration::from_secs(settings.idle_seconds));epoch.fetch_add(1,Ordering::SeqCst);apply_kws!();}
-                                        if key=="speak" && !speak {speech_queue.clear();speaker=None;echo_guard.finish();}
-                                        muted.store(panel.is_some() || (speaker.is_some() && !settings.barge_in),Ordering::SeqCst);
+                                        let canonical=canonical_setting_key(&key);
+                                        apply_settings!(candidate, &[canonical.to_string()]);
                                         ui.message(format!("Saved {key}: {value}."));
-                                        if key=="microphone" {
-                                            microphone_name=settings.microphone.clone();configured_microphone=microphone_name.clone();
-                                            if let Some(mic)=&microphone {mic.reconnect(microphone_name.clone());ui.message("Switching microphone in the background...");}
-                                        }
                                         if key=="stt.conversation" {
                                             if settings.stt.conversation=="cartesia" {
                                                 ui.message(format!("After-wake STT is now external Cartesia Ink-2. Wake spotting stays on-device ({}); cloud STT never runs while WHITE.", settings.stt.engine));
@@ -1883,31 +2293,12 @@ pub async fn run(mut args: Run) -> Result<()> {
                                             }
                                         }
                                         if key=="stt.engine" {
-                                            if let Ok(mut engine)=stt_engine.lock() { *engine = settings.stt.engine.clone(); }
                                             ui.message("Local STT engine updated. The next utterance uses it.");
                                         }
                                         if key=="tts.provider" && settings.tts.provider=="cartesia" {
                                             ui.message("That is spoken output (TTS), not transcription. Use Speech → After wake STT, or /stt provider cartesia, for Ink-2.");
-                                            if voice_lookup.is_none() && config::optional_secret("cartesia","CARTESIA_API_KEY").is_some() {
-                                                voice_lookup=Some(tokio::spawn(crate::speech::fetch_voices()));
-                                                ui.message("Refreshing available Cartesia voices...");
-                                            }
-                                        }
-                                        if settings.tts.provider=="kokoro" && !crate::speech::kokoro_ready(&settings) && tts_install.is_none() {
-                                            ui.message("Kokoro isn't installed yet. Downloading the local runtime and voice model now; this is a one-time install.");
-                                            tts_install=Some(crate::speech::install_kokoro(&settings,&workspace));
-                                        }
-                                        if settings.tts.provider=="kokoro" && crate::speech::kokoro_ready(&settings) {
-                                            let tts=settings.tts.clone();
-                                            tokio::spawn(async move { let _ = crate::speech::warm_local(&tts).await; });
-                                        }
-                                        if settings.tts.provider=="piper" && !crate::speech::piper_ready(&settings) && tts_install.is_none() {
-                                            ui.message("Piper isn't installed yet. Downloading the fast local engine and voice now; this is a one-time install.");
-                                            tts_install=Some(crate::speech::install_piper(&settings,&workspace));
                                         }
                                         if spoken_setting && speak {speech_queue.push_back(format!("Selected {key}: {value}."));}
-                                        if let Some(menu)=&panel {ui.settings(Some(menu.display(&settings,connected,&models)));}
-                                        if ["assets-dir","codex-bin","stt.threads","stt.spin"].contains(&key.as_str()) {ui.message("Restart Accessor to apply this device/runtime change.");}
                                     }
                                     Err(e)=>ui.message(format!("Setting not changed: {e:#}")),
                                 }
@@ -1915,33 +2306,19 @@ pub async fn run(mut args: Run) -> Result<()> {
                             LocalCommand::Persona(provider,voice)=>{
                                 let voice_key=if provider=="kokoro"{"tts.local-voice"}else if provider=="piper"{"tts.piper-voice"}else{"tts.voice"};
                                 let mut candidate=settings.clone();
-                                let mut applied=candidate.set("tts.provider",&provider);
+                                // Apply both fields in memory, then save once, so a
+                                // bad voice cannot leave the provider half-changed.
+                                let mut applied=candidate.assign("tts.provider",&provider);
                                 if applied.is_ok() && !voice.is_empty() && provider!="system" && provider!="off" {
-                                    applied=candidate.set(voice_key,&voice);
+                                    applied=candidate.assign(voice_key,&voice);
                                 }
+                                if applied.is_ok() { applied=candidate.save(); }
                                 match applied {
                                     Ok(())=>{
-                                        settings=candidate;
-                                        cloud_stt.store(settings.stt.conversation=="cartesia",Ordering::SeqCst);
+                                        apply_settings!(candidate, &["tts.provider".to_string(), voice_key.to_string()]);
                                         let label=crate::settings_ui::voice_persona_label(&settings);
                                         ui.message(format!("Voice persona set: {label}."));
-                                        if settings.tts.provider=="kokoro" && !crate::speech::kokoro_ready(&settings) && tts_install.is_none() {
-                                            ui.message("Kokoro isn't installed yet. Downloading the local runtime and voice model now; this is a one-time install.");
-                                            tts_install=Some(crate::speech::install_kokoro(&settings,&workspace));
-                                        }
-                                        if settings.tts.provider=="kokoro" && crate::speech::kokoro_ready(&settings) {
-                                            let tts=settings.tts.clone();
-                                            tokio::spawn(async move { let _ = crate::speech::warm_local(&tts).await; });
-                                        }
-                                        if settings.tts.provider=="piper" && !crate::speech::piper_ready(&settings) && tts_install.is_none() {
-                                            ui.message("Piper isn't installed yet. Downloading the fast local engine and voice now; this is a one-time install.");
-                                            tts_install=Some(crate::speech::install_piper(&settings,&workspace));
-                                        }
-                                        if settings.tts.provider=="cartesia" && voice_lookup.is_none() && config::optional_secret("cartesia","CARTESIA_API_KEY").is_some() {
-                                            voice_lookup=Some(tokio::spawn(crate::speech::fetch_voices()));
-                                        }
                                         if speak {speech_queue.push_back(format!("Voice set to {label}."));}
-                                        if let Some(menu)=&panel {ui.settings(Some(menu.display(&settings,connected,&models)));}
                                     }
                                     Err(e)=>ui.message(format!("Voice not changed: {e:#}")),
                                 }
@@ -1970,20 +2347,16 @@ pub async fn run(mut args: Run) -> Result<()> {
                             LocalCommand::Dictate(requested)=>{
                                 panel=None;ui.settings(None);
                                 let want=requested.unwrap_or(!dictation);
-                                if want && !dictation {
-                                    if busy || speaker.is_some() {ui.message("Cancel or finish current work/playback before dictation.");continue;}
-                                    dictation_cloud=(cloud_stt.load(Ordering::SeqCst),streaming_stt.load(Ordering::SeqCst));
-                                    cloud_stt.store(false,Ordering::SeqCst);
-                                    streaming_stt.store(false,Ordering::SeqCst);
-                                    dictation=true;
-                                    ui.message("Local-only dictation ON. Speech is transcribed on this computer and written to the encrypted private journal; it is never sent to an agent or cloud. Say \"stop dictation\" or /dictate off to end.");
-                                } else if !want && dictation {
-                                    cloud_stt.store(dictation_cloud.0,Ordering::SeqCst);
-                                    streaming_stt.store(dictation_cloud.1,Ordering::SeqCst);
-                                    dictation=false;
-                                    ui.message("Local-only dictation OFF.");
+                                if want {
+                                    match start_dictation!() {
+                                        Ok(true)=>{},
+                                        Ok(false)=>ui.message("Local-only transcription is already on. Say \"exit transcription\" or /dictate off to end."),
+                                        Err(error)=>ui.message(format!("{error}")),
+                                    }
+                                } else if dictation {
+                                    stop_dictation!();
                                 } else {
-                                    ui.message(if dictation {"Dictation is already on. Say \"stop dictation\" or /dictate off to end."}else{"Enable local-only dictation with /dictate on, or say \"start dictation\" while awake."});
+                                    ui.message("Local-only transcription is already off. Say \"enter transcription\" or /dictate on to start.");
                                 }
                             }
                             LocalCommand::Noise(action)=>{
@@ -1996,8 +2369,9 @@ pub async fn run(mut args: Run) -> Result<()> {
                                         ui.message("Calibrating room noise for 3 seconds. Please stay quiet.");
                                     }
                                     "reset"=>{
-                                        match settings.set("stt.noise-floor-db",&format!("{:.1}",config::Stt::default().noise_floor_db)) {
-                                            Ok(())=>{noise_control.set_floor_db(settings.stt.noise_floor_db);ui.message("Room-noise floor reset to the default; it will re-learn while you are silent.");}
+                                        let mut next=settings.clone();
+                                        match next.set("stt.noise-floor-db",&format!("{:.1}",config::Stt::default().noise_floor_db)) {
+                                            Ok(())=>{apply_settings!(next,&["stt.noise-floor-db"]);ui.message("Room-noise floor reset to the default; it will re-learn while you are silent.");}
                                             Err(e)=>ui.message(format!("Could not reset the noise floor: {e:#}")),
                                         }
                                     }
@@ -2119,7 +2493,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                             think=None;silence_reply=true;speech_queue.clear();paused_speech=speaker.as_ref().and_then(|job|job.remaining());speaker=None;echo_guard.finish();
                             muted.store(false,Ordering::SeqCst);
                             ui.message("Asleep. Waiting for wake code.");
-                            if cues { muted.store(true,Ordering::SeqCst); if let Err(e)=audio::sleep_chime(settings.sounds.sleep) { ui.message(format!("Sleep chime unavailable: {}",safe(&e.to_string()))); } muted.store(false,Ordering::SeqCst); }
+                            if cues { sleep_cue!(false); }
                         }
                         ["/mute"] | ["/unmute"] => ui.message("Separate mute mode was removed. Use /sleep; say your wake code to listen again. Use the hardware/OS microphone switch for privacy."),
                         ["/memory"] => {
@@ -2189,13 +2563,14 @@ pub async fn run(mut args: Run) -> Result<()> {
                             if text.trim()=="/stop" {
                                 session.close();
                                 ui.message("Stopped. Waiting for wake code.");
-                                if cues { muted.store(true,Ordering::SeqCst); if let Err(e)=audio::sleep_chime(settings.sounds.sleep) { ui.message(format!("Sleep chime unavailable: {}",safe(&e.to_string()))); } muted.store(false,Ordering::SeqCst); }
+                                if cues { sleep_cue!(false); }
                             }
                             event_cancelled=true;silence_reply=true;
                             speech_queue.clear();
                             if let Some(live)=agents.get_mut(&active_harness) { live.first=None; }
                             pending_prompt=None;pending_setting=None;pending_stt=None;
                             if let Some(task)=stt_download.take() { task.abort(); }
+                            stt_download_id=None;
                             if let Some(task)=decider_download.take() { task.abort(); }
                             if let Some(tx) = &agent_tx { cancelled_turn=true;cancel_started=Some(Instant::now());let _ = tx.try_send(agent::CommandMessage::Cancel); }
                             if let Some(job) = speaker.take() { job.cancel(); muted.store(panel.is_some() || (speaker.is_some() && !settings.barge_in),Ordering::SeqCst); }
@@ -2224,11 +2599,8 @@ pub async fn run(mut args: Run) -> Result<()> {
                     continue;
                 }
                 if dictation {
-                    if says(&text, &["stop dictation","end dictation","stop journaling","finish dictation","stop journal"]) {
-                        cloud_stt.store(dictation_cloud.0,Ordering::SeqCst);
-                        streaming_stt.store(dictation_cloud.1,Ordering::SeqCst);
-                        dictation=false;
-                        ui.message("Local-only dictation OFF.");
+                    if says(&text, STOP_TRANSCRIPTION) {
+                        stop_dictation!();
                     } else if !text.trim().is_empty() {
                         match crate::journal::append(&text) {
                             Ok(count)=>ui.message(format!("Journaled locally (private, {count} entries).")),
@@ -2237,13 +2609,12 @@ pub async fn run(mut args: Run) -> Result<()> {
                     }
                     continue;
                 }
-                if says(&text, &["start dictation","begin dictation","dictation mode","start journaling","start journal","private journal"]) {
-                    if busy || speaker.is_some() {ui.message("Cancel or finish current work/playback before dictation.");continue;}
-                    dictation_cloud=(cloud_stt.load(Ordering::SeqCst),streaming_stt.load(Ordering::SeqCst));
-                    cloud_stt.store(false,Ordering::SeqCst);
-                    streaming_stt.store(false,Ordering::SeqCst);
-                    dictation=true;
-                    ui.message("Local-only dictation ON. Speech is transcribed on this computer and written to the encrypted private journal; it is never sent to an agent or cloud. Say \"stop dictation\" to end.");
+                if says(&text, START_TRANSCRIPTION) {
+                    match start_dictation!() {
+                        Ok(true)=>{},
+                        Ok(false)=>ui.message("Local-only transcription is already on. Say \"exit transcription\" or /dictate off to end."),
+                        Err(error)=>ui.message(format!("{error}")),
+                    }
                     continue;
                 }
                 // The wake code interrupts transport immediately. Intent is decided later.
@@ -2298,7 +2669,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                         alarm=None;
                         think=None;silence_reply=true;speech_queue.clear();speaker=None;echo_guard.finish();muted.store(false,Ordering::SeqCst);epoch.fetch_add(1,Ordering::SeqCst);
                         ui.message("Asleep. Waiting for wake code.");
-                        if cues { muted.store(true,Ordering::SeqCst); if let Err(e)=audio::sleep_chime(settings.sounds.sleep) { ui.message(format!("Sleep chime unavailable: {}",safe(&e.to_string()))); } muted.store(false,Ordering::SeqCst); epoch.fetch_add(1,Ordering::SeqCst); }
+                        if cues { sleep_cue!(false); epoch.fetch_add(1,Ordering::SeqCst); }
                     }
                     Action::Cancel | Action::Stop => {
                         if let Some(job)=compaction.take() {job.task.abort();}
@@ -2309,7 +2680,7 @@ pub async fn run(mut args: Run) -> Result<()> {
                         think=None;
                         if matches!(action,Action::Stop) {
                             session.close();ui.message("Stopped. Waiting for wake code.");
-                            if cues { muted.store(true,Ordering::SeqCst); if let Err(e)=audio::sleep_chime(settings.sounds.sleep) { ui.message(format!("Sleep chime unavailable: {}",safe(&e.to_string()))); } muted.store(panel.is_some() || (speaker.is_some() && !settings.barge_in),Ordering::SeqCst); }
+                            if cues { sleep_cue!(panel.is_some() || (speaker.is_some() && !settings.barge_in)); }
                         }
                         event_cancelled=true;silence_reply=true;speech_queue.clear();speaker=None;muted.store(panel.is_some() || (speaker.is_some() && !settings.barge_in),Ordering::SeqCst);epoch.fetch_add(1,Ordering::SeqCst);
                         if let Some(tx)=&agent_tx { cancelled_turn=true;cancel_started=Some(Instant::now());let _=tx.try_send(agent::CommandMessage::Cancel); }
@@ -2378,8 +2749,9 @@ pub async fn run(mut args: Run) -> Result<()> {
                         if pending_stt.is_some() {
                             match stt_confirm(&text) {
                                 Some(true) => {
+                                    let target=pending_stt.clone();
                                     match start_stt_download(&settings, &mut pending_stt, &mut stt_download) {
-                                        Ok(msg) => ui.message(msg),
+                                        Ok(msg) => {stt_download_id=target;ui.message(msg);},
                                         Err(e) => ui.message(format!("{e:#}")),
                                     }
                                     continue;
@@ -3026,6 +3398,21 @@ pub async fn run(mut args: Run) -> Result<()> {
                         _=>if !access.locked() && !notification_error_warned {notification_error_warned=true;ui.message("Notification check failed; Accessor will retry in the background.");},
                     }
                 }
+                if presence_poll.as_ref().is_some_and(|poll|poll.task.is_finished()) {
+                    let poll=presence_poll.take().unwrap();
+                    match poll.task.await {
+                        Ok(Ok(Some(text))) if !access.locked() && poll.generation==poll_generation => {
+                            presence_error_warned=false;
+                            ui.chat(Kind::Notice,format!("Arrival · {text}"));
+                            if settings.speak && !wake_listening && !mic_unavailable && !busy && worker.is_none() && speaker.is_none() && speech_queue.is_empty() {
+                                speech_queue.push_back(text);
+                            }
+                        }
+                        Ok(Ok(_))=>{presence_error_warned=false;},
+                        Ok(Err(e))=>if !access.locked() && !presence_error_warned {presence_error_warned=true;ui.message(format!("Presence check failed: {}",safe(&e.to_string())));},
+                        Err(e)=>if !access.locked() && !presence_error_warned {presence_error_warned=true;ui.message(format!("Presence check failed: {}",safe(&e.to_string())));},
+                    }
+                }
                 if last_log_warning.elapsed()>=Duration::from_secs(1) && !access.locked() {
                     last_log_warning=Instant::now();
                     let dropped=crate::masterlog::take_dropped();
@@ -3073,6 +3460,18 @@ pub async fn run(mut args: Run) -> Result<()> {
                         let count=crate::notifications::unread_count()?;
                         let items=if announce {crate::notifications::pending()?.into_iter().take(5).collect()} else {Vec::new()};
                         Ok((count,items))
+                    })});
+                }
+                if settings.presence.enabled && !args.stt_test && presence_poll.is_none()
+                    && !access.locked() && !busy && worker.is_none() && speaker.is_none()
+                    && speech_queue.is_empty() && !wake_listening && wizard.is_none()
+                    && panel.is_none() && pending_secret.is_none() && waiting_event.is_none()
+                    && last_presence_poll.elapsed()>=Duration::from_secs(2)
+                {
+                    last_presence_poll=Instant::now();
+                    let presence=settings.presence.clone();
+                    presence_poll=Some(PresencePoll {generation:poll_generation,task:tokio::task::spawn_blocking(move || {
+                        crate::presence::poll(&presence)
                     })});
                 }
                 if !wake_listening && !busy && worker.is_none() && speaker.is_none() && speech_queue.is_empty() && current_event.is_none() && waiting_event.is_none() && wizard.is_none() && panel.is_none() && pending_secret.is_none() && !args.stt_test && last_event_poll.elapsed()>=Duration::from_secs(1) {
@@ -3148,19 +3547,22 @@ pub async fn run(mut args: Run) -> Result<()> {
                 if stt_download.as_ref().is_some_and(|task|task.is_finished()) {
                     match stt_download.take().unwrap().await {
                         Ok(Ok((id, msg))) => {
-                            match settings.set("stt.engine", &id) {
-                                Ok(()) => {
-                                    if let Ok(mut engine) = stt_engine.lock() {
-                                        *engine = settings.stt.engine.clone();
+                            let expected=stt_download_id.take();
+                            if expected.as_deref() != Some(id.as_str()) {
+                                ui.message(format!("Downloaded {id}, but the selected engine changed; keeping {}.", settings.stt.engine));
+                            } else {
+                                let mut next=settings.clone();
+                                match next.set("stt.engine", &id) {
+                                    Ok(()) => {
+                                        apply_settings!(next, &["stt.engine"]);
+                                        ui.message(msg);
+                                        if speak && intro_marker.as_ref().is_some_and(|path|!path.exists()) {
+                                            speech_queue.push_back(crate::settings_ui::device_intro(&settings));
+                                            if let Some(path)=&intro_marker {let _=std::fs::write(path,"1");}
+                                        }
                                     }
-                                    ui.message(msg);
-                                    if speak && intro_marker.as_ref().is_some_and(|path|!path.exists()) {
-                                        speech_queue.push_back(crate::settings_ui::device_intro(&settings));
-                                        if let Some(path)=&intro_marker {let _=std::fs::write(path,"1");}
-                                    }
-                                    if let Some(menu)=&panel {ui.settings(Some(menu.display(&settings,connected,&models)));}
+                                    Err(e) => ui.message(format!("Downloaded, but could not save stt.engine: {e:#}")),
                                 }
-                                Err(e) => ui.message(format!("Downloaded, but could not save stt.engine: {e:#}")),
                             }
                         }
                         Ok(Err(e)) => ui.message(format!("STT download failed: {e:#}")),
@@ -3168,13 +3570,13 @@ pub async fn run(mut args: Run) -> Result<()> {
                     }
                 }
                 if let Some(text)=ui.input()? {if input_tx.try_send(Input::Text(text)).is_err() {ui.message("Input queue is busy; please enter the command again.");}}
-                if !wake_listening && (busy || worker.is_some() || speaker.is_some() || !speech_queue.is_empty()) {session.touch(Instant::now());}
+                if !wake_listening && (busy || worker.is_some() || speaker.is_some() || !speech_queue.is_empty() || dictation) {session.touch(Instant::now());}
                 if capture_holding {session.touch(Instant::now());}
                 if !capture_holding && session.expire(Instant::now()) {
                     wake_listening=false;
                     think=None;epoch.fetch_add(1,Ordering::SeqCst);
                     ui.message("Asleep. Waiting for wake code.");
-                    if cues { muted.store(true,Ordering::SeqCst); if let Err(e)=audio::sleep_chime(settings.sounds.sleep) { ui.message(format!("Sleep chime unavailable: {}",safe(&e.to_string()))); } muted.store(panel.is_some() || pending_secret.is_some() || wizard.is_some(),Ordering::SeqCst); epoch.fetch_add(1,Ordering::SeqCst); }
+                    if cues { sleep_cue!(panel.is_some() || pending_secret.is_some() || wizard.is_some()); epoch.fetch_add(1,Ordering::SeqCst); }
                 }
                 // Hold the display awake for the whole listening/working window,
                 // not only at wake; otherwise a short blank timeout darkens the
@@ -3510,10 +3912,12 @@ mod tests {
 
     #[test]
     fn dictation_phrases_match_with_wake_prefix_and_punctuation() {
-        assert!(says("29, start dictation", &["start dictation"]));
-        assert!(says("Stop dictation.", &["stop dictation"]));
-        assert!(says("hey 29 begin journaling", &["begin journaling"]));
-        assert!(!says("what is the weather", &["start dictation"]));
+        assert!(says("29, start dictation", START_TRANSCRIPTION));
+        assert!(says("Stop dictation.", STOP_TRANSCRIPTION));
+        assert!(says("hey 29 begin journaling", START_TRANSCRIPTION));
+        assert!(says("29, enter transcription", START_TRANSCRIPTION));
+        assert!(says("Exit transcription.", STOP_TRANSCRIPTION));
+        assert!(!says("what is the weather", START_TRANSCRIPTION));
     }
 
     #[test]

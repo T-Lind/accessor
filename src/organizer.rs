@@ -1270,6 +1270,21 @@ pub fn update_watch(
     Ok(task)
 }
 
+/// Count pending alarms and active one-shot scheduled tasks without rendering
+/// the full organizer report. Recurring watches are background monitors, not
+/// to-do items, so they are excluded from the presence brief.
+pub fn pending_counts() -> Result<(usize, usize)> {
+    let _lock = lock()?;
+    let book = load()?;
+    Ok((
+        book.alarms.len(),
+        book.tasks
+            .iter()
+            .filter(|task| !task.paused && task.watch.is_none())
+            .count(),
+    ))
+}
+
 pub fn list() -> Result<String> {
     let _lock = lock()?;
     let book = load()?;

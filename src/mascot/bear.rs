@@ -139,6 +139,7 @@ pub struct Animator {
     entered: f64,
     transition: Option<Transition>,
     reduced_motion: bool,
+    color: bool,
 }
 impl Animator {
     pub fn new(mood: Mood) -> Self {
@@ -147,7 +148,12 @@ impl Animator {
             entered: 0.0,
             transition: None,
             reduced_motion: false,
+            color: true,
         }
+    }
+    /// Render with the terminal's default foreground instead of RGB shading.
+    pub fn set_color(&mut self, color: bool) {
+        self.color = color;
     }
     /// Freeze the companion in a clean pose. Useful for motion-sensitive
     /// terminals, remote sessions, and screen recordings.
@@ -212,12 +218,15 @@ impl Animator {
     }
     pub fn frame(&mut self, now: f64) -> Bear {
         let (state, time, change) = self.sample(now);
-        pixels(state, time, change)
+        let mut bear = pixels(state, time, change);
+        bear.color = self.color;
+        bear
     }
 }
 
 pub struct Bear {
     pixels: [u8; PIXELS],
+    color: bool,
 }
 impl Widget for &Bear {
     fn render(self, area: Rect, buf: &mut Buffer) {
@@ -230,10 +239,17 @@ impl Widget for &Bear {
             for x in 0..WIDTH {
                 let top = self.pixels[(y * 2 * WIDTH + x) as usize] as usize;
                 let bottom = self.pixels[((y * 2 + 1) * WIDTH + x) as usize] as usize;
+                let shade = |index: usize| {
+                    if self.color {
+                        PALETTE[index]
+                    } else {
+                        Color::Reset
+                    }
+                };
                 let (symbol, fg, bg) = if top != 0 {
-                    ("▀", PALETTE[top], PALETTE[bottom])
+                    ("▀", shade(top), shade(bottom))
                 } else if bottom != 0 {
-                    ("▄", PALETTE[bottom], Color::Reset)
+                    ("▄", shade(bottom), Color::Reset)
                 } else {
                     (" ", Color::Reset, Color::Reset)
                 };
@@ -707,7 +723,10 @@ fn pixels(state: State, time: f64, change: Option<(Change, f64)>) -> Bear {
         }
         _ => {}
     }
-    Bear { pixels: c.0 }
+    Bear {
+        pixels: c.0,
+        color: true,
+    }
 }
 
 #[cfg(test)]
@@ -720,9 +739,23 @@ mod tests {
         State::from_mood(Mood::from_name(name).expect("reference state"))
     }
     fn hash(bear: Bear) -> String {
-        format!("{:x}", Sha256::digest(bear.pixels))
+        use std::fmt::Write as _;
+        Sha256::digest(bear.pixels)
+            .iter()
+            .fold(String::with_capacity(64), |mut out, byte| {
+                let _ = write!(out, "{byte:02x}");
+                out
+            })
     }
 
+    #[test]
+    fn monochrome_mode_keeps_the_shape_and_drops_rgb() {
+        let mut animator = Animator::new(Mood::Happy);
+        animator.set_color(false);
+        let bear = animator.frame(0.0);
+        assert!(!bear.color);
+        assert!(bear.pixels.iter().any(|pixel| *pixel != 0));
+    }
     #[test]
     fn pixels_and_all_transitions_match_the_supplied_renderer() {
         let reference: Value =

@@ -1,6 +1,6 @@
 use anyhow::{bail, ensure, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use rubato::{FftFixedIn, Resampler};
+use rubato::{Fft, FixedSync, Resampler, WindowFunction};
 use std::{
     borrow::Cow,
     collections::VecDeque,
@@ -510,9 +510,9 @@ fn lazy_asr_tick(
 
 pub fn devices() -> Result<()> {
     let host = cpal::default_host();
-    let default = host.default_input_device().and_then(|d| d.name().ok());
+    let default = host.default_input_device().map(|d| d.to_string());
     for device in host.input_devices()? {
-        let name = device.name()?;
+        let name = device.to_string();
         println!(
             "{}{}",
             name,
@@ -570,7 +570,7 @@ where
     let channels = config.channels as usize;
     let mut frame: Vec<f32> = Vec::with_capacity(256);
     Ok(device.build_input_stream(
-        config,
+        *config,
         move |data: &[T], _| {
             let mut sum_sq = 0.0_f64;
             let mut clip = 0_usize;
@@ -608,15 +608,15 @@ pub fn mic_check(name: Option<&str>, seconds: u64) -> Result<()> {
     let host = cpal::default_host();
     let device = if let Some(name) = name {
         host.input_devices()?
-            .find(|d| d.name().ok().as_deref() == Some(name))
+            .find(|d| d.to_string() == name)
             .context("Requested microphone not found; run acc devices")?
     } else {
         host.default_input_device()
             .context("No default microphone; run acc devices")?
     };
-    let device_name = device.name().unwrap_or_else(|_| "microphone".into());
+    let device_name = device.to_string();
     let supported = device.default_input_config()?;
-    let config: cpal::StreamConfig = supported.clone().into();
+    let config: cpal::StreamConfig = supported.into();
     let levels = Arc::new(Mutex::new(Vec::<f32>::new()));
     let clipped = Arc::new(AtomicUsize::new(0));
     let samples = Arc::new(AtomicUsize::new(0));
@@ -639,6 +639,46 @@ pub fn mic_check(name: Option<&str>, seconds: u64) -> Result<()> {
             energy.clone(),
         )?,
         cpal::SampleFormat::U16 => level_stream::<u16>(
+            &device,
+            &config,
+            levels.clone(),
+            clipped.clone(),
+            samples.clone(),
+            energy.clone(),
+        )?,
+        cpal::SampleFormat::I32 => level_stream::<i32>(
+            &device,
+            &config,
+            levels.clone(),
+            clipped.clone(),
+            samples.clone(),
+            energy.clone(),
+        )?,
+        cpal::SampleFormat::U32 => level_stream::<u32>(
+            &device,
+            &config,
+            levels.clone(),
+            clipped.clone(),
+            samples.clone(),
+            energy.clone(),
+        )?,
+        cpal::SampleFormat::F64 => level_stream::<f64>(
+            &device,
+            &config,
+            levels.clone(),
+            clipped.clone(),
+            samples.clone(),
+            energy.clone(),
+        )?,
+        cpal::SampleFormat::I24 => level_stream::<cpal::I24>(
+            &device,
+            &config,
+            levels.clone(),
+            clipped.clone(),
+            samples.clone(),
+            energy.clone(),
+        )?,
+        cpal::SampleFormat::U24 => level_stream::<cpal::U24>(
             &device,
             &config,
             levels.clone(),
@@ -673,7 +713,7 @@ pub fn mic_check(name: Option<&str>, seconds: u64) -> Result<()> {
     println!("Microphone:        {device_name}");
     println!(
         "Rate/format:       {} Hz, {} channel(s), {:?}",
-        config.sample_rate.0,
+        config.sample_rate,
         config.channels,
         supported.sample_format()
     );
@@ -1008,14 +1048,14 @@ pub fn listen(
     let host = cpal::default_host();
     let device = if let Some(name) = name {
         host.input_devices()?
-            .find(|d| d.name().ok().as_deref() == Some(name))
+            .find(|d| d.to_string() == name)
             .context("Requested microphone not found; run accessor devices")?
     } else {
         host.default_input_device()
             .context("No default microphone; run accessor devices")?
     };
     let supported = device.default_input_config()?;
-    let config: cpal::StreamConfig = supported.clone().into();
+    let config: cpal::StreamConfig = supported.into();
     let (raw_tx, raw_rx) = mpsc::sync_channel::<Chunk>(256);
     // Keep clean utterances in capture order while recognition is busy.
     // Wake probes are replaceable; user utterances are not.
@@ -1055,9 +1095,54 @@ pub fn listen(
             (lost.clone(), failed.clone()),
             output.clone(),
         )?,
+        cpal::SampleFormat::I32 => build_stream::<i32>(
+            &device,
+            &config,
+            raw_tx,
+            epoch.clone(),
+            muted.clone(),
+            (lost.clone(), failed.clone()),
+            output.clone(),
+        )?,
+        cpal::SampleFormat::U32 => build_stream::<u32>(
+            &device,
+            &config,
+            raw_tx,
+            epoch.clone(),
+            muted.clone(),
+            (lost.clone(), failed.clone()),
+            output.clone(),
+        )?,
+        cpal::SampleFormat::F64 => build_stream::<f64>(
+            &device,
+            &config,
+            raw_tx,
+            epoch.clone(),
+            muted.clone(),
+            (lost.clone(), failed.clone()),
+            output.clone(),
+        )?,
+        cpal::SampleFormat::I24 => build_stream::<cpal::I24>(
+            &device,
+            &config,
+            raw_tx,
+            epoch.clone(),
+            muted.clone(),
+            (lost.clone(), failed.clone()),
+            output.clone(),
+        )?,
+        cpal::SampleFormat::U24 => build_stream::<cpal::U24>(
+            &device,
+            &config,
+            raw_tx,
+            epoch.clone(),
+            muted.clone(),
+            (lost.clone(), failed.clone()),
+            output.clone(),
+        )?,
         format => bail!("Unsupported microphone sample format: {format:?}"),
     };
-    let rate = config.sample_rate.0 as usize;
+    let rate = config.sample_rate as usize;
     let dsp_failed = failed.clone();
     let dsp_stop = stop.clone();
     let dsp_epoch = epoch.clone();
@@ -1080,7 +1165,15 @@ pub fn listen(
     let dsp_task = std::thread::spawn(move || {
         let result = (|| -> Result<()> {
             let mut canceller = crate::echo::Canceller::new();
-            let mut resampler = FftFixedIn::<f32>::new(rate, 16_000, 1024, 2, 1)?;
+            let mut resampler = Fft::<f32>::new_custom(
+                rate,
+                16_000,
+                1024,
+                2,
+                1,
+                WindowFunction::BlackmanHarris2,
+                FixedSync::Input,
+            )?;
             let mut raw = VecDeque::new();
             let mut frames = VecDeque::new();
             let mut resample_in: Vec<f32> = Vec::new();
@@ -1145,11 +1238,16 @@ pub fn listen(
                     }
                     resample_in.clear();
                     resample_in.extend(raw.drain(..n));
-                    let converted = resampler.process(&[resample_in.as_slice()], None)?;
+                    let input = rubato::audioadapter_buffers::direct::SequentialSlice::new(
+                        resample_in.as_slice(),
+                        1,
+                        n,
+                    )?;
+                    let converted = resampler.process(&input, None)?.take_data();
                     while let Ok(chunk) = reference.try_recv() {
                         canceller.render(chunk);
                     }
-                    canceller.capture(&converted[0], &mut frames)?;
+                    canceller.capture(&converted, &mut frames)?;
                     while frames.len() >= 256 {
                         let mut frame = [0.0_f32; 256];
                         for (slot, value) in frame.iter_mut().zip(frames.drain(..256)) {
@@ -1567,7 +1665,7 @@ where
     let level_output = output.clone();
     let mut clipping_chunks = 0_u8;
     Ok(device.build_input_stream(
-        config,
+        *config,
         move |data: &[T], _| {
             if muted.load(Ordering::SeqCst) {
                 return;
@@ -1660,11 +1758,20 @@ pub fn play_cue(kind: CueKind, volume: f32) -> Result<()> {
         .default_output_device()
         .context("No speaker")?;
     let supported = device.default_output_config()?;
-    let config: cpal::StreamConfig = supported.clone().into();
+    let config: cpal::StreamConfig = supported.into();
     let stream = match supported.sample_format() {
         cpal::SampleFormat::F32 => notes_stream::<f32>(&device, &config, notes, None, volume)?,
         cpal::SampleFormat::I16 => notes_stream::<i16>(&device, &config, notes, None, volume)?,
         cpal::SampleFormat::U16 => notes_stream::<u16>(&device, &config, notes, None, volume)?,
+        cpal::SampleFormat::I32 => notes_stream::<i32>(&device, &config, notes, None, volume)?,
+        cpal::SampleFormat::U32 => notes_stream::<u32>(&device, &config, notes, None, volume)?,
+        cpal::SampleFormat::F64 => notes_stream::<f64>(&device, &config, notes, None, volume)?,
+        cpal::SampleFormat::I24 => {
+            notes_stream::<cpal::I24>(&device, &config, notes, None, volume)?
+        }
+        cpal::SampleFormat::U24 => {
+            notes_stream::<cpal::U24>(&device, &config, notes, None, volume)?
+        }
         _ => bail!("Unsupported speaker format"),
     };
     stream.play()?;
@@ -1690,11 +1797,16 @@ pub fn think(volume: f32) -> Result<Cue> {
         .default_output_device()
         .context("No speaker")?;
     let supported = device.default_output_config()?;
-    let config: cpal::StreamConfig = supported.clone().into();
+    let config: cpal::StreamConfig = supported.into();
     let stream = match supported.sample_format() {
         cpal::SampleFormat::F32 => warble_stream::<f32>(&device, &config, flag, volume)?,
         cpal::SampleFormat::I16 => warble_stream::<i16>(&device, &config, flag, volume)?,
         cpal::SampleFormat::U16 => warble_stream::<u16>(&device, &config, flag, volume)?,
+        cpal::SampleFormat::I32 => warble_stream::<i32>(&device, &config, flag, volume)?,
+        cpal::SampleFormat::U32 => warble_stream::<u32>(&device, &config, flag, volume)?,
+        cpal::SampleFormat::F64 => warble_stream::<f64>(&device, &config, flag, volume)?,
+        cpal::SampleFormat::I24 => warble_stream::<cpal::I24>(&device, &config, flag, volume)?,
+        cpal::SampleFormat::U24 => warble_stream::<cpal::U24>(&device, &config, flag, volume)?,
         _ => bail!("Unsupported speaker format"),
     };
     stream.play()?;
@@ -1712,11 +1824,16 @@ pub fn alarm(volume: f32) -> Result<Cue> {
         .default_output_device()
         .context("No speaker")?;
     let supported = device.default_output_config()?;
-    let config: cpal::StreamConfig = supported.clone().into();
+    let config: cpal::StreamConfig = supported.into();
     let stream = match supported.sample_format() {
         cpal::SampleFormat::F32 => alarm_stream::<f32>(&device, &config, flag, volume)?,
         cpal::SampleFormat::I16 => alarm_stream::<i16>(&device, &config, flag, volume)?,
         cpal::SampleFormat::U16 => alarm_stream::<u16>(&device, &config, flag, volume)?,
+        cpal::SampleFormat::I32 => alarm_stream::<i32>(&device, &config, flag, volume)?,
+        cpal::SampleFormat::U32 => alarm_stream::<u32>(&device, &config, flag, volume)?,
+        cpal::SampleFormat::F64 => alarm_stream::<f64>(&device, &config, flag, volume)?,
+        cpal::SampleFormat::I24 => alarm_stream::<cpal::I24>(&device, &config, flag, volume)?,
+        cpal::SampleFormat::U24 => alarm_stream::<cpal::U24>(&device, &config, flag, volume)?,
         _ => bail!("Unsupported speaker format"),
     };
     stream.play()?;
@@ -1737,13 +1854,13 @@ where
     T: cpal::SizedSample + cpal::FromSample<f32>,
 {
     let mut i = 0_u64;
-    let rate = config.sample_rate.0 as f32;
+    let rate = config.sample_rate as f32;
     let channels = config.channels as usize;
     let notes = notes.to_vec();
     let gain = 0.08 * volume.clamp(0.0, 1.5);
     let reference = crate::echo::sender();
     Ok(device.build_output_stream(
-        config,
+        *config,
         move |data: &mut [T], _| {
             if stop.as_ref().is_some_and(|s| s.load(Ordering::SeqCst)) {
                 for s in data.iter_mut() {
@@ -1798,11 +1915,11 @@ where
 {
     let mut i = 0_u64;
     let mut phase = 0.0_f32;
-    let rate = config.sample_rate.0 as f32;
+    let rate = config.sample_rate as f32;
     let channels = config.channels as usize;
     let reference = crate::echo::sender();
     Ok(device.build_output_stream(
-        config,
+        *config,
         move |data: &mut [T], _| {
             if stop.load(Ordering::SeqCst) {
                 for s in data.iter_mut() {
@@ -1847,12 +1964,12 @@ where
     T: cpal::SizedSample + cpal::FromSample<f32>,
 {
     let mut i = 0_u64;
-    let rate = config.sample_rate.0 as f32;
+    let rate = config.sample_rate as f32;
     let channels = config.channels as usize;
     let gain = 0.12 * volume.clamp(0.0, 1.5);
     let reference = crate::echo::sender();
     Ok(device.build_output_stream(
-        config,
+        *config,
         move |data: &mut [T], _| {
             let mut rendered = reference
                 .as_ref()
@@ -2174,7 +2291,7 @@ pub fn play_wav(
         .default_output_device()
         .context("No output device")?;
     let supported = device.default_output_config()?;
-    let config: cpal::StreamConfig = supported.clone().into();
+    let config: cpal::StreamConfig = supported.into();
     let done = Arc::new(AtomicBool::new(false));
     let failed = Arc::new(AtomicBool::new(false));
     let mut deadline =
@@ -2199,6 +2316,51 @@ pub fn play_wav(
             paused.clone(),
         )?,
         cpal::SampleFormat::U16 => wav_stream::<u16>(
+            &device,
+            &config,
+            samples,
+            sample_rate,
+            done.clone(),
+            failed.clone(),
+            paused.clone(),
+        )?,
+        cpal::SampleFormat::I32 => wav_stream::<i32>(
+            &device,
+            &config,
+            samples,
+            sample_rate,
+            done.clone(),
+            failed.clone(),
+            paused.clone(),
+        )?,
+        cpal::SampleFormat::U32 => wav_stream::<u32>(
+            &device,
+            &config,
+            samples,
+            sample_rate,
+            done.clone(),
+            failed.clone(),
+            paused.clone(),
+        )?,
+        cpal::SampleFormat::F64 => wav_stream::<f64>(
+            &device,
+            &config,
+            samples,
+            sample_rate,
+            done.clone(),
+            failed.clone(),
+            paused.clone(),
+        )?,
+        cpal::SampleFormat::I24 => wav_stream::<cpal::I24>(
+            &device,
+            &config,
+            samples,
+            sample_rate,
+            done.clone(),
+            failed.clone(),
+            paused.clone(),
+        )?,
+        cpal::SampleFormat::U24 => wav_stream::<cpal::U24>(
             &device,
             &config,
             samples,
@@ -2245,13 +2407,13 @@ where
     let mut playback = Playback {
         samples,
         position: 0.0,
-        step: rate as f64 / config.sample_rate.0 as f64,
+        step: rate as f64 / config.sample_rate as f64,
     };
     let channels = config.channels as usize;
     let reference = crate::echo::sender();
-    let output_rate = config.sample_rate.0;
+    let output_rate = config.sample_rate;
     Ok(device.build_output_stream(
-        config,
+        *config,
         move |output: &mut [T], _| {
             let mut rendered = reference
                 .as_ref()

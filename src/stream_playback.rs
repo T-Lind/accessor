@@ -127,7 +127,7 @@ fn play(
         .default_output_device()
         .context("No output device")?;
     let supported = device.default_output_config()?;
-    let config: cpal::StreamConfig = supported.clone().into();
+    let config: cpal::StreamConfig = supported.into();
     let state = Arc::new(State {
         stop,
         done: AtomicBool::new(false),
@@ -145,6 +145,21 @@ fn play(
         }
         cpal::SampleFormat::U16 => {
             stream::<u16>(&device, &config, receiver, state.clone(), volume)?
+        }
+        cpal::SampleFormat::I32 => {
+            stream::<i32>(&device, &config, receiver, state.clone(), volume)?
+        }
+        cpal::SampleFormat::U32 => {
+            stream::<u32>(&device, &config, receiver, state.clone(), volume)?
+        }
+        cpal::SampleFormat::F64 => {
+            stream::<f64>(&device, &config, receiver, state.clone(), volume)?
+        }
+        cpal::SampleFormat::I24 => {
+            stream::<cpal::I24>(&device, &config, receiver, state.clone(), volume)?
+        }
+        cpal::SampleFormat::U24 => {
+            stream::<cpal::U24>(&device, &config, receiver, state.clone(), volume)?
         }
         _ => bail!("Unsupported speaker format"),
     };
@@ -189,13 +204,13 @@ fn stream<T>(
 where
     T: cpal::SizedSample + cpal::FromSample<f32>,
 {
-    let mut buffer = Buffer::new(receiver, config.sample_rate.0);
+    let mut buffer = Buffer::new(receiver, config.sample_rate);
     let channels = config.channels as usize;
-    let rate = config.sample_rate.0;
+    let rate = config.sample_rate;
     let reference = crate::echo::sender();
     let failed = state.clone();
     Ok(device.build_output_stream(
-        config,
+        *config,
         move |output: &mut [T], _| {
             let mut rendered = reference
                 .as_ref()

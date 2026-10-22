@@ -27,6 +27,7 @@ mod music;
 mod noise;
 mod notifications;
 mod organizer;
+mod presence;
 mod process_tree;
 mod quota;
 mod route;

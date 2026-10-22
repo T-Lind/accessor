@@ -34,6 +34,13 @@ impl Session {
     pub fn active(&self) -> bool {
         self.active
     }
+    /// Open an idle session without a wake phrase. Used by explicit local modes
+    /// such as transcription, where the user or MCP has already authorized use.
+    pub fn open(&mut self) {
+        self.active = true;
+        self.last = Instant::now();
+        self.grace_until = None;
+    }
     pub fn wake_in_probe(&self, text: &str) -> bool {
         self.wake.in_probe(text)
     }

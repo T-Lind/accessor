@@ -34,9 +34,17 @@ they go in the OS credential store (Cartesia, Jev/TypeSafe, journal key).
 ## In the dashboard
 
 `/settings` opens a category menu (Voice, Speech, Harnesses, Display, Metaprompt,
-Tests, Security, Computer). Arrow keys move, Enter opens or toggles, Esc goes up a
-level. Changes persist and apply immediately. Typed `/settings KEY VALUE` still
-works for scripts. The status bar always shows the live **harness · model**.
+Tests, Security, Computer, Presence). Arrow keys move, Enter opens or toggles, Esc
+goes up a level. Changes persist and apply immediately. Typed `/settings KEY VALUE`
+still works for scripts; `/settings KEY` shows the current value and default, and
+`/settings find TERM` searches every page. `/config get KEY`, `/config list
+[PREFIX]`, and `/config reset KEY` provide the same access without the panel. The
+status bar always shows the live **harness · model**.
+
+Boolean settings accept `true`/`false`, `on`/`off`, `yes`/`no`, and `1`/`0`.
+Scalar settings accept `default` or `reset`. The settings panel pins the latest
+notice or error in the footer, so failures stay visible on short terminals.
+`NO_COLOR=1` disables color; `ACC_REDUCED_MOTION=1` freezes Bramble's animation.
 
 Wake, timeout, speech, and voice changes take effect immediately. Microphone
 changes reconnect in the background; `/mic reconnect` retries immediately. Asset
@@ -127,6 +135,12 @@ The metaprompt, master-log settings, `memory.capture`, and security settings are
 deliberately **not** agent-editable over MCP. After-wake STT provider/streaming
 are also user-only, so a prompt-injected agent cannot move microphone audio to the
 cloud.
+
+### Presence
+
+`presence.*` settings control the local arrival brief. They are also exposed on
+Settings → Presence. See [presence briefs](presence.md) for the sensor contract,
+quiet hours, and the optional camera service.
 
 ## Ask the agent to change a setting
 

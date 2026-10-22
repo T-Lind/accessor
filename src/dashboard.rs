@@ -8,10 +8,16 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/password",
         "Set/change passphrase; /password remove disables locking",
     ),
-    ("/settings", "Agents, models, wake, voice, chat, and speed"),
+    (
+        "/settings",
+        "Open settings; /settings KEY or /settings find TERM",
+    ),
     ("/help", "Show commands"),
     ("/setup", "Guided setup in this screen"),
-    ("/config", "Inspect settings; /config set KEY VALUE"),
+    (
+        "/config",
+        "Inspect settings; /config get|list|set|reset KEY",
+    ),
     ("/tts", "Choose and test voices"),
     (
         "/stt",
@@ -88,9 +94,14 @@ pub fn tts_help(s: &Settings) -> String {
 pub enum LocalCommand {
     Settings,
     SettingsNav(String),
+    SettingsFind(String),
+    Setting(String),
     Help,
     Setup,
     Config,
+    ConfigGet(String),
+    ConfigList(String),
+    ConfigReset(String),
     Locations,
     Tts,
     Set(String, String),
@@ -130,9 +141,11 @@ pub fn parse(text: &str, s: &Settings) -> Result<Option<LocalCommand>> {
     let value = match parts.as_slice() {
         ["/settings"] | ["/settings", "refresh"] => LocalCommand::Settings,
         ["/settings-nav", dir] => LocalCommand::SettingsNav((*dir).into()),
+        ["/settings", "find", rest @ ..] => LocalCommand::SettingsFind(rest.join(" ")),
         ["/settings", "voices"] => return parse("/tts voices", s),
         ["/settings", "tts"] => return parse("/tts", s),
-        ["/settings", key, value] => LocalCommand::Set((*key).into(), (*value).into()),
+        ["/settings", key] => LocalCommand::Setting((*key).into()),
+        ["/settings", key, rest @ ..] => LocalCommand::Set((*key).into(), rest.join(" ")),
         ["/"] | ["/help"] => LocalCommand::Help,
         ["/setup"] => LocalCommand::Setup,
         ["/mic"] => LocalCommand::Microphone(false),
@@ -141,6 +154,9 @@ pub fn parse(text: &str, s: &Settings) -> Result<Option<LocalCommand>> {
         ["/copy"] => LocalCommand::Copy,
         ["/jobs"] => LocalCommand::Jobs,
         ["/config"] | ["/config", "show"] => LocalCommand::Config,
+        ["/config", "get", key] => LocalCommand::ConfigGet((*key).into()),
+        ["/config", "list", rest @ ..] => LocalCommand::ConfigList(rest.join(" ")),
+        ["/config", "reset", key] => LocalCommand::ConfigReset((*key).into()),
         ["/config", "locations"] | ["/config", "path"] => LocalCommand::Locations,
         ["/config", "set", key, ..] => {
             let value = text
@@ -407,6 +423,37 @@ mod tests {
         assert!(matches!(
             parse("/update check", &Settings::default()).unwrap(),
             Some(LocalCommand::Update { check: true })
+        ));
+        assert!(matches!(
+            parse("/settings find presence", &Settings::default()).unwrap(),
+            Some(LocalCommand::SettingsFind(term)) if term == "presence"
+        ));
+        assert!(matches!(
+            parse("/settings tts.volume", &Settings::default()).unwrap(),
+            Some(LocalCommand::Setting(key)) if key == "tts.volume"
+        ));
+        let Some(LocalCommand::Set(key, value)) = parse(
+            "/settings tts.voice Classy British Man",
+            &Settings::default(),
+        )
+        .unwrap() else {
+            panic!("multi-word settings value")
+        };
+        assert_eq!(
+            (key.as_str(), value.as_str()),
+            ("tts.voice", "Classy British Man")
+        );
+        assert!(matches!(
+            parse("/config get tts.volume", &Settings::default()).unwrap(),
+            Some(LocalCommand::ConfigGet(key)) if key == "tts.volume"
+        ));
+        assert!(matches!(
+            parse("/config list presence", &Settings::default()).unwrap(),
+            Some(LocalCommand::ConfigList(prefix)) if prefix == "presence"
+        ));
+        assert!(matches!(
+            parse("/config reset idle-seconds", &Settings::default()).unwrap(),
+            Some(LocalCommand::ConfigReset(key)) if key == "idle-seconds"
         ));
     }
     #[test]

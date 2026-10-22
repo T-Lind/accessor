@@ -40,6 +40,7 @@ pub struct Settings {
     pub sounds: Sounds,
     pub security: Security,
     pub computer: Computer,
+    pub presence: Presence,
     pub memory: Memory,
     pub logging: Logging,
     pub jobs: Jobs,
@@ -107,6 +108,35 @@ impl Default for Computer {
             enabled: false,
             max_image_dimension: 1280,
             zoom_dimension: 1280,
+        }
+    }
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Presence {
+    /// Speak a short local brief when a trusted sensor reports an arrival.
+    pub enabled: bool,
+    /// Minimum seconds between two briefs.
+    pub cooldown_seconds: u64,
+    /// Ignore low-confidence motion-only arrivals.
+    pub min_confidence: f32,
+    /// Suppress speech inside the local quiet window.
+    pub quiet: bool,
+    pub quiet_start: String,
+    pub quiet_end: String,
+    /// Say "Welcome back" even when there is nothing waiting.
+    pub greet_when_empty: bool,
+}
+impl Default for Presence {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cooldown_seconds: 1800,
+            min_confidence: 0.4,
+            quiet: true,
+            quiet_start: "22:00".into(),
+            quiet_end: "07:00".into(),
+            greet_when_empty: true,
         }
     }
 }
@@ -313,6 +343,7 @@ impl Default for Settings {
             sounds: Sounds::default(),
             security: Security::default(),
             computer: Computer::default(),
+            presence: Presence::default(),
             memory: Memory::default(),
             logging: Logging::default(),
             jobs: Jobs::default(),
@@ -448,6 +479,21 @@ fn parse_level(value: &str) -> Result<f32> {
     // ambiguous 1.6–9.99 band instead of silently turning it into near-silence.
     Ok(if n >= 10.0 { n / 100.0 } else { n })
 }
+
+fn parse_bool(value: &str) -> Result<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "on" | "yes" | "1" => Ok(true),
+        "false" | "off" | "no" | "0" => Ok(false),
+        _ => bail!("Use true or false (on/off and yes/no also work)"),
+    }
+}
+
+fn is_default(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "default" | "reset" | "clear" | "none"
+    )
+}
 pub fn home() -> Result<PathBuf> {
     if let Some(p) = std::env::var_os("ACC_HOME") {
         return Ok(PathBuf::from(p));
@@ -542,7 +588,7 @@ pub fn locations(settings: &Settings) -> String {
         .map(display_path)
         .unwrap_or_else(|_| "(unavailable)".into());
     format!(
-        "Accessor home (copy this folder to replicate settings):\n  {home}\n  config.json          portable wake, harnesses, TTS, routing (no secrets)\n  device.json          device-local mic, asset/codex paths, CPU tuning, noise floor\n  analytics.json       optional usage totals\n  models.json          cached Codex model list\n  voices.json          cached Cartesia voice list\n  notes/               private Markdown notes\n  schedules.json       pending alarms and agent tasks\n  password.json        salted passphrase hash and retry counter\n  tts-cache/           legacy audio cache; acc tts clear-cache removes it\n  events/              local Gmail notification queue\nSettings file:\n  {config}\nDevice settings file:\n  {device}\nCopy preferences between machines with `acc config export FILE` and `acc config import FILE`; device.json is excluded so the target keeps its own mic, paths, threads and noise floor.\nSpeech models / ONNX runtime (large; copy or let `acc` re-download):\n  {assets}\n  Override with ACC_HOME (settings) or ACC_ASSETS (models).\nAPI keys are NOT in that folder. The optional password.json contains only a salted hash. Re-enter them on the new machine:\n  acc tts setup   Cartesia (TTS + Ink-2)\n  acc jev key     TypeSafe / Jev\n  AI_GATEWAY_API_KEY or OS credential 'ai-gateway'\nWindows: Credential Manager, service name Accessor.\nHarness CLIs (Codex, Claude Code, Antigravity, opencode, Cursor) and their plugin logins live in those apps, not here.\nassets-dir is stored in device.json and is often an absolute path — set it again on the other machine if the checkout moved. Starting acc without speech files downloads ONNX Runtime and the selected local STT model automatically."
+        "Accessor home (copy this folder to replicate settings):\n  {home}\n  config.json          portable wake, harnesses, TTS, routing (no secrets)\n  device.json          device-local mic, asset/codex paths, CPU tuning, noise floor\n  analytics.json       optional usage totals\n  models.json          cached Codex model list\n  voices.json          cached Cartesia voice list\n  notes/               private Markdown notes\n  schedules.json       pending alarms and agent tasks\n  presence/            local arrival queue (camera/PIR/manual)\n  password.json        salted passphrase hash and retry counter\n  tts-cache/           legacy audio cache; acc tts clear-cache removes it\n  events/              local Gmail notification queue\nSettings file:\n  {config}\nDevice settings file:\n  {device}\nCopy preferences between machines with `acc config export FILE` and `acc config import FILE`; device.json is excluded so the target keeps its own mic, paths, threads and noise floor.\nSpeech models / ONNX runtime (large; copy or let `acc` re-download):\n  {assets}\n  Override with ACC_HOME (settings) or ACC_ASSETS (models).\nAPI keys are NOT in that folder. The optional password.json contains only a salted hash. Re-enter them on the new machine:\n  acc tts setup   Cartesia (TTS + Ink-2)\n  acc jev key     TypeSafe / Jev\n  AI_GATEWAY_API_KEY or OS credential 'ai-gateway'\nWindows: Credential Manager, service name Accessor.\nHarness CLIs (Codex, Claude Code, Antigravity, opencode, Cursor) and their plugin logins live in those apps, not here.\nassets-dir is stored in device.json and is often an absolute path — set it again on the other machine if the checkout moved. Starting acc without speech files downloads ONNX Runtime and the selected local STT model automatically."
     )
 }
 impl Settings {
@@ -837,6 +883,23 @@ impl Settings {
             (256..=4096).contains(&self.computer.zoom_dimension),
             "computer.zoom-dimension must be 256–4096"
         );
+        ensure!(
+            self.presence.cooldown_seconds <= 86_400,
+            "presence.cooldown-seconds must be 0–86400"
+        );
+        ensure!(
+            self.presence.min_confidence.is_finite()
+                && (0.0..=1.0).contains(&self.presence.min_confidence),
+            "presence.min-confidence must be between 0 and 1"
+        );
+        let start = chrono::NaiveTime::parse_from_str(&self.presence.quiet_start, "%H:%M")
+            .context("presence.quiet-start must be HH:MM")?;
+        let end = chrono::NaiveTime::parse_from_str(&self.presence.quiet_end, "%H:%M")
+            .context("presence.quiet-end must be HH:MM")?;
+        ensure!(
+            start != end,
+            "presence.quiet-start and presence.quiet-end must differ"
+        );
         Ok(())
     }
     pub fn save(&self) -> Result<()> {
@@ -914,24 +977,88 @@ impl Settings {
             )
         }
     }
+    /// The portable default for a dotted setting key, using the same serialized
+    /// shape as `config.json`. Optional values are returned as `default`.
+    pub fn default_value(key: &str) -> Option<String> {
+        let source = serde_json::to_value(Self::default()).ok()?;
+        let mut value = &source;
+        for part in key.split('.') {
+            value = value.get(part.replace('-', "_"))?;
+        }
+        match value {
+            serde_json::Value::String(text) => Some(text.clone()),
+            serde_json::Value::Bool(flag) => Some(flag.to_string()),
+            serde_json::Value::Number(number) => Some(number.to_string()),
+            serde_json::Value::Null => Some("default".into()),
+            _ => None,
+        }
+    }
+    /// Read a dotted setting key from the serialized shape used by config.json.
+    pub fn value_of(&self, key: &str) -> Option<String> {
+        let source = serde_json::to_value(self).ok()?;
+        let mut value = &source;
+        for part in key.split('.') {
+            value = value.get(part.replace('-', "_"))?;
+        }
+        match value {
+            serde_json::Value::String(text) => Some(text.clone()),
+            serde_json::Value::Bool(flag) => Some(flag.to_string()),
+            serde_json::Value::Number(number) => Some(number.to_string()),
+            serde_json::Value::Null => Some("default".into()),
+            _ => None,
+        }
+    }
+    /// Every dotted key in the serialized settings shape, sorted.
+    pub fn keys(&self) -> Vec<String> {
+        fn walk(value: &serde_json::Value, prefix: &str, out: &mut Vec<String>) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    for (key, child) in map {
+                        let key = key.replace('_', "-");
+                        let path = if prefix.is_empty() {
+                            key
+                        } else {
+                            format!("{prefix}.{key}")
+                        };
+                        walk(child, &path, out);
+                    }
+                }
+                _ => out.push(prefix.to_string()),
+            }
+        }
+        let mut out = Vec::new();
+        if let Ok(value) = serde_json::to_value(self) {
+            walk(&value, "", &mut out);
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
     pub fn assign(&mut self, key: &str, value: &str) -> Result<()> {
+        if is_default(value) {
+            if let Some(default) = Self::default_value(key) {
+                if !default.eq_ignore_ascii_case(value.trim()) {
+                    return self.assign(key, &default);
+                }
+            }
+        }
         match key {
             "jobs.timeout-seconds" => self.jobs.timeout_seconds = value.parse()?,
-            "wake-attention" => self.wake_attention = value.parse()?,
+            "wake-attention" => self.wake_attention = parse_bool(value)?,
             "stt.endpoint-ms" => self.stt.endpoint_ms = value.parse()?,
             "stt.threads" => self.stt.threads = value.parse()?,
-            "stt.spin" => self.stt.spin = value.parse()?,
+            "stt.spin" => self.stt.spin = parse_bool(value)?,
             "security.lock-seconds" => self.security.lock_seconds = value.parse()?,
-            "security.spoken-unlock" => self.security.spoken_unlock = value.parse()?,
-            "event-owner" => self.event_owner = Some(value.into()),
+            "security.spoken-unlock" => self.security.spoken_unlock = parse_bool(value)?,
+            "event-owner" => self.event_owner = (!is_default(value)).then(|| value.into()),
             "wake-code" => self.wake_code = value.into(),
-            "wake-display" => self.wake_display = value.parse()?,
+            "wake-display" => self.wake_display = parse_bool(value)?,
             "idle-seconds" => self.idle_seconds = value.parse()?,
-            "speak" => self.speak = value.parse()?,
-            "barge-in" => self.barge_in = value.parse()?,
-            "speak-progress" => self.speak_progress = value.parse()?,
-            "memory.capture" => self.memory.capture = value.parse()?,
-            "logging.enabled" => self.logging.enabled = value.parse()?,
+            "speak" => self.speak = parse_bool(value)?,
+            "barge-in" => self.barge_in = parse_bool(value)?,
+            "speak-progress" => self.speak_progress = parse_bool(value)?,
+            "memory.capture" => self.memory.capture = parse_bool(value)?,
+            "logging.enabled" => self.logging.enabled = parse_bool(value)?,
             "logging.level" => {
                 let level = value.to_lowercase();
                 ensure!(
@@ -941,7 +1068,7 @@ impl Settings {
                 self.logging.level = level;
             }
             "logging.path" => {
-                self.logging.path = if value.trim().is_empty() {
+                self.logging.path = if value.trim().is_empty() || is_default(value) {
                     None
                 } else {
                     Some(PathBuf::from(value.trim()))
@@ -956,8 +1083,8 @@ impl Settings {
                     Some(value.into())
                 }
             }
-            "tts.provider" => self.tts.provider = value.into(),
-            "tts.streaming" => self.tts.streaming = value.parse()?,
+            "tts.provider" => self.tts.provider = value.to_lowercase(),
+            "tts.streaming" => self.tts.streaming = parse_bool(value)?,
             "tts.voice" => {
                 self.tts.voice = crate::speech::resolve_voice(value, &crate::speech::voice_catalog())
                     .context(
@@ -979,18 +1106,18 @@ impl Settings {
             "routing.coding" => self.routing.coding = value.to_lowercase(),
             "routing.main" | "routing.routine" => self.routing.main = value.to_lowercase(),
             "routing.router" => self.routing.router = value.to_lowercase(),
-            "routing.announce" => self.routing.announce = value.parse()?,
-            "routing.fast-mode" => self.routing.fast_mode = value.parse()?,
-            "routing.auto-model" => self.routing.auto_model = value.parse()?,
+            "routing.announce" => self.routing.announce = parse_bool(value)?,
+            "routing.fast-mode" => self.routing.fast_mode = parse_bool(value)?,
+            "routing.auto-model" => self.routing.auto_model = parse_bool(value)?,
             "routing.reasoning" => self.routing.reasoning = value.to_lowercase(),
             "routing.coding-reasoning" => self.routing.coding_reasoning = value.to_lowercase(),
             "routing.plugin-reasoning" => self.routing.plugin_reasoning = value.to_lowercase(),
             "routing.compaction-reasoning" => {
                 self.routing.compaction_reasoning = value.to_lowercase()
             }
-            "routing.plugin-use-main" => self.routing.plugin_use_main = value.parse()?,
+            "routing.plugin-use-main" => self.routing.plugin_use_main = parse_bool(value)?,
             "routing.input-gate" => self.routing.input_gate = value.to_lowercase(),
-            "routing.coordinator" => self.routing.coordinator = value.parse()?,
+            "routing.coordinator" => self.routing.coordinator = parse_bool(value)?,
             "routing.compaction-model" => self.routing.compaction_model = value.into(),
             "routing.compaction-harness" => self.routing.compaction_harness = value.to_lowercase(),
             "routing.compact-tokens" => self.routing.compact_tokens = value.parse()?,
@@ -1030,20 +1157,41 @@ impl Settings {
                     )?
                     .into();
             }
-            "stt.lazy" => self.stt.lazy = value.parse()?,
-            "stt.streaming" => self.stt.streaming = value.parse()?,
-            "stt.noise-gate" => self.stt.noise_gate = value.parse()?,
+            "stt.lazy" => self.stt.lazy = parse_bool(value)?,
+            "stt.streaming" => self.stt.streaming = parse_bool(value)?,
+            "stt.noise-gate" => self.stt.noise_gate = parse_bool(value)?,
             "stt.noise-floor-db" => self.stt.noise_floor_db = value.parse()?,
             "stt.denoise" => self.stt.denoise = value.to_lowercase(),
             "stt.wake-engine" => self.stt.wake_engine = value.to_lowercase(),
             "stt.wake-threshold" => self.stt.wake_threshold = value.parse()?,
             "approvals.reviewer" => self.approvals.reviewer = value.to_lowercase(),
-            "computer.enabled" => self.computer.enabled = value.parse()?,
+            "computer.enabled" => self.computer.enabled = parse_bool(value)?,
             "computer.max-image-dimension" => self.computer.max_image_dimension = value.parse()?,
             "computer.zoom-dimension" => self.computer.zoom_dimension = value.parse()?,
-            "microphone" => self.microphone = Some(value.into()),
-            "codex-bin" => self.codex_bin = Some(PathBuf::from(value).canonicalize()?),
-            "assets-dir" => self.assets_dir = Some(PathBuf::from(value).canonicalize()?),
+            "presence.enabled" => self.presence.enabled = parse_bool(value)?,
+            "presence.cooldown-seconds" => self.presence.cooldown_seconds = value.parse()?,
+            "presence.min-confidence" => self.presence.min_confidence = value.parse()?,
+            "presence.quiet" => self.presence.quiet = parse_bool(value)?,
+            "presence.quiet-start" => self.presence.quiet_start = value.into(),
+            "presence.quiet-end" => self.presence.quiet_end = value.into(),
+            "presence.greet-when-empty" => self.presence.greet_when_empty = parse_bool(value)?,
+            "microphone" => {
+                self.microphone = (!is_default(value)).then(|| value.into());
+            }
+            "codex-bin" => {
+                self.codex_bin = if is_default(value) {
+                    None
+                } else {
+                    Some(PathBuf::from(value).canonicalize()?)
+                };
+            }
+            "assets-dir" => {
+                self.assets_dir = if is_default(value) {
+                    None
+                } else {
+                    Some(PathBuf::from(value).canonicalize()?)
+                };
+            }
             _ => bail!("Unknown setting. See docs/PLATFORM.md or /settings."),
         }
         self.validate()
@@ -1381,6 +1529,30 @@ mod tests {
         s.stt.denoise = "off".into();
         s.stt.noise_floor_db = -10.0;
         assert!(s.validate().is_err());
+    }
+    #[test]
+    fn defaults_and_friendly_boolean_values() {
+        let defaults = Settings::default();
+        let mut s = Settings {
+            idle_seconds: 7,
+            ..Settings::default()
+        };
+        s.assign("idle-seconds", "default").unwrap();
+        assert_eq!(s.idle_seconds, defaults.idle_seconds);
+        s.assign("speak", "off").unwrap();
+        assert!(!s.speak);
+        s.assign("speak", "yes").unwrap();
+        assert!(s.speak);
+        s.assign("tts.provider", "Piper").unwrap();
+        assert_eq!(s.tts.provider, "piper");
+        s.microphone = Some("A microphone".into());
+        s.assign("microphone", "default").unwrap();
+        assert!(s.microphone.is_none());
+        assert!(Settings::default_value("tts.volume").is_some());
+        assert!(Settings::default_value("routing.main-model").is_some());
+        assert!(s.keys().iter().any(|key| key == "presence.enabled"));
+        assert!(s.keys().iter().any(|key| key == "routing.main-model"));
+        assert_eq!(s.value_of("routing.main-model").as_deref(), Some("default"));
     }
     #[test]
     fn conversation_stt_aliases() {

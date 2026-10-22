@@ -1,6 +1,6 @@
 //! Local interface lock. The OS account remains the security boundary for files/CLIs.
 use anyhow::{ensure, Context, Result};
-use argon2::{password_hash::SaltString, Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use zeroize::Zeroizing;
@@ -175,10 +175,8 @@ impl Lock {
             normalized.len() <= 256,
             "Passphrase is too long (maximum 256 characters)"
         );
-        let salt = SaltString::encode_b64(uuid::Uuid::new_v4().as_bytes())
-            .map_err(|_| anyhow::anyhow!("Cannot create password salt"))?;
         let hash = Argon2::default()
-            .hash_password(normalized.as_bytes(), &salt)
+            .hash_password_with_salt(normalized.as_bytes(), uuid::Uuid::new_v4().as_bytes())
             .map_err(|_| anyhow::anyhow!("Cannot hash password"))?
             .to_string();
         let previous = self.credential.replace(Credential {

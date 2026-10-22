@@ -12,6 +12,7 @@ enum Page {
     Prompt,
     Tests,
     Computer,
+    Presence,
 }
 impl Page {
     fn title(self) -> &'static str {
@@ -25,6 +26,7 @@ impl Page {
             Self::Prompt => "Metaprompt",
             Self::Tests => "Tests",
             Self::Computer => "Computer",
+            Self::Presence => "Presence",
         }
     }
 }
@@ -105,6 +107,11 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                 "screen, mouse, keyboard",
                 Action::Open(Page::Computer),
             ),
+            row(
+                "Presence",
+                "arrival briefs, quiet hours",
+                Action::Open(Page::Presence),
+            ),
             row("Close", "Esc", Action::Close),
         ],
         Page::Security => vec![
@@ -143,6 +150,16 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                 Action::Edit("idle-seconds"),
             ),
             row("Barge-in", on(s.barge_in), Action::Toggle("barge-in")),
+            row(
+                "Wake needs attention word",
+                on(s.wake_attention),
+                Action::Toggle("wake-attention"),
+            ),
+            row(
+                "Microphone",
+                s.microphone.as_deref().unwrap_or("system default"),
+                Action::Edit("microphone"),
+            ),
             row(
                 "Wake display",
                 on(s.wake_display),
@@ -447,6 +464,11 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                 Action::Open(Page::Prompt),
             ),
             row(
+                "Capture shared facts",
+                on(s.memory.capture),
+                Action::Toggle("memory.capture"),
+            ),
+            row(
                 "Master log",
                 on(s.logging.enabled),
                 Action::Toggle("logging.enabled"),
@@ -507,6 +529,44 @@ fn rows(page: Page, s: &Settings, _connected: bool) -> Vec<Row> {
                 "Harness updates",
                 "update found harness CLIs",
                 Action::Run("/update"),
+            ),
+            row("Back", "categories", Action::Open(Page::Home)),
+        ],
+        Page::Presence => vec![
+            row(
+                "Arrival briefs",
+                on(s.presence.enabled),
+                Action::Toggle("presence.enabled"),
+            ),
+            row(
+                "Cooldown",
+                &format!("{} min", s.presence.cooldown_seconds / 60),
+                Action::Edit("presence.cooldown-seconds"),
+            ),
+            row(
+                "Minimum confidence",
+                &format!("{:.2}", s.presence.min_confidence),
+                Action::Edit("presence.min-confidence"),
+            ),
+            row(
+                "Quiet hours",
+                on(s.presence.quiet),
+                Action::Toggle("presence.quiet"),
+            ),
+            row(
+                "Quiet start",
+                &s.presence.quiet_start,
+                Action::Edit("presence.quiet-start"),
+            ),
+            row(
+                "Quiet end",
+                &s.presence.quiet_end,
+                Action::Edit("presence.quiet-end"),
+            ),
+            row(
+                "Greet when nothing is waiting",
+                on(s.presence.greet_when_empty),
+                Action::Toggle("presence.greet-when-empty"),
             ),
             row("Back", "categories", Action::Open(Page::Home)),
         ],
@@ -582,6 +642,9 @@ fn hint(action: &Action) -> &'static str {
         Action::Open(Page::Computer) => {
             "Desktop control through the MCP computer tool: screenshots plus mouse and keyboard. Off unless you enable it; it drives the real machine."
         }
+        Action::Open(Page::Presence) => {
+            "A local sensor can report an arrival; Accessor speaks a short local brief without a model call. Cooldown, confidence, quiet hours, the lock, and busy state still apply."
+        }
         Action::Toggle("computer.enabled") => {
             "Let connected agents capture the screen and control the mouse and keyboard through MCP. This drives the real machine, so enable it only when you want an agent to act on this desktop."
         }
@@ -598,6 +661,32 @@ fn hint(action: &Action) -> &'static str {
         Action::Toggle("security.spoken-unlock") => "Allow exact passphrase words after wake code + unlock, using only local transcription. Off requires keyboard entry.",
         Action::Toggle("barge-in") => {
             "When on, new speech can interrupt the agent. When off, wait or /cancel."
+        }
+        Action::Toggle("wake-attention") => {
+            "Require the attention word (for example “hey”) before the wake code. Off accepts the digits alone."
+        }
+        Action::Edit("microphone") => {
+            "Type a microphone name from /devices, or default to follow the system input."
+        }
+        Action::Toggle("memory.capture") => {
+            "Let agents save stable facts and preferences to the local shared memory. Off stops new captures; existing memories stay reviewable."
+        }
+        Action::Toggle("presence.enabled") => {
+            "Speak a short local arrival brief when a trusted sensor emits an event. No model call and no camera frame leaves this machine."
+        }
+        Action::Edit("presence.cooldown-seconds") => {
+            "Seconds between arrival briefs (0–86400). A cooldown prevents repeated greetings."
+        }
+        Action::Edit("presence.min-confidence") => {
+            "Ignore arrivals below this confidence (0–1). Motion-only events usually send 0.5; a confirmed person sends 0.8–0.95."
+        }
+        Action::Toggle("presence.quiet") => {
+            "Suppress arrival briefs inside the local quiet window."
+        }
+        Action::Edit("presence.quiet-start") => "Quiet-hours start in 24-hour HH:MM.",
+        Action::Edit("presence.quiet-end") => "Quiet-hours end in 24-hour HH:MM.",
+        Action::Toggle("presence.greet-when-empty") => {
+            "Say a short welcome even when there are no unread notifications or pending tasks."
         }
         Action::Toggle("wake-display") => {
             "Turn on sleeping or blanked displays during Accessor interactions."
@@ -911,7 +1000,7 @@ fn compaction_providers(s: &Settings) -> Vec<(&'static str, &'static str)> {
         list.push(("gateway", "AI Gateway"));
     }
     for h in crate::config::harness_offers(s, None) {
-        if h.found && h.id != "mock" {
+        if h.found && matches!(h.id, "codex" | "claude" | "antigravity" | "mock") {
             list.push((h.id, h.name));
         }
     }
@@ -1016,6 +1105,41 @@ fn current_value<'a>(key: &str, s: &'a Settings) -> &'a str {
         }
         "barge-in" => {
             if s.barge_in {
+                "true"
+            } else {
+                "false"
+            }
+        }
+        "wake-attention" => {
+            if s.wake_attention {
+                "true"
+            } else {
+                "false"
+            }
+        }
+        "memory.capture" => {
+            if s.memory.capture {
+                "true"
+            } else {
+                "false"
+            }
+        }
+        "presence.enabled" => {
+            if s.presence.enabled {
+                "true"
+            } else {
+                "false"
+            }
+        }
+        "presence.quiet" => {
+            if s.presence.quiet {
+                "true"
+            } else {
+                "false"
+            }
+        }
+        "presence.greet-when-empty" => {
+            if s.presence.greet_when_empty {
                 "true"
             } else {
                 "false"
@@ -1209,6 +1333,68 @@ impl ChoiceEdit {
             )
         });
         Ok(Answer::Command(command))
+    }
+}
+
+fn canonical_key(key: &str) -> &str {
+    match key {
+        "routing.routine" => "routing.main",
+        "routing.routine-model" => "routing.main-model",
+        other => other,
+    }
+}
+
+/// One setting's current value, its portable default, and how to change it.
+pub fn describe(s: &Settings, key: &str) -> String {
+    let key = canonical_key(key);
+    let current = s.value_of(key).unwrap_or_else(|| "(unknown)".into());
+    let default = Settings::default_value(key).unwrap_or_else(|| "(unknown)".into());
+    let current = if current.chars().count() > 300 {
+        format!("{}…", current.chars().take(299).collect::<String>())
+    } else {
+        current
+    };
+    let default = if default.chars().count() > 300 {
+        format!("{}…", default.chars().take(299).collect::<String>())
+    } else {
+        default
+    };
+    format!(
+        "{key}: {current}\nDefault: {default}\nChange with /config set {key} VALUE, or open /settings."
+    )
+}
+
+/// Read-only search across every settings page. This avoids making users
+/// remember which category owns a key.
+pub fn search(s: &Settings, term: &str) -> String {
+    let term = term.trim().to_lowercase();
+    if term.is_empty() {
+        return "Usage: /settings find TERM".into();
+    }
+    let pages = [
+        Page::Home,
+        Page::Voice,
+        Page::Speech,
+        Page::Harnesses,
+        Page::Display,
+        Page::Prompt,
+        Page::Tests,
+        Page::Security,
+        Page::Computer,
+        Page::Presence,
+    ];
+    let mut hits = Vec::new();
+    for page in pages {
+        for row in rows(page, s, false) {
+            if row.label.to_lowercase().contains(&term) {
+                hits.push(format!("{} > {}", page.title(), row.label));
+            }
+        }
+    }
+    if hits.is_empty() {
+        format!("No settings match \"{term}\".")
+    } else {
+        format!("Settings matching \"{term}\":\n{}", hits.join("\n"))
     }
 }
 
@@ -1419,6 +1605,7 @@ fn choice_for(key: &str, s: &Settings) -> Option<ChoiceEdit> {
             "Spoken replies — choose a provider",
             "Cartesia is cloud and needs a key; Kokoro and the system voice are local. Kokoro installs on first use.",
             vec![
+                pick("piper", "Piper · local neural (fast)"),
                 pick("cartesia", "Cartesia · cloud neural"),
                 pick("kokoro", "Kokoro · local neural"),
                 pick("system", "System voice · this computer"),
@@ -1563,6 +1750,9 @@ impl AgentEdit {
             harnesses.insert(0, ("main".into(), "Use main agent (recommended)".into()));
         }
         if role == "compaction" {
+            harnesses.retain(|(id, _)| {
+                matches!(id.as_str(), "codex" | "claude" | "antigravity" | "mock")
+            });
             harnesses.insert(
                 0,
                 ("local".into(), "Local trim · no model or account".into()),
@@ -1841,7 +2031,8 @@ impl Panel {
                 ),
                 "idle-seconds" => "Wake-listening seconds (0–3600; 0 = no timeout). Esc returns.".into(),
                 "wake-code" => "Wake code (digits). Esc returns.".into(),
-                "tts.provider" => "system, kokoro, cartesia, or off. Esc returns.".into(),
+                "tts.provider" => "piper, system, kokoro, cartesia, or off. Esc returns.".into(),
+                "microphone" => "Microphone name from /devices, or default for the system input. Esc returns.".into(),
                 "tts.local-voice" => {
                     "Kokoro voice id (e.g. af_heart). Run /tts voices for the list. Esc returns."
                         .into()
@@ -1893,18 +2084,19 @@ impl Panel {
             };
         }
         let list = rows(self.page, s, connected);
+        let cursor = self.cursor.min(list.len().saturating_sub(1));
         let mut out = format!(
             "{}  ·  ↑/↓ move  ·  Enter  ·  Esc back\n",
             self.page.title().to_uppercase()
         );
         if self.page == Page::Home {
-            out.push_str("Choose a category. Changes are saved when confirmed.\n");
+            out.push_str("Choose a category. Changes save when you choose them.\n");
         }
         for (i, row) in list.iter().enumerate() {
-            out.push_str(if i == self.cursor { "› " } else { "  " });
+            out.push_str(if i == cursor { "› " } else { "  " });
             out.push_str(&row.label);
             out.push('\n');
-            if i == self.cursor {
+            if i == cursor {
                 out.push_str("hint:  ");
                 out.push_str(hint(&row.action));
                 out.push('\n');
@@ -1987,6 +2179,9 @@ impl Panel {
             return Ok(Answer::Show);
         }
         let list = rows(self.page, s, connected);
+        if self.cursor >= list.len() {
+            self.cursor = list.len().saturating_sub(1);
+        }
         let Some(row) = list.get(self.cursor) else {
             return Ok(Answer::Show);
         };
@@ -2077,15 +2272,24 @@ impl Panel {
                 return Ok(Answer::Show);
             }
             let value = match key {
-                "agent" | "routing.coding" | "routing.main" => match value {
-                    "1" | "codex" => "codex".into(),
-                    "2" | "claude" => "claude".into(),
-                    "3" | "antigravity" | "agy" => "antigravity".into(),
-                    "4" | "opencode" => "opencode".into(),
-                    "5" | "cursor" => "cursor".into(),
-                    "6" | "mock" => "mock".into(),
-                    other => other.to_lowercase(),
-                },
+                "agent" | "routing.coding" | "routing.main" => {
+                    let offers = crate::config::harness_offers(s, None);
+                    if let Ok(index) = value.parse::<usize>() {
+                        offers
+                            .get(index.saturating_sub(1))
+                            .map(|offer| offer.id.to_string())
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "Choose a harness number from 1 to {}.",
+                                    offers.len()
+                                )
+                            })?
+                    } else {
+                        named_harness(value)
+                            .map(str::to_string)
+                            .unwrap_or_else(|| value.to_lowercase())
+                    }
+                }
                 "routing.compaction-harness" => {
                     let catalog = compaction_providers(s);
                     if let Ok(n) = value.parse::<usize>() {
@@ -2154,10 +2358,12 @@ impl Panel {
             "enter" | "" => self.activate(s, models, false),
             _ => {
                 if let Ok(n) = value.parse::<usize>() {
-                    if n >= 1 {
+                    let count = rows(self.page, s, false).len();
+                    if n >= 1 && n <= count {
                         self.cursor = n - 1;
                         return self.activate(s, models, false);
                     }
+                    bail!("There are only {count} rows on this page.");
                 }
                 bail!("↑/↓ then Enter, or Esc. Or /settings KEY VALUE.")
             }
@@ -2390,10 +2596,67 @@ pub fn voice_command(
 mod tests {
     use super::*;
     #[test]
+    fn harness_numbers_follow_the_picker_order() {
+        let s = Settings::default();
+        let mut panel = Panel::default();
+        for (number, expected) in [("6", "ty"), ("7", "mock")] {
+            panel.page = Page::Harnesses;
+            panel.field = Some("routing.main");
+            let Answer::Command(command) = panel.answer(number, &s, &[]).unwrap() else {
+                panic!("harness number should produce a command")
+            };
+            assert_eq!(command, format!("/config set routing.main {expected}"));
+        }
+        panel.field = Some("routing.main");
+        assert!(panel.answer("8", &s, &[]).is_err());
+    }
+    #[test]
+    fn disappearing_rows_clamp_the_cursor() {
+        let s = Settings::default();
+        let mut panel = Panel {
+            page: Page::Speech,
+            cursor: 999,
+            ..Panel::default()
+        };
+        panel.activate(&s, &[], false).unwrap();
+        assert!(panel.cursor < rows(Page::Speech, &s, false).len());
+        let panel = Panel {
+            page: Page::Presence,
+            cursor: 999,
+            ..Panel::default()
+        };
+        let shown = panel.display(&s, false, &[]);
+        assert!(shown.contains("› "));
+    }
+    #[test]
+    fn provider_picker_includes_piper_and_compaction_is_filtered() {
+        let s = Settings::default();
+        let choices = choice_for("tts.provider", &s).unwrap();
+        assert!(choices.display().contains("Piper"));
+        let edit = AgentEdit::new("compaction", &s, &[]);
+        assert!(!edit
+            .harnesses
+            .iter()
+            .any(|(id, _)| matches!(id.as_str(), "opencode" | "cursor" | "ty")));
+    }
+    #[test]
+    fn search_and_describe_cover_new_settings() {
+        let s = Settings::default();
+        assert!(search(&s, "presence").contains("Presence"));
+        assert!(search(&s, "attention").contains("Wake needs attention word"));
+        assert!(describe(&s, "tts.volume").contains("Default:"));
+        assert!(describe(&s, "routing.routine-model").contains("routing.main-model"));
+    }
+    #[test]
     fn every_toggle_and_cycle_reads_its_current_value() {
         let s = Settings::default();
         for key in [
             "barge-in",
+            "wake-attention",
+            "memory.capture",
+            "presence.enabled",
+            "presence.quiet",
+            "presence.greet-when-empty",
             "computer.enabled",
             "logging.enabled",
             "routing.announce",

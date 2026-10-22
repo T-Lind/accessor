@@ -6,6 +6,84 @@ GitHub, and full notes are generated there. This file starts at 0.34.3 — see t
 [releases page](https://github.com/T-Lind/accessor/releases) and `git log` for
 earlier history.
 
+## [0.48.0] - 2026-10-22
+
+### Added
+
+- `NO_COLOR` now renders the dashboard and Bramble with the terminal's default
+  foreground, complementing `ACC_REDUCED_MOTION=1`.
+- Settings now has a **Presence** page for arrival briefs, cooldown, confidence,
+  quiet hours, and empty greetings. Voice also exposes the attention-word
+  requirement and microphone choice; Display exposes shared-fact capture.
+- `/settings find TERM` searches every settings page, `/settings KEY` shows the
+  current value and its default, and `/config get|list|reset` provides scriptable
+  inspection and reset. Numeric and boolean settings accept `default`, `reset`,
+  `on`/`off`, `yes`/`no`, and `1`/`0`.
+- The settings panel pins the latest notice or error in the footer, so it cannot
+  scroll out of view on a short terminal.
+
+### Changed
+
+- `/config set`, the settings panel, the setup wizard, `/agent-settings`, MCP
+  `settings_update`, noise calibration, and STT download completion now share
+  one live-apply path. Provider installs, wake/KWS rebuilds, routing identity,
+  microphone reconnects, and speech state stay consistent across all of them.
+- Clipboard reads and sleep-cue playback run off the UI event loop, so a slow
+  desktop portal or audio device cannot freeze typing or redraws.
+- Dependencies refreshed: `cpal 0.18`, `rubato 5`, `ratatui 0.30`,
+  `crossterm 0.29`, `argon2 0.6`, and `sha2 0.11`, plus the release and Pages
+  artifact actions.
+
+### Fixed
+
+- Changing `idle-seconds` no longer closes the active conversation; only a
+  wake-code change rebuilds the session.
+- Changing the main harness or model clears a stale conversation pin and updates
+  the displayed identity immediately.
+- Live settings updates can no longer re-enable cloud STT while local-only
+  transcription is active, and a stale STT download cannot overwrite a newer
+  engine choice.
+- `/tts persona` saves the provider and voice atomically, so an invalid voice
+  cannot leave the provider half-changed.
+- Harness numbers in the settings picker now follow the displayed order,
+  including `ty`; a shrinking settings page clamps the cursor instead of
+  silently losing the selection. The compaction picker no longer offers
+  harnesses that validation rejects, and the provider picker includes Piper.
+- Settings updates from MCP now install or warm the selected TTS provider,
+  refresh an open panel, and stop a stale thinking warble just like the local
+  command path.
+
+## [0.47.0] - 2026-10-21
+
+### Added
+
+- **Live conversation controls** through the `conversation` MCP tool:
+  `status`, asynchronous `compact`, and `clear`. Clear resets Accessor's
+  handoff history and restarts native harness sessions; shared memory, notes,
+  notifications, alarms/tasks, and the private journal are kept. Requests made
+  during a reply or playback are queued until it finishes.
+- **Transcription control** through the `transcription` MCP tool:
+  `start`, `stop`, and `status`. It drives the existing local-only encrypted
+  dictation, forces local STT, and reports entry count without exposing text.
+- “Enter transcription” / “exit transcription” voice aliases. Transcription now
+  keeps the session awake across pauses so long dictations do not close after
+  the idle timeout.
+
+## [0.46.0] - 2026-10-21
+
+### Added
+
+- **Presence briefs**: a trusted local sensor can report an arrival with
+  `acc presence emit`, and Accessor speaks a short local summary of unread
+  notifications, scheduled tasks, and pending alarms. There is no model call,
+  no inbox poll, and no HTTP listener. Events carry only a source, confidence,
+  and timestamp; a cooldown, quiet hours, the lock, and busy/idle state gate
+  speech.
+- `acc presence status`, `acc presence enable|disable`, and a `presence.*`
+  settings group.
+- A camera presence sensor in the companion `monovision` checkout uses motion
+  plus a local SSD person detector, with no depth model and no stored frames.
+
 ## [0.45.0] - 2026-10-20
 
 ### Added
