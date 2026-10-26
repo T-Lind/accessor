@@ -37,7 +37,7 @@ rubato = "5.0"
 transcribe-rs = { version = "=0.3.11", features = ["onnx"] }
 ort = { version = "=2.0.0-rc.12", features = ["load-dynamic"] }
 ndarray = "0.17"
-tokenizers = "0.21"
+tokenizers = "0.23"
 hound = "3.5"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 crossterm = "0.29"
